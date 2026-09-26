@@ -1,13 +1,13 @@
 // pi-duet: two pi sessions on two computers talk through a shared room.
 // Incoming messages become new turns in this session; the agent replies with duet_send.
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { type Cursor, type Envelope, envelope, isForMe, publish, subscribe, topicFor } from "./transport.ts";
 
-type Config = { room?: string; name?: string; server?: string; fromId: string; cursors: Record<string, Cursor> };
+type Config = { room?: string; name?: string; server?: string; fromId?: string; cursors: Record<string, Cursor> };
 
 const DEFAULT_SERVER = "https://ntfy.sh";
 const MAX_AUTO = Number(process.env.DUET_MAX_AUTO) || 8;
@@ -19,15 +19,19 @@ function loadConfig(): Config {
 	try {
 		saved = JSON.parse(readFileSync(file("duet.json"), "utf8"));
 	} catch {} // missing or corrupt: start fresh
-	return { ...saved, fromId: saved.fromId ?? randomUUID(), cursors: saved.cursors ?? {} };
+	return { ...saved, cursors: saved.cursors ?? {} };
 }
 
-// Read-modify-write, so another pi process's settings are never overwritten with stale ones.
+// Read-modify-write, so another pi process's settings are never overwritten with stale ones, and
+// write-then-rename, so a concurrent reader never sees half a file.
 function updateConfig(change: (config: Config) => void): Config {
 	const config = loadConfig();
+	config.fromId ??= randomUUID();
 	change(config);
 	mkdirSync(getAgentDir(), { recursive: true });
-	writeFileSync(file("duet.json"), JSON.stringify(config, null, 2) + "\n");
+	const tmp = file(`duet.json.${process.pid}`);
+	writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n");
+	renameSync(tmp, file("duet.json"));
 	return config;
 }
 
@@ -45,7 +49,10 @@ function lockOwner(): number | undefined {
 }
 
 export default function (pi: ExtensionAPI) {
-	const { fromId, ...saved } = updateConfig(() => {}); // persists a new fromId on first run
+	// Only a first run writes (to persist this install's id); later starts just read.
+	let saved = loadConfig();
+	if (!saved.fromId) saved = updateConfig(() => {});
+	const fromId = saved.fromId!;
 	// Env wins over the file, so one machine can run several test identities.
 	let room = process.env.DUET_ROOM || saved.room;
 	let name = process.env.DUET_NAME || saved.name;
@@ -61,6 +68,8 @@ export default function (pi: ExtensionAPI) {
 	let warned = false;
 
 	const notify = (text: string, level: "info" | "warning" | "error" = "info") => ui?.notify(text, level);
+	// Said wherever the lock stops this window; a crashed owner whose pid got reused needs the hint.
+	const heldBy = (pid: number) => `another pi on this computer (pid ${pid}) has the room — use that one, or if it is gone delete ${file("duet.lock")}`;
 	const setStatus = (text: string) => {
 		status = text;
 		ui?.setStatus("duet", room ? `duet: ${name}${text && ` (${text})`}` : undefined);
@@ -134,6 +143,8 @@ export default function (pi: ExtensionAPI) {
 				return notify(`duet: ${name} in room "${room}" via ${server} — ${sub && !status ? "connected" : status || "off"}; peers seen: ${seen}`);
 			}
 			if (parts[0] === "off") {
+				const owner = !sub && lockOwner();
+				if (owner) return notify(`duet: this window is not in the room; ${heldBy(owner)}`, "error"); // leave its settings alone
 				leave();
 				// Forget the cursor too: rejoining later must not replay hours of backlog as turns.
 				updateConfig((c) => (delete c.cursors[cursorKey()], delete c.room, delete c.name));
@@ -143,7 +154,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
 			const owner = lockOwner();
-			if (owner) return notify(`duet: another pi on this computer (pid ${owner}) is in the room; close it first`, "error");
+			if (owner) return notify(`duet: ${heldBy(owner)}`, "error");
 			[room, name] = parts;
 			if (parts[2]) server = parts[2].replace(/\/+$/, "");
 			updateConfig((c) => Object.assign(c, { room, name, server }));
@@ -173,7 +184,10 @@ export default function (pi: ExtensionAPI) {
 			to: Type.Optional(Type.String({ description: "Recipient name, if the room has more than one other agent" })),
 		}),
 		async execute(_id, params, signal) {
-			if (!room || !name) throw new Error("Not in a duet room. Ask the user to run /duet <room> <name>.");
+			// Only the window that holds the room may send: replies go to whoever is subscribed.
+			const owner = !sub && lockOwner();
+			if (owner) throw new Error(`Not sending: ${heldBy(owner)}.`);
+			if (!sub || !room || !name) throw new Error("Not in a duet room. Ask the user to run /duet <room> <name>.");
 			await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "msg", to: params.to, text: params.text }), signal);
 			return {
 				content: [{ type: "text", text: "sent — not yet answered; their reply will arrive later as a new message" }],

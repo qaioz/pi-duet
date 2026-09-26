@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { envelope, isForMe, MAX_BYTES, publish, subscribe, topicFor } from "../transport.ts";
@@ -43,14 +43,14 @@ async function until(pred, ms, what) {
 
 // ---------- pi agent driver (RPC mode) ----------
 
-function startAgent(name, room, { realModel = false, extraEnv = {}, loadExt = true, agentDir, cwd } = {}) {
+function startAgent(name, room, { realModel = false, extraEnv = {}, loadExt = true, agentDir, cwd, fake } = {}) {
 	cwd ??= join(ROOT, name === "alice" ? "a" : "b");
 	agentDir ??= join(ROOT, `${name}-agent`);
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
 	const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, DUET_ROOM: room, DUET_NAME: name, ...extraEnv };
 	if (!realModel) env.OPENROUTER_API_KEY = "sk-or-invalid-no-cost"; // turns fail fast, nothing billed
-	const args = ["--mode", "rpc", "--no-session", "--provider", "openrouter", "--model", MODEL];
+	const args = ["--mode", "rpc", "--no-session", ...modelArgs(agentDir, fake)];
 	if (loadExt) args.push("-e", EXT);
 	const proc = spawn(PI, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
 	const agent = { name, cwd, agentDir, proc, events: [], stderr: "", exited: false };
@@ -111,6 +111,42 @@ async function settle(agents, quietMs, maxMs) {
 	}
 	return false;
 }
+
+// A free, deterministic stand-in model: its first answer in a turn is always a duet_send call, then
+// it ends the turn quoting the tool results. Lets plumbing exercise the tool path at no cost.
+async function fakeModel() {
+	const sse = (res, delta, finish = null) =>
+		res.write(`data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "fake", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+	const server = createServer(async (req, res) => {
+		let body = "";
+		for await (const c of req) body += c;
+		const { messages } = JSON.parse(body);
+		const toolResults = messages.filter((m) => m.role === "tool").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		if (toolResults.length) {
+			sse(res, { role: "assistant", content: `done: ${toolResults.join(" | ")}` });
+			sse(res, {}, "stop");
+		} else {
+			const call = { index: 0, id: "call1", type: "function", function: { name: "duet_send", arguments: JSON.stringify({ text: "hello from the fake model" }) } };
+			sse(res, { role: "assistant", tool_calls: [call] });
+			sse(res, {}, "tool_calls");
+		}
+		res.end("data: [DONE]\n\n");
+	});
+	await new Promise((r) => server.listen(0, "127.0.0.1", r));
+	return { url: `http://127.0.0.1:${server.address().port}/v1`, close: () => (server.closeAllConnections(), server.close()) };
+}
+function modelArgs(agentDir, fake) {
+	if (!fake) return ["--provider", "openrouter", "--model", MODEL];
+	mkdirSync(agentDir, { recursive: true });
+	const provider = { baseUrl: fake.url, api: "openai-completions", apiKey: "x", compat: { supportsDeveloperRole: false, supportsReasoningEffort: false }, models: [{ id: "fake" }] };
+	writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { fake: provider } }));
+	return ["--provider", "fake", "--model", "fake"];
+}
+const duetSendResults = (a) =>
+	a.events
+		.filter((e) => e.type === "tool_execution_end" && e.toolName === "duet_send")
+		.map((e) => ({ isError: e.isError, text: (e.result?.content ?? []).map((c) => c.text).join("") }));
 
 // ---------- OpenRouter spend ----------
 
@@ -183,6 +219,8 @@ async function plumbing() {
 	const old = envelope({ fromId: "x", from: "alice", kind: "msg", text: "OLD" });
 	await publish(SERVER, topic, old);
 	await sleep(3000); // now surely cached
+	const raw = await (await fetch(`${SERVER}/${topic}/json?poll=1&since=notcachedyet`)).text();
+	check("premise: ntfy answers an unknown since= id with its whole cache", raw.includes(old.id), `${raw.split("\n").filter(Boolean).length} cached message(s) returned`);
 	const replayed = [];
 	sub = subscribe({ server: SERVER, topic, since: { id: "notcachedyet", time: Math.floor(Date.now() / 1000) }, onEnvelope: (env) => replayed.push(env.text) });
 	await sleep(2000);
@@ -241,7 +279,8 @@ async function plumbing() {
 	check("/duet status", true, notifies(bob).find((m) => m.includes("peers seen")).replace(room, "<room>"));
 
 	// A second pi window on the same agent dir must not also join, or both would answer everything.
-	const bob2 = startAgent("bob", room, { cwd: join(ROOT, "b2") });
+	const fake = await fakeModel();
+	const bob2 = startAgent("bob", room, { cwd: join(ROOT, "b2"), fake });
 	await until(() => statusOf(bob2)?.includes("has the room"), 20_000, "second window refused");
 	await peer({ text: "ONE-OWNER" });
 	await until(() => duetIn(bob).some((c) => c.includes("ONE-OWNER")), 20_000, "owner receives");
@@ -251,14 +290,20 @@ async function plumbing() {
 		duetIn(bob2).length === 0,
 		`bob2 status ${JSON.stringify(statusOf(bob2))}; ONE-OWNER injected in bob: 1, in bob2: ${duetIn(bob2).length}`,
 	);
+	// ...and must not send either: the reply would land in the window that holds the room.
+	bob2.prompt("say hi to alice");
+	await until(() => duetSendResults(bob2).length, 20_000, "bob2's duet_send attempt");
+	const [attempt] = duetSendResults(bob2);
+	check("second pi cannot send", attempt.isError && attempt.text.includes("has the room"), JSON.stringify(attempt));
 	await Promise.all([bob.stop(), bob2.stop()]);
 
-	await printModeStaysOut();
+	await printModeStaysOut(fake);
+	fake.close();
 }
 
 // `pi -p` (no UI) in a configured agent dir must not subscribe: it would eat the room's pending
 // messages and advance the saved cursor past them. Counted against a local fake ntfy.
-async function printModeStaysOut() {
+async function printModeStaysOut(fake) {
 	const paths = [];
 	const server = createServer((req, res) => {
 		paths.push(req.url);
@@ -269,13 +314,21 @@ async function printModeStaysOut() {
 	const extraEnv = { DUET_SERVER: `http://127.0.0.1:${server.address().port}` };
 	const agentDir = join(ROOT, "print-agent");
 	const room = freshRoom();
+	const args = ["-p", "say hi", ...modelArgs(agentDir, fake), "-e", EXT];
+	// A join, however brief, takes the lock: watch for it rather than rely on the connection racing exit.
+	const lockEvents = [];
+	const watcher = watch(agentDir, (_type, f) => f === "duet.lock" && lockEvents.push(f));
 	const out = await new Promise((r) => {
-		const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, DUET_ROOM: room, DUET_NAME: "carol", OPENROUTER_API_KEY: "sk-or-invalid-no-cost", ...extraEnv };
+		const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, DUET_ROOM: room, DUET_NAME: "carol", ...extraEnv };
 		// stdin "ignore": with a pipe, pi -p waits for EOF on it before running.
-		const p = spawn(PI, ["-p", "hi", "--provider", "openrouter", "--model", MODEL, "-e", EXT], { cwd: ROOT, env, stdio: "ignore" });
+		const p = spawn(PI, args, { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+		let text = "";
+		p.stdout.on("data", (d) => (text += d));
 		const kill = setTimeout(() => p.kill("SIGKILL"), 60_000);
-		p.on("exit", (code, sig) => (clearTimeout(kill), r(code ?? sig)));
+		p.on("exit", (code, sig) => (clearTimeout(kill), r(`exit=${code ?? sig} ${JSON.stringify(text.trim().slice(0, 120))}`)));
 	});
+	await sleep(500);
+	watcher.close();
 	const printConnections = paths.length;
 	// Control: the same setup in RPC mode does reach the fake server, so zero above means something.
 	const control = startAgent("carol", room, { agentDir, cwd: join(ROOT, "c"), extraEnv });
@@ -283,7 +336,11 @@ async function printModeStaysOut() {
 	await control.stop();
 	server.closeAllConnections();
 	server.close();
-	check("pi -p does not join the room", printConnections === 0, `pi -p exit=${out}, subscriptions from it: ${printConnections}; RPC control opened ${paths.length - printConnections}`);
+	check(
+		"pi -p does not join the room or send",
+		printConnections === 0 && lockEvents.length === 0 && out.includes("Not in a duet room"),
+		`pi -p ${out}; lock file events: ${lockEvents.length}; subscriptions: ${printConnections}; RPC control opened ${paths.length - printConnections}`,
+	);
 }
 
 // Dedupe and watchdog need a misbehaving server, so they run against a local fake ntfy.

@@ -89,7 +89,9 @@ export function subscribe(opts: {
 			evt = JSON.parse(line);
 			if (evt.event !== "message" || typeof evt.id !== "string" || seen.has(evt.id)) return;
 			// ntfy answers a since= id it doesn't have (expired, or <1s old and not yet cached — observed)
-			// with its whole cache. Skip everything at or before the point we resumed from.
+			// with its whole cache. Skip everything at or before the point we resumed from. Times are whole
+			// seconds, so an older message from the cursor's own second can come through twice: a rare
+			// duplicate beats a lost message.
 			if (floor && (evt.id === floor.id || evt.time < floor.time)) return;
 			env = JSON.parse(evt.message);
 		} catch {
