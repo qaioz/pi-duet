@@ -1,0 +1,14 @@
+{
+  "name": "pi-duet",
+  "version": "0.1.0",
+  "description": "Let two pi coding agents on two computers talk to each other through a shared room (ntfy.sh).",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "test": "node test/e2e.mjs plumbing"
+  }
+}
