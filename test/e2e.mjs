@@ -338,7 +338,7 @@ async function printModeStaysOut(fake) {
 	server.close();
 	check(
 		"pi -p does not join the room or send",
-		printConnections === 0 && lockEvents.length === 0 && out.includes("Not in a duet room"),
+		printConnections === 0 && lockEvents.length === 0 && out.includes("can't use the duet room"),
 		`pi -p ${out}; lock file events: ${lockEvents.length}; subscriptions: ${printConnections}; RPC control opened ${paths.length - printConnections}`,
 	);
 }

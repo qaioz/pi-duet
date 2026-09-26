@@ -140,7 +140,10 @@ export default function (pi: ExtensionAPI) {
 			if (parts.length === 0) {
 				if (!room) return notify("duet: not in a room. Use /duet <room> <name>");
 				const seen = [...peers].map(([p, at]) => `${p} (${at.toLocaleTimeString()})`).join(", ") || "none yet";
-				return notify(`duet: ${name} in room "${room}" via ${server} — ${sub && !status ? "connected" : status || "off"}; peers seen: ${seen}`);
+				const owner = !sub && lockOwner(); // re-checked: the owner may have gone since this window started
+				if (!sub) setStatus(owner ? `off: pi pid ${owner} has the room` : "off: /duet <room> <name> to join here");
+				const state = sub ? status || "connected" : owner ? heldBy(owner) : "off here — /duet <room> <name> to join";
+				return notify(`duet: ${name} in room "${room}" via ${server} — ${state}; peers seen: ${seen}`);
 			}
 			if (parts[0] === "off") {
 				const owner = !sub && lockOwner();
@@ -185,6 +188,7 @@ export default function (pi: ExtensionAPI) {
 			to: Type.Optional(Type.String({ description: "Recipient name, if the room has more than one other agent" })),
 		}),
 		async execute(_id, params, signal) {
+			if (!ui) throw new Error("pi -p (no UI) can't use the duet room: use the interactive pi window that is in it.");
 			// Only the window that holds the room may send: replies go to whoever is subscribed.
 			const owner = !sub && lockOwner();
 			if (owner) throw new Error(`Not sending: ${heldBy(owner)}.`);

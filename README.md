@@ -27,7 +27,8 @@ example from this page), and send it to your friend privately.
 
 pi remembers the room, so next time just start `pi` and you are back in. Only one pi window per
 computer is in the room at a time: the first one opened. If you close it, run `/duet <room> <name>`
-in another window to move the room there. `pi -p` one-shots never join.
+in another window to move the room there. Only that window can send; `pi -p` one-shots can neither
+join nor send.
 
 > This repo is private for now: you need to be added as a collaborator, and `git` must be able to
 > read GitHub (e.g. `gh auth login`, or a credential helper) for `pi install` to clone it.
@@ -67,7 +68,7 @@ Commands:
 |---|---|
 | `/duet` | status: room, name, connected?, peers seen |
 | `/duet <room> <name> [server]` | join (and remember) a room |
-| `/duet off` | leave and forget the room |
+| `/duet off` | leave and forget the room (from the window that is in it) |
 
 The footer shows `duet: <name>` while connected.
 
