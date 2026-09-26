@@ -80,7 +80,7 @@ export default function (pi: ExtensionAPI) {
 		peers.set(env.from, new Date());
 		if (env.kind === "join") return notify(`duet: ${env.from} joined`);
 
-		const content = `[duet] from ${env.from} (the other person's agent, on their computer):\n\n${env.text}\n\nReply with duet_send if a reply is needed.`;
+		const content = `[duet] from ${env.from} (the other person's agent, on their computer):\n\n${env.text}\n\nOnly your own user sees your text replies: to answer ${env.from}, call duet_send.`;
 		const message = { customType: "duet", content, display: true };
 		if (autoTurns < MAX_AUTO) {
 			autoTurns++;
@@ -176,6 +176,7 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Send a message to the other person's agent (duet room)",
 		promptGuidelines: [
 			"Messages from the other person's agent arrive as [duet] messages. When one asks for something, do it with your normal tools, then report the result back with duet_send. They cannot see your screen: send real tool output, never a reconstruction of it.",
+			"Your plain-text replies are shown only to your own user. The other agent sees nothing you write unless you send it with duet_send.",
 			"Use duet_send when the user asks you to tell, ask or have the other person's agent do something. duet_send does not wait for an answer — never poll or wait for a reply.",
 			"Do not use duet_send for pure thank-you or acknowledgement messages; when nothing is left to do or say, stop without sending.",
 		],
