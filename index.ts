@@ -1,41 +1,59 @@
 // pi-duet: two pi sessions on two computers talk through a shared room.
 // Incoming messages become new turns in this session; the agent replies with duet_send.
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { type Envelope, envelope, isForMe, publish, type Subscription, subscribe, topicFor } from "./transport.ts";
+import { type Cursor, type Envelope, envelope, isForMe, publish, subscribe, topicFor } from "./transport.ts";
 
-type Config = { room?: string; name?: string; server?: string; fromId: string; lastIds: Record<string, string> };
+type Config = { room?: string; name?: string; server?: string; fromId: string; cursors: Record<string, Cursor> };
 
 const DEFAULT_SERVER = "https://ntfy.sh";
-const MAX_AUTO = process.env.DUET_MAX_AUTO ? Number(process.env.DUET_MAX_AUTO) : 8;
+const MAX_AUTO = Number(process.env.DUET_MAX_AUTO) || 8;
 
-const configPath = () => join(getAgentDir(), "duet.json");
+const file = (name: string) => join(getAgentDir(), name);
 
 function loadConfig(): Config {
-	const file: Partial<Config> = existsSync(configPath()) ? JSON.parse(readFileSync(configPath(), "utf8")) : {};
-	const config: Config = { ...file, fromId: file.fromId ?? randomUUID(), lastIds: file.lastIds ?? {} };
-	if (!file.fromId) saveConfig(config);
+	let saved: Partial<Config> = {};
+	try {
+		saved = JSON.parse(readFileSync(file("duet.json"), "utf8"));
+	} catch {} // missing or corrupt: start fresh
+	return { ...saved, fromId: saved.fromId ?? randomUUID(), cursors: saved.cursors ?? {} };
+}
+
+// Read-modify-write, so another pi process's settings are never overwritten with stale ones.
+function updateConfig(change: (config: Config) => void): Config {
+	const config = loadConfig();
+	change(config);
+	mkdirSync(getAgentDir(), { recursive: true });
+	writeFileSync(file("duet.json"), JSON.stringify(config, null, 2) + "\n");
 	return config;
 }
 
-function saveConfig(config: Config) {
-	mkdirSync(dirname(configPath()), { recursive: true });
-	writeFileSync(configPath(), JSON.stringify(config, null, 2) + "\n");
+// Only one pi process per agent dir may be in the room, or every open window would answer
+// every message. The lock holds the owner's pid; a dead owner's lock is ignored.
+function lockOwner(): number | undefined {
+	try {
+		const pid = Number(readFileSync(file("duet.lock"), "utf8"));
+		if (pid === process.pid) return undefined;
+		process.kill(pid, 0); // throws if that process is gone
+		return pid;
+	} catch {
+		return undefined;
+	}
 }
 
 export default function (pi: ExtensionAPI) {
-	const config = loadConfig();
+	const { fromId, ...saved } = updateConfig(() => {}); // persists a new fromId on first run
 	// Env wins over the file, so one machine can run several test identities.
-	let room = process.env.DUET_ROOM || config.room;
-	let name = process.env.DUET_NAME || config.name;
-	let server = (process.env.DUET_SERVER || config.server || DEFAULT_SERVER).replace(/\/+$/, "");
+	let room = process.env.DUET_ROOM || saved.room;
+	let name = process.env.DUET_NAME || saved.name;
+	let server = (process.env.DUET_SERVER || saved.server || DEFAULT_SERVER).replace(/\/+$/, "");
+	const cursorKey = () => `${server} ${room}`;
 
-	let sub: Subscription | undefined;
-	let connected = false;
-	let lastError: string | undefined;
+	let sub: { stop(): void } | undefined;
+	let status = "";
 	let ui: ExtensionContext["ui"] | undefined;
 	const peers = new Map<string, Date>();
 	// Peer-triggered turns since the human last typed — stops two polite agents ping-ponging forever.
@@ -43,11 +61,13 @@ export default function (pi: ExtensionAPI) {
 	let warned = false;
 
 	const notify = (text: string, level: "info" | "warning" | "error" = "info") => ui?.notify(text, level);
-	const showStatus = () =>
-		ui?.setStatus("duet", room ? `duet: ${name}${connected ? "" : lastError ? ` (offline: ${lastError})` : " (connecting…)"}` : undefined);
+	const setStatus = (text: string) => {
+		status = text;
+		ui?.setStatus("duet", room ? `duet: ${name}${text && ` (${text})`}` : undefined);
+	};
 
 	function onEnvelope(env: Envelope) {
-		if (!isForMe(env, config.fromId, name!)) return;
+		if (!isForMe(env, fromId, name!)) return;
 		peers.set(env.from, new Date());
 		if (env.kind === "join") return notify(`duet: ${env.from} joined`);
 
@@ -63,76 +83,73 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	function join() {
-		const joined = room!;
-		sub?.stop();
-		connected = false;
+	function joinRoom() {
+		leave();
+		const owner = lockOwner();
+		if (owner) return setStatus(`off: pi pid ${owner} has the room`);
+		writeFileSync(file("duet.lock"), String(process.pid));
+		const key = cursorKey();
+		setStatus("connecting…");
 		sub = subscribe({
 			server,
-			topic: topicFor(joined),
-			since: config.lastIds[joined],
+			topic: topicFor(room!),
+			since: loadConfig().cursors[key],
 			onEnvelope,
-			onCursor(ntfyId) {
-				config.lastIds[joined] = ntfyId; // resume point for catch-up after a restart
-				saveConfig(config);
-			},
-			onState(isUp, error) {
-				connected = isUp;
-				lastError = error;
-				showStatus();
-			},
+			onCursor: (cursor) => updateConfig((c) => (c.cursors[key] = cursor)), // resume point after a restart
+			onState: (isUp, error) => setStatus(isUp ? "" : `offline: ${error}`),
 		});
-		showStatus();
 	}
 
 	function leave() {
-		sub?.stop();
+		if (!sub) return;
+		sub.stop();
 		sub = undefined;
-		connected = false;
+		try {
+			if (readFileSync(file("duet.lock"), "utf8") === String(process.pid)) rmSync(file("duet.lock"));
+		} catch {}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
-		if (room && name) join();
+		// No UI means `pi -p` or similar one-shot: it must not grab the room or eat its messages.
+		if (ui && room && name) joinRoom();
 	});
 
 	// The runtime is rebuilt on /new, /resume, /reload…; session_start will rejoin.
 	pi.on("session_shutdown", async () => leave());
 
 	pi.on("input", async (event) => {
-		if (event.source !== "extension") {
-			autoTurns = 0;
-			warned = false;
-		}
+		if (event.source !== "extension") [autoTurns, warned] = [0, false];
 	});
 
 	pi.registerCommand("duet", {
 		description: "Join a duet room: /duet <room> <name> [server] · /duet off · /duet (status)",
 		handler: async (args, ctx) => {
 			ui = ctx.hasUI ? ctx.ui : undefined;
+			[autoTurns, warned] = [0, false]; // the human is here
 			const parts = args.trim().split(/\s+/).filter(Boolean);
 			if (parts.length === 0) {
 				if (!room) return notify("duet: not in a room. Use /duet <room> <name>");
 				const seen = [...peers].map(([p, at]) => `${p} (${at.toLocaleTimeString()})`).join(", ") || "none yet";
-				return notify(`duet: ${name} in room "${room}" via ${server} — ${connected ? "connected" : `offline${lastError ? ` (${lastError})` : ""}`}; peers seen: ${seen}`);
+				return notify(`duet: ${name} in room "${room}" via ${server} — ${sub && !status ? "connected" : status || "off"}; peers seen: ${seen}`);
 			}
 			if (parts[0] === "off") {
 				leave();
+				// Forget the cursor too: rejoining later must not replay hours of backlog as turns.
+				updateConfig((c) => (delete c.cursors[cursorKey()], delete c.room, delete c.name));
 				room = name = undefined;
-				delete config.room;
-				delete config.name;
-				saveConfig(config);
-				showStatus();
+				setStatus("");
 				return notify("duet: left the room");
 			}
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
+			const owner = lockOwner();
+			if (owner) return notify(`duet: another pi on this computer (pid ${owner}) is in the room; close it first`, "error");
 			[room, name] = parts;
 			if (parts[2]) server = parts[2].replace(/\/+$/, "");
-			Object.assign(config, { room, name, server });
-			saveConfig(config);
-			join();
+			updateConfig((c) => Object.assign(c, { room, name, server }));
+			joinRoom();
 			try {
-				await publish(server, topicFor(room), envelope({ fromId: config.fromId, from: name, kind: "join" }));
+				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join" }));
 				notify(`duet: joined as ${name}`);
 			} catch (err) {
 				notify(`duet: joined, but announcing failed: ${(err as Error).message}`, "warning");
@@ -155,10 +172,9 @@ export default function (pi: ExtensionAPI) {
 			text: Type.String({ description: "The message. Max ~3.8KB; split longer content into several calls." }),
 			to: Type.Optional(Type.String({ description: "Recipient name, if the room has more than one other agent" })),
 		}),
-		async execute(_id, params) {
+		async execute(_id, params, signal) {
 			if (!room || !name) throw new Error("Not in a duet room. Ask the user to run /duet <room> <name>.");
-			const env = envelope({ fromId: config.fromId, from: name, kind: "msg", to: params.to, text: params.text });
-			await publish(server, topicFor(room), env);
+			await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "msg", to: params.to, text: params.text }), signal);
 			return {
 				content: [{ type: "text", text: "sent — not yet answered; their reply will arrive later as a new message" }],
 				details: {},

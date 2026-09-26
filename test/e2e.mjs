@@ -43,8 +43,8 @@ async function until(pred, ms, what) {
 
 // ---------- pi agent driver (RPC mode) ----------
 
-function startAgent(name, room, { realModel = false, extraEnv = {}, loadExt = true, agentDir } = {}) {
-	const cwd = join(ROOT, name === "alice" ? "a" : "b");
+function startAgent(name, room, { realModel = false, extraEnv = {}, loadExt = true, agentDir, cwd } = {}) {
+	cwd ??= join(ROOT, name === "alice" ? "a" : "b");
 	agentDir ??= join(ROOT, `${name}-agent`);
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
@@ -126,19 +126,17 @@ async function guardBudget() {
 	if (u > BUDGET) throw new Error(`budget exceeded: usage $${u} > $${BUDGET}; real-model testing stopped`);
 	return u;
 }
-async function withSpend(name, fn) {
-	const before = await guardBudget();
+// What pi itself billed for every model call (OpenRouter's key counter lags too much to diff).
+const cost = (a) =>
+	a.events
+		.filter((e) => e.type === "message_end" && e.message?.role === "assistant")
+		.reduce((sum, e) => sum + (e.message.usage?.cost?.total ?? 0), 0);
+async function withSpend(name, agents, fn) {
+	await guardBudget();
 	try {
 		await fn();
 	} finally {
-		// OpenRouter's usage counter lags by 10s+; wait for it to move (or give up after 60s).
-		let after = await usage();
-		for (let i = 0; i < 12 && after === before; i++) {
-			await sleep(5000);
-			after = await usage();
-		}
-		log(`$ spent in ${name}: ${(after - before).toFixed(4)} (key usage now $${after.toFixed(4)})`);
-		results.push({ name: `${name}: spend`, ok: true, evidence: `$${(after - before).toFixed(4)}` });
+		log(`$ spent in ${name}: ${agents.reduce((sum, a) => sum + cost(a), 0).toFixed(4)} (per pi's usage records)`);
 	}
 }
 
@@ -149,7 +147,7 @@ async function plumbing() {
 	const topic = topicFor(freshRoom());
 	const got = [];
 	let cursor;
-	let sub = subscribe({ server: SERVER, topic, onEnvelope: (env) => got.push({ env }), onCursor: (id) => (cursor = id) });
+	let sub = subscribe({ server: SERVER, topic, onEnvelope: (env) => got.push({ env }), onCursor: (c) => (cursor = c) });
 	await sleep(2000);
 	const e1 = envelope({ fromId: "x", from: "alice", kind: "msg", text: "héllo   ünïcode" });
 	await publish(SERVER, topic, e1);
@@ -177,8 +175,21 @@ async function plumbing() {
 	check(
 		"transport catch-up via since",
 		caught.length === 1 && caught[0].id === e2.id,
-		`after resubscribe since=${lastId}: ${caught.length} message(s): ${caught.map((e) => e.text).join(" | ")}`,
+		`after resubscribe since=${lastId.id}: ${caught.length} message(s): ${caught.map((e) => e.text).join(" | ")}`,
 	);
+
+	// ntfy.sh answers a since= id it doesn't have (e.g. <1s old, not yet cached) with its whole cache.
+	// Resuming must still not replay what came before the cursor.
+	const old = envelope({ fromId: "x", from: "alice", kind: "msg", text: "OLD" });
+	await publish(SERVER, topic, old);
+	await sleep(3000); // now surely cached
+	const replayed = [];
+	sub = subscribe({ server: SERVER, topic, since: { id: "notcachedyet", time: Math.floor(Date.now() / 1000) }, onEnvelope: (env) => replayed.push(env.text) });
+	await sleep(2000);
+	await publish(SERVER, topic, envelope({ fromId: "x", from: "alice", kind: "msg", text: "NEW" }));
+	await until(() => replayed.includes("NEW"), 15_000, "NEW after unknown-id resume");
+	sub.stop();
+	check("resume from an id ntfy doesn't know replays nothing older", replayed.join() === "NEW", `delivered: ${replayed.join(", ")}`);
 
 	check(
 		"isForMe filter",
@@ -211,7 +222,7 @@ async function plumbing() {
 	await until(() => notifies(bob).some((m) => m.includes("alice joined")), 15_000, "join notify");
 	check("join → notify only, no turn", duetIn(bob).length === 1, `notify: "duet: alice joined"; injected still ${duetIn(bob).length}`);
 
-	// Kill bob, send while he is down, restart: lastIds in duet.json drives the catch-up.
+	// Kill bob, send while he is down, restart: the cursor in duet.json drives the catch-up.
 	await bob.stop();
 	await peer({ text: "MISSED-WHILE-OFFLINE" });
 	bob = startAgent("bob", room);
@@ -228,7 +239,51 @@ async function plumbing() {
 	bob.prompt("/duet");
 	await until(() => notifies(bob).some((m) => m.includes("peers seen")), 10_000, "status");
 	check("/duet status", true, notifies(bob).find((m) => m.includes("peers seen")).replace(room, "<room>"));
-	await bob.stop();
+
+	// A second pi window on the same agent dir must not also join, or both would answer everything.
+	const bob2 = startAgent("bob", room, { cwd: join(ROOT, "b2") });
+	await until(() => statusOf(bob2)?.includes("has the room"), 20_000, "second window refused");
+	await peer({ text: "ONE-OWNER" });
+	await until(() => duetIn(bob).some((c) => c.includes("ONE-OWNER")), 20_000, "owner receives");
+	await sleep(3000);
+	check(
+		"second pi on the same agent dir stays out",
+		duetIn(bob2).length === 0,
+		`bob2 status ${JSON.stringify(statusOf(bob2))}; ONE-OWNER injected in bob: 1, in bob2: ${duetIn(bob2).length}`,
+	);
+	await Promise.all([bob.stop(), bob2.stop()]);
+
+	await printModeStaysOut();
+}
+
+// `pi -p` (no UI) in a configured agent dir must not subscribe: it would eat the room's pending
+// messages and advance the saved cursor past them. Counted against a local fake ntfy.
+async function printModeStaysOut() {
+	const paths = [];
+	const server = createServer((req, res) => {
+		paths.push(req.url);
+		res.writeHead(200, { "content-type": "application/x-ndjson" });
+		res.write(JSON.stringify({ event: "open" }) + "\n");
+	});
+	await new Promise((r) => server.listen(0, "127.0.0.1", r));
+	const extraEnv = { DUET_SERVER: `http://127.0.0.1:${server.address().port}` };
+	const agentDir = join(ROOT, "print-agent");
+	const room = freshRoom();
+	const out = await new Promise((r) => {
+		const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, DUET_ROOM: room, DUET_NAME: "carol", OPENROUTER_API_KEY: "sk-or-invalid-no-cost", ...extraEnv };
+		// stdin "ignore": with a pipe, pi -p waits for EOF on it before running.
+		const p = spawn(PI, ["-p", "hi", "--provider", "openrouter", "--model", MODEL, "-e", EXT], { cwd: ROOT, env, stdio: "ignore" });
+		const kill = setTimeout(() => p.kill("SIGKILL"), 60_000);
+		p.on("exit", (code, sig) => (clearTimeout(kill), r(code ?? sig)));
+	});
+	const printConnections = paths.length;
+	// Control: the same setup in RPC mode does reach the fake server, so zero above means something.
+	const control = startAgent("carol", room, { agentDir, cwd: join(ROOT, "c"), extraEnv });
+	await until(() => paths.length > printConnections, 20_000, "control agent connects");
+	await control.stop();
+	server.closeAllConnections();
+	server.close();
+	check("pi -p does not join the room", printConnections === 0, `pi -p exit=${out}, subscriptions from it: ${printConnections}; RPC control opened ${paths.length - printConnections}`);
 }
 
 // Dedupe and watchdog need a misbehaving server, so they run against a local fake ntfy.
@@ -271,7 +326,7 @@ async function pair(extraEnv) {
 
 async function talk() {
 	const { alice, bob } = await pair();
-	await withSpend("talk", async () => {
+	await withSpend("talk", [alice, bob], async () => {
 		alice.prompt("ask bob what 17*23 is");
 		await until(() => duetIn(bob).length, 90_000, "bob receives the question");
 		await until(() => duetIn(alice).some((c) => c.includes("391")), 120_000, "alice receives 391");
@@ -285,7 +340,7 @@ async function talk() {
 
 async function doWork() {
 	const { alice, bob } = await pair();
-	await withSpend("do", async () => {
+	await withSpend("do", [alice, bob], async () => {
 		alice.prompt("ask bob's agent to create hello.txt containing 'hi from bob' in its folder and run `ls -la` and send you the output");
 		await until(() => duetIn(alice).some((c) => c.includes("hello.txt")), 180_000, "alice receives ls output");
 		await settle([alice, bob], 10_000, 60_000);
@@ -314,19 +369,22 @@ async function doWork() {
 async function loopCap() {
 	const cap = 8;
 	const { alice, bob } = await pair({ DUET_MAX_AUTO: String(cap) });
-	await withSpend("loop", async () => {
+	await withSpend("loop", [alice, bob], async () => {
 		bob.prompt("Whenever alice's agent messages you, always answer with duet_send and ask her a new question, to keep the conversation going forever. Don't do anything else now.");
 		await settle([bob], 3000, 60_000);
 		alice.prompt("Start a conversation with bob's agent via duet_send: ask him a question about his favourite food. Always reply and keep the conversation going forever.");
 		const stopped = await settle([alice, bob], 30_000, 8 * 60_000);
 		check("loop: conversation came to rest", stopped, stopped ? "both idle for 30s" : "still running after 8 min");
 	});
-	const triggered = (a) => agentStarts(a) - 1; // minus the one human prompt
-	const warn = (a) => notifies(a).find((m) => m.includes("auto-reply limit"));
+	// The side that hit the cap must have had exactly `cap` messages delivered as turns, at least one
+	// more held back (the peer sent more than cap), and no agent run started after the warning.
+	const warnAt = (a) => a.events.find((e) => e.method === "notify" && e.message.includes("auto-reply limit"))?.at;
+	const [capped, other] = warnAt(alice) ? [alice, bob] : [bob, alice];
+	const after = warnAt(capped) ? capped.events.filter((e) => e.type === "agent_start" && e.at > warnAt(capped)).length : -1;
 	check(
 		"loop: capped",
-		triggered(alice) <= cap && triggered(bob) <= cap && (warn(alice) || warn(bob)),
-		`peer-triggered turns: alice=${triggered(alice)} bob=${triggered(bob)} (cap ${cap}); duet_send calls: alice=${sends(alice).length} bob=${sends(bob).length}; warnings: alice=${JSON.stringify(warn(alice))} bob=${JSON.stringify(warn(bob))}`,
+		!!warnAt(capped) && duetIn(capped).length === cap && sends(other).length > cap && after === 0,
+		`${capped.name} warned; ${capped.name} got ${duetIn(capped).length} [duet] turns (cap ${cap}) of ${sends(other).length} sent by ${other.name}; runs started after the warning: ${after}. ${other.name} got ${duetIn(other).length} of ${sends(capped).length}.`,
 	);
 	await Promise.all([alice.stop(), bob.stop()]);
 }

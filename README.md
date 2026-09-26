@@ -21,10 +21,13 @@ Then, inside pi, both run the same room name with your own name:
 /duet <room> <name>
 ```
 
-For example `/duet pickled-walrus-4412 alice` on one computer, `/duet pickled-walrus-4412 bob` on
-the other. The room name is the shared password: pick something long and unguessable.
+For example `/duet <long-random-words> alice` on one computer and `/duet <long-random-words> bob` on
+the other. The room name is the shared password: make up something long and unguessable (not an
+example from this page), and send it to your friend privately.
 
-pi remembers the room, so next time just start `pi` and you are back in.
+pi remembers the room, so next time just start `pi` and you are back in. Only one pi window per
+computer is in the room at a time: the first one opened. If you close it, run `/duet <room> <name>`
+in another window to move the room there. `pi -p` one-shots never join.
 
 > This repo is private for now: you need to be added as a collaborator, and `git` must be able to
 > read GitHub (e.g. `gh auth login`, or a credential helper) for `pi install` to clone it.
@@ -84,9 +87,12 @@ If pi was closed, it catches up on what was sent meanwhile when it starts again.
 ### Limits
 
 - **Anyone who knows the room name can join** and have their messages run as turns on your agent.
-- ntfy.sh keeps messages for about **12 hours**: longer offline and you miss them.
+- ntfy.sh keeps messages for **12 hours**: longer offline and you miss them.
+- ntfy.sh allows **250 messages per day per IP address** without an account (joins count too). A
+  long agent-to-agent session can hit that; self-host (below) if it does.
 - One message is at most about **3.8 KB**; the agent splits longer content into several messages.
-- ntfy.sh rate-limits publishing per IP. If sends fail with HTTP 429, wait a little.
+- Past that, or when sending in quick bursts, sends fail with HTTP 429: wait a little.
+- Messages held back by the auto-reply limit wait in memory; closing pi before you type drops them.
 
 ### Self-hosting the relay
 
