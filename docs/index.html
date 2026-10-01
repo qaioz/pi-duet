@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>duet — pair your coding agent with a friend's</title>
+<style>
+	:root { --fg: #1d1d1f; --muted: #6b6b70; --line: #e3e3e6; --bg: #fff; --code: #f5f5f7; --accent: #2457d6; --warn: #fff4e5; --warn-line: #f0b45b; }
+	@media (prefers-color-scheme: dark) {
+		:root { --fg: #ececf0; --muted: #a0a0a8; --line: #33333a; --bg: #151517; --code: #202024; --accent: #7aa2ff; --warn: #2d2414; --warn-line: #9a6a1c; }
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
+	main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+	h1 { font-size: 28px; margin: 0 0 4px; }
+	h2 { font-size: 19px; margin: 32px 0 8px; }
+	h3 { font-size: 16px; margin: 20px 0 6px; }
+	p { margin: 8px 0; }
+	.muted { color: var(--muted); }
+	button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--code); color: var(--fg); border-radius: 8px; padding: 6px 12px; }
+	button.primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 10px 18px; font-weight: 600; }
+	button:disabled { opacity: .5; cursor: default; }
+	input { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); width: 220px; }
+	.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+	.cmd { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
+	.cmd code { flex: 1; display: block; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 13.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+	.cmd .n { width: 20px; text-align: right; color: var(--muted); padding-top: 8px; font-size: 13px; }
+	.cmd .where { color: var(--muted); font-size: 12px; display: block; margin-bottom: 2px; font-family: system-ui, sans-serif; }
+	.warn { background: var(--warn); border: 1px solid var(--warn-line); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+	.tabs { display: flex; gap: 6px; margin: 12px 0 4px; flex-wrap: wrap; }
+	.tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+	.case { border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px 10px; margin: 12px 0; }
+	#people li { margin: 2px 0; }
+	.hidden { display: none !important; }
+	a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+	<h1>duet</h1>
+	<p class="muted">Pair your coding agent with a friend's. Ask yours to ask theirs: “ask nika's agent to run the tests and send me the failures”. Works with <b>pi</b>, <b>Claude Code</b> and <b>Codex</b>, in any mix. No accounts, nothing to host.</p>
+
+	<section id="start">
+		<h2>1. Start a room</h2>
+		<p>You get an invite link. Send it to the other developer by any channel you like.</p>
+		<button class="primary" id="start-btn">Start a room</button>
+	</section>
+
+	<section id="room" class="hidden">
+		<h2>Invite link</h2>
+		<div class="cmd"><code id="invite"></code><button data-copy="invite">Copy</button></div>
+		<p id="relay" class="muted"></p>
+		<div class="warn"><b>Whoever has this link can make your agent run commands on your machine.</b> Share it only with someone you trust. duet adds no permission prompts of its own: your agent's own permission mode decides what the other agent's requests can do.</div>
+
+		<h2>2. Your name</h2>
+		<div class="row"><input id="name" placeholder="e.g. nika" maxlength="24" autocomplete="off" spellcheck="false"><span class="muted">letters, digits, - and _</span></div>
+
+		<h2>3. Your agent</h2>
+		<div class="tabs" role="tablist">
+			<button role="tab" data-agent="pi" aria-selected="true">pi</button>
+			<button role="tab" data-agent="claude" aria-selected="false">Claude Code</button>
+			<button role="tab" data-agent="codex" aria-selected="false">Codex</button>
+		</div>
+		<div id="commands"></div>
+
+		<h2>4. Talk to your agent</h2>
+		<p>Just ask it: “ask nika's agent what it thinks of this plan”, “ask nika's agent to run the tests and send me the failures”. The request lands in the other agent's session, it does the work with its own tools, and the answer comes back into yours.</p>
+
+		<h2>Who's in the room</h2>
+		<ul id="people"><li class="muted">nobody yet — agents show up here when they join</li></ul>
+		<p class="muted">Read live from the relay by this page. This page never sends anything.</p>
+	</section>
+
+	<h2>How it works</h2>
+	<p class="muted">The room code lives only in the part of the link after <code>#</code>, which browsers never send to a server. Messages travel through <a href="https://ntfy.sh">ntfy.sh</a>, a free public relay, on a topic named after a hash of the room code. Claude Code and Codex join through a small MCP server run with <code>npx</code> (needs Node 20 or newer); pi through its own extension. Source, limits and safety notes: <a href="https://github.com/qaioz/pi-duet">github.com/qaioz/pi-duet</a>.</p>
+</main>
+
+<script>
+"use strict";
+const PKG = "github:qaioz/pi-duet";
+// ?relay=<url> picks another ntfy server (self-hosted); the commands then carry it too.
+const DEFAULT_RELAY = "https://ntfy.sh";
+const RELAY = (new URLSearchParams(location.search).get("relay") || DEFAULT_RELAY).replace(/\/+$/, "");
+const custom = RELAY !== DEFAULT_RELAY;
+const $ = (id) => document.getElementById(id);
+
+// 16 random bytes → 26 base32 characters: 128 bits, safe in URLs, shells and pi's /duet.
+function newRoom() {
+	const bytes = crypto.getRandomValues(new Uint8Array(16));
+	const abc = "abcdefghijklmnopqrstuvwxyz234567";
+	let bits = 0, value = 0, out = "";
+	for (const b of bytes) {
+		value = (value << 8) | b;
+		bits += 8;
+		while (bits >= 5) {
+			out += abc[(value >>> (bits - 5)) & 31];
+			bits -= 5;
+		}
+	}
+	if (bits) out += abc[(value << (5 - bits)) & 31];
+	return out;
+}
+const roomFromHash = () => (/^#([a-z2-7]{20,64})$/.exec(location.hash) || [])[1];
+const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24);
+
+// Each case: [where it is typed, the command]. {room}, {name} and the relay are filled in.
+const AGENTS = {
+	pi: {
+		open: {
+			title: "pi already open (keeps your conversation)",
+			steps: [
+				["in pi (skip if pi-duet is installed)", "!!pi install git:github.com/qaioz/pi-duet"],
+				["in pi", "/reload"],
+				["in pi", "/duet {room} {name}{pi-srv}"],
+			],
+			note: "Paste one line at a time: pasting them together sends them as one message.",
+		},
+		fresh: {
+			title: "Starting fresh",
+			steps: [
+				["terminal", "pi install git:github.com/qaioz/pi-duet"],
+				["terminal, in your project folder", "{env-srv}DUET_ROOM={room} DUET_NAME={name} pi"],
+			],
+			note: "Needs pi (npm i -g @mariozechner/pi-coding-agent) and a model login. On Windows, start pi and use the three in-pi lines above instead.",
+		},
+		receive: "Messages from the other agent arrive in pi as new turns by themselves.",
+	},
+	claude: {
+		open: {
+			title: "Claude Code already open (keeps your conversation)",
+			steps: [
+				["in Claude Code", `!claude mcp add duet -- npx -y ${PKG} --room {room} --name {name}{arg-srv}`],
+				["in Claude Code", "/exit"],
+				["terminal, same folder", "claude --continue --allowedTools mcp__duet"],
+				["in Claude Code", "listen on duet"],
+			],
+			note: "Claude Code loads new MCP servers only at start, so it restarts once; --continue brings the conversation back.",
+		},
+		fresh: {
+			title: "Starting fresh",
+			steps: [
+				["terminal, in your project folder", `claude mcp add duet -- npx -y ${PKG} --room {room} --name {name}{arg-srv}`],
+				["terminal", "claude --allowedTools mcp__duet"],
+				["in Claude Code", "listen on duet"],
+			],
+			note: "--allowedTools mcp__duet pre-allows only duet's own tools. On native Windows, put cmd /c before npx.",
+		},
+		receive: "“listen on duet” starts a wait that moves to the background after about two minutes; when a message comes, Claude Code wakes up, handles it and listens again. If it has stopped listening, say “check duet”.",
+	},
+	codex: {
+		open: {
+			title: "Codex already open (keeps your conversation)",
+			steps: [
+				["in Codex", `!npx -y ${PKG} setup codex --room {room} --name {name}{arg-srv}`],
+				["in Codex", "/quit"],
+				["terminal, same folder", "codex resume --last"],
+				["in Codex", "check duet"],
+			],
+			note: "Codex loads MCP servers only at start; resume brings the conversation back.",
+		},
+		fresh: {
+			title: "Starting fresh",
+			steps: [
+				["terminal", `npx -y ${PKG} setup codex --room {room} --name {name}{arg-srv}`],
+				["terminal, in your project folder", "codex"],
+				["in Codex", "check duet"],
+			],
+			note: "setup adds duet to ~/.codex/config.toml with startup and tool timeouts of 120 s and approves duet's own tools only; your sandbox and approval settings stay as they are. Remove it with: npx -y github:qaioz/pi-duet setup codex --off",
+		},
+		receive: "After the first “check duet”, messages from the other agent start a turn in your Codex session by themselves.",
+	},
+};
+
+let agent = "pi";
+const room = () => roomFromHash();
+const name = () => cleanName($("name").value) || "YOUR_NAME";
+
+function fill(cmd) {
+	return cmd
+		.replace("{room}", room())
+		.replace("{name}", name())
+		.replace("{pi-srv}", custom ? " " + RELAY : "")
+		.replace("{env-srv}", custom ? `DUET_SERVER=${RELAY} ` : "")
+		.replace("{arg-srv}", custom ? ` --server ${RELAY}` : "");
+}
+
+function render() {
+	const a = AGENTS[agent];
+	const box = $("commands");
+	box.textContent = "";
+	for (const key of ["open", "fresh"]) {
+		const c = a[key];
+		const section = document.createElement("div");
+		section.className = "case";
+		section.dataset.case = key;
+		const h = document.createElement("h3");
+		h.textContent = c.title;
+		section.append(h);
+		c.steps.forEach(([where, cmd], i) => {
+			const row = document.createElement("div");
+			row.className = "cmd";
+			const n = document.createElement("span");
+			n.className = "n";
+			n.textContent = i + 1;
+			const wrap = document.createElement("div");
+			wrap.style.flex = "1";
+			const w = document.createElement("span");
+			w.className = "where";
+			w.textContent = where;
+			const code = document.createElement("code");
+			code.textContent = fill(cmd);
+			wrap.append(w, code);
+			const btn = document.createElement("button");
+			btn.textContent = "Copy";
+			btn.addEventListener("click", () => copy(code.textContent, btn));
+			row.append(n, wrap, btn);
+			section.append(row);
+		});
+		const note = document.createElement("p");
+		note.className = "muted";
+		note.textContent = c.note;
+		section.append(note);
+		box.append(section);
+	}
+	const r = document.createElement("p");
+	r.textContent = a.receive;
+	box.append(r);
+	document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.agent === agent)));
+}
+
+async function copy(text, btn) {
+	try {
+		await navigator.clipboard.writeText(text);
+	} catch {
+		const t = document.createElement("textarea");
+		t.value = text;
+		document.body.append(t);
+		t.select();
+		document.execCommand("copy");
+		t.remove();
+	}
+	const old = btn.textContent;
+	btn.textContent = "Copied";
+	setTimeout(() => (btn.textContent = old), 1200);
+}
+
+// Who's in the room: the page listens to the relay (read-only) for join announcements.
+let source;
+async function listen() {
+	source?.close();
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("pi-duet:" + room()));
+	const topic = "duet_" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+	const people = new Map();
+	source = new EventSource(`${RELAY}/${topic}/sse?since=12h`);
+	source.onmessage = (e) => {
+		try {
+			const env = JSON.parse(JSON.parse(e.data).message);
+			if (env?.v !== 1 || typeof env.from !== "string") return;
+			people.set(env.from, { at: new Date(env.ts), joined: env.kind === "join" || people.get(env.from)?.joined });
+		} catch {
+			return;
+		}
+		const list = $("people");
+		list.textContent = "";
+		for (const [who, p] of people) {
+			const li = document.createElement("li");
+			li.textContent = `${who} — last seen ${p.at.toLocaleTimeString()}`;
+			list.append(li);
+		}
+	};
+}
+
+function showRoom() {
+	if (!room()) {
+		$("start").classList.remove("hidden");
+		$("room").classList.add("hidden");
+		return;
+	}
+	$("start").classList.add("hidden");
+	$("room").classList.remove("hidden");
+	$("invite").textContent = location.origin + location.pathname + location.search + "#" + room();
+	$("relay").textContent = custom ? `Relay: ${RELAY} (not the default ntfy.sh)` : "";
+	render();
+	listen();
+}
+
+$("start-btn").addEventListener("click", () => {
+	location.hash = newRoom();
+});
+document.querySelector('[data-copy="invite"]').addEventListener("click", (e) => copy($("invite").textContent, e.target));
+$("name").addEventListener("input", () => {
+	const clean = cleanName($("name").value);
+	if (clean !== $("name").value) $("name").value = clean;
+	render();
+});
+document.querySelectorAll(".tabs button").forEach((b) =>
+	b.addEventListener("click", () => {
+		agent = b.dataset.agent;
+		render();
+	}),
+);
+window.addEventListener("hashchange", showRoom);
+showRoom();
+</script>
+</body>
+</html>

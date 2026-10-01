@@ -1,26 +1,33 @@
-// End-to-end tests: two headless pi agents (alice, bob) talking over real ntfy.sh.
+// End-to-end tests: two headless pi agents (alice, bob) talking through an ntfy server.
 //
 //   node test/e2e.mjs plumbing            # no model, no cost
 //   node test/e2e.mjs talk|do|loop        # real model via OpenRouter (needs OPENROUTER_API_KEY)
 //   node test/e2e.mjs install             # installs from GitHub into a throwaway agent dir
 //
-// Env: PI (pi binary, default "pi"), DUET_TEST_DIR (default ~/coding/personal/duet-test),
-//      DUET_MODEL (default deepseek/deepseek-v4-flash), DUET_BUDGET (max OpenRouter key usage, default 3.27).
+// Env: DUET_SERVER (ntfy server, default the local test container http://127.0.0.1:18080; set
+//      https://ntfy.sh for the real relay), PI (pi binary, default "pi"),
+//      DUET_TEST_DIR (default ~/coding/personal/duet-test-v2/pi),
+//      DUET_MODEL (default deepseek/deepseek-v4-flash), DUET_BUDGET (max OpenRouter key usage, default 4.5).
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { envelope, isForMe, MAX_BYTES, publish, subscribe, topicFor } from "../transport.ts";
+import { envelope, isForMe, MAX_BYTES, publish, subscribe, topicFor } from "../transport.js";
 
 const PI = process.env.PI || "pi";
-const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test");
+const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test-v2/pi");
 // deepseek-chat was flaky at tool calling here (empty completions, invented output); v4-flash was not.
 const MODEL = process.env.DUET_MODEL || "deepseek/deepseek-v4-flash";
-const BUDGET = Number(process.env.DUET_BUDGET || 3.27);
+const BUDGET = Number(process.env.DUET_BUDGET || 4.5);
 const EXT = resolve(import.meta.dirname, "../index.ts");
-const SERVER = "https://ntfy.sh";
+const SERVER = (process.env.DUET_SERVER || "http://127.0.0.1:18080").replace(/\/+$/, "");
+// Each agent sees only what it needs: no orchestrator variables, no GitHub credentials, its own HOME.
+const isoEnv = (home, extra) => {
+	mkdirSync(home, { recursive: true });
+	return { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8", DUET_SERVER: SERVER, ...extra };
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
@@ -48,8 +55,8 @@ function startAgent(name, room, { realModel = false, extraEnv = {}, loadExt = tr
 	agentDir ??= join(ROOT, `${name}-agent`);
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
-	const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, DUET_ROOM: room, DUET_NAME: name, ...extraEnv };
-	if (!realModel) env.OPENROUTER_API_KEY = "sk-or-invalid-no-cost"; // turns fail fast, nothing billed
+	const key = realModel ? process.env.OPENROUTER_API_KEY : "sk-or-invalid-no-cost"; // fake: turns fail fast, nothing billed
+	const env = isoEnv(join(agentDir, "home"), { PI_CODING_AGENT_DIR: agentDir, OPENROUTER_API_KEY: key, DUET_ROOM: room, DUET_NAME: name, ...extraEnv });
 	const args = ["--mode", "rpc", "--no-session", ...modelArgs(agentDir, fake)];
 	if (loadExt) args.push("-e", EXT);
 	const proc = spawn(PI, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -220,6 +227,7 @@ async function plumbing() {
 	await publish(SERVER, topic, old);
 	await sleep(3000); // now surely cached
 	const raw = await (await fetch(`${SERVER}/${topic}/json?poll=1&since=notcachedyet`)).text();
+	// Seen on both ntfy.sh and the local container; ntfy.sh additionally lags ~1s before caching.
 	check("premise: ntfy answers an unknown since= id with its whole cache", raw.includes(old.id), `${raw.split("\n").filter(Boolean).length} cached message(s) returned`);
 	const replayed = [];
 	sub = subscribe({ server: SERVER, topic, since: { id: "notcachedyet", time: Math.floor(Date.now() / 1000) }, onEnvelope: (env) => replayed.push(env.text) });
@@ -243,8 +251,14 @@ async function plumbing() {
 	// Extension level: bob in a real pi process, alice's side simulated by publishing envelopes.
 	const room = freshRoom();
 	const bobTopic = topicFor(room);
+	const heard = [];
+	const listener = subscribe({ server: SERVER, topic: bobTopic, onEnvelope: (env) => heard.push(env) });
+	await sleep(1000);
 	let bob = startAgent("bob", room);
 	await connected(bob);
+	await until(() => heard.some((e) => e.kind === "join" && e.from === "bob"), 10_000, "join from an env join").catch(() => {});
+	listener.stop();
+	check("env join (DUET_ROOM=… pi) announces itself", heard.some((e) => e.kind === "join" && e.from === "bob"), `heard: ${heard.map((e) => `${e.kind} from ${e.from}`).join(", ") || "nothing"}`);
 	const bobId = fromIdOf(bob);
 	const peer = (fields) => publish(SERVER, bobTopic, envelope({ fromId: "alice-install", from: "alice", kind: "msg", ...fields }));
 	await publish(SERVER, bobTopic, envelope({ fromId: bobId, from: "bob", kind: "msg", text: "ECHO-SELF" }));
@@ -319,7 +333,7 @@ async function printModeStaysOut(fake) {
 	const lockEvents = [];
 	const watcher = watch(agentDir, (_type, f) => f === "duet.lock" && lockEvents.push(f));
 	const out = await new Promise((r) => {
-		const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, DUET_ROOM: room, DUET_NAME: "carol", ...extraEnv };
+		const env = isoEnv(join(agentDir, "home"), { PI_CODING_AGENT_DIR: agentDir, DUET_ROOM: room, DUET_NAME: "carol", ...extraEnv });
 		// stdin "ignore": with a pipe, pi -p waits for EOF on it before running.
 		const p = spawn(PI, args, { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
 		let text = "";
@@ -453,7 +467,7 @@ async function install() {
 	rmSync(agentDir, { recursive: true, force: true });
 	mkdirSync(agentDir, { recursive: true });
 	const out = await new Promise((r) => {
-		const p = spawn(PI, ["install", "git:github.com/qaioz/pi-duet"], { env: { ...process.env, PI_CODING_AGENT_DIR: agentDir } });
+		const p = spawn(PI, ["install", "git:github.com/qaioz/pi-duet"], { env: isoEnv(join(agentDir, "home"), { PI_CODING_AGENT_DIR: agentDir }) });
 		let s = "";
 		p.stdout.on("data", (d) => (s += d));
 		p.stderr.on("data", (d) => (s += d));
@@ -487,4 +501,8 @@ try {
 await Promise.all([...live].map((a) => a.stop()));
 const failed = results.filter((r) => !r.ok);
 log(`${results.length - failed.length}/${results.length} checks passed`);
+if (process.env.DUET_RESULTS) {
+	const { appendFileSync } = await import("node:fs");
+	appendFileSync(process.env.DUET_RESULTS, JSON.stringify({ suite: `pi-${which.join("+") || "plumbing"}`, server: SERVER, at: new Date().toISOString(), results }) + "\n");
+}
 process.exit(failed.length ? 1 : 0);

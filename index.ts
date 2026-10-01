@@ -5,7 +5,8 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { type Cursor, type Envelope, envelope, isForMe, publish, subscribe, topicFor } from "./transport.ts";
+import { envelope, isForMe, publish, subscribe, topicFor } from "./transport.js";
+import type { Cursor, Envelope } from "./transport.js";
 
 type Config = { room?: string; name?: string; server?: string; fromId?: string; cursors: Record<string, Cursor> };
 
@@ -121,7 +122,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		// No UI means `pi -p` or similar one-shot: it must not grab the room or eat its messages.
-		if (ui && room && name) joinRoom();
+		if (!ui || !room || !name) return;
+		joinRoom();
+		// A join from the environment (the site's "start fresh" command) says hello like /duet does.
+		if (sub && process.env.DUET_ROOM) publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join" })).catch(() => {});
 	});
 
 	// The runtime is rebuilt on /new, /resume, /reload…; session_start will rejoin.

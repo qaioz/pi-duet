@@ -1,21 +1,23 @@
 // The whole wire: ntfy pub/sub over plain HTTP. Swapping the relay means editing only this file.
-// Kept to erasable TypeScript so Node can also import it directly (test/e2e.mjs).
+// Plain JavaScript (types in JSDoc): the MCP server runs from node_modules via npx, where Node refuses
+// to strip TypeScript, and the pi extension imports this same file.
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
-export type Envelope = {
-	v: 1;
-	id: string;
-	fromId: string; // random per install — how we recognise our own echoes
-	from: string; // display name, not unique
-	to?: string;
-	kind: "msg" | "join";
-	text?: string;
-	ts: string;
-};
+/**
+ * @typedef {object} Envelope
+ * @property {1} v
+ * @property {string} id
+ * @property {string} fromId random per install — how we recognise our own echoes
+ * @property {string} from display name, not unique
+ * @property {string} [to]
+ * @property {"msg" | "join"} kind
+ * @property {string} [text]
+ * @property {string} ts
+ */
 
-// Where a subscriber left off: the last ntfy message id seen and its time (unix seconds).
-export type Cursor = { id: string; time: number };
+/** Where a subscriber left off: the last ntfy message id seen and its time (unix seconds).
+ * @typedef {{ id: string, time: number }} Cursor */
 
 // ntfy.sh turns bodies over 4096 bytes into attachments; stay well under.
 export const MAX_BYTES = 3800;
@@ -26,16 +28,19 @@ const MAX_BACKOFF_MS = 30_000;
 const REPAIR_POLL_MS = 10_000;
 
 // The room name is the shared secret; only its hash ever reaches the server.
-export function topicFor(room: string): string {
+/** @param {string} room */
+export function topicFor(room) {
 	return "duet_" + createHash("sha256").update("pi-duet:" + room).digest("hex").slice(0, 40);
 }
 
-export function envelope(fields: Pick<Envelope, "fromId" | "from" | "kind" | "to" | "text">): Envelope {
+/** @param {Pick<Envelope, "fromId" | "from" | "kind" | "to" | "text">} fields @returns {Envelope} */
+export function envelope(fields) {
 	return { v: 1, id: randomUUID(), ...fields, ts: new Date().toISOString() };
 }
 
 // Anything on the topic that isn't a well-formed envelope is someone else's noise.
-function isEnvelope(e: any): e is Envelope {
+/** @returns {e is Envelope} */
+function isEnvelope(/** @type {any} */ e) {
 	return (
 		e?.v === 1 &&
 		typeof e.fromId === "string" &&
@@ -47,12 +52,14 @@ function isEnvelope(e: any): e is Envelope {
 
 // Drop our own echoes (by install id, since two people may share a display name) and
 // messages addressed to someone else.
-export function isForMe(env: Envelope, myFromId: string, myName: string): boolean {
+/** @param {Envelope} env @param {string} myFromId @param {string} myName */
+export function isForMe(env, myFromId, myName) {
 	if (env.fromId === myFromId) return false;
 	return !env.to || env.to.toLowerCase() === myName.toLowerCase();
 }
 
-export async function publish(server: string, topic: string, env: Envelope, signal?: AbortSignal): Promise<void> {
+/** @param {string} server @param {string} topic @param {Envelope} env @param {AbortSignal} [signal] */
+export async function publish(server, topic, env, signal) {
 	const body = JSON.stringify(env);
 	const bytes = Buffer.byteLength(body);
 	if (bytes > MAX_BYTES) {
@@ -69,22 +76,25 @@ export async function publish(server: string, topic: string, env: Envelope, sign
 // Streams {server}/{topic}/json until stop(), reconnecting with backoff. A subscriber resumed from
 // `since` catches up on anything cached after it. Every new live message moves the cursor, reported
 // through onCursor so the caller can persist it for the next restart.
-export function subscribe(opts: {
-	server: string;
-	topic: string;
-	since?: Cursor;
-	onEnvelope(env: Envelope): void;
-	onCursor?(cursor: Cursor): void;
-	onState?(connected: boolean, error?: string): void;
-}): { stop(): void } {
+/**
+ * @param {{
+ *   server: string, topic: string, since?: Cursor,
+ *   onEnvelope(env: Envelope): void,
+ *   onCursor?(cursor: Cursor): void,
+ *   onState?(connected: boolean, error?: string): void,
+ * }} opts
+ * @returns {{ stop(): void }}
+ */
+export function subscribe(opts) {
 	const life = new AbortController(); // aborted by stop(): ends streams, polls and sleeps
 	let since = opts.since;
-	const seen = new Set<string>();
+	const seen = new Set();
 
 	// `live` lines come from the stream in order; repair-poll lines may be older, so they don't move the cursor.
-	const handleLine = (line: string, live: boolean, floor?: Cursor) => {
-		let evt: any;
-		let env: any;
+	/** @param {string} line @param {boolean} live @param {Cursor} [floor] */
+	const handleLine = (line, live, floor) => {
+		let evt;
+		let env;
 		try {
 			evt = JSON.parse(line);
 			if (evt.event !== "message" || typeof evt.id !== "string" || seen.has(evt.id)) return;
@@ -98,18 +108,20 @@ export function subscribe(opts: {
 			return;
 		}
 		seen.add(evt.id);
-		if (seen.size > 1000) seen.delete(seen.values().next().value!);
+		if (seen.size > 1000) seen.delete(seen.values().next().value);
+		// Hand the message over before reporting the cursor past it, so a caller can hold the cursor
+		// back until the message is really consumed.
+		if (isEnvelope(env)) opts.onEnvelope(env);
 		if (live) {
 			since = { id: evt.id, time: evt.time };
 			opts.onCursor?.(since);
 		}
-		if (isEnvelope(env)) opts.onEnvelope(env);
 	};
 
 	const connectOnce = async () => {
 		const ctrl = new AbortController();
 		const signal = AbortSignal.any([life.signal, ctrl.signal]);
-		let watchdog: NodeJS.Timeout | undefined;
+		let watchdog;
 		const pet = () => {
 			clearTimeout(watchdog);
 			watchdog = setTimeout(() => ctrl.abort(new Error("no data for 90s")), WATCHDOG_MS);
@@ -133,7 +145,7 @@ export function subscribe(opts: {
 			for await (const chunk of res.body) {
 				pet();
 				buf += decoder.decode(chunk, { stream: true });
-				let nl: number;
+				let nl;
 				while ((nl = buf.indexOf("\n")) >= 0) {
 					handleLine(buf.slice(0, nl), true, floor);
 					buf = buf.slice(nl + 1);
@@ -154,7 +166,7 @@ export function subscribe(opts: {
 				await connectOnce();
 			} catch (err) {
 				if (life.signal.aborted) break;
-				opts.onState?.(false, (err as Error).message);
+				opts.onState?.(false, err.message);
 			}
 			if (Date.now() - startedAt > 60_000) backoff = 1000; // it was a healthy connection
 			await delay(backoff, undefined, { signal: life.signal }).catch(() => {});
