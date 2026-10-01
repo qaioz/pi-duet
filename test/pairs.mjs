@@ -60,7 +60,8 @@ function steps(kind, kase, room, name) {
 // Everything said in the room, as the relay saw it.
 function watchRoom(room) {
 	const seen = [];
-	const sub = subscribe({ server: SERVER, topic: topicFor(room), onEnvelope: (env) => seen.push({ at: Date.now(), ...env }) });
+	// since=all: a join published before this subscription is up still counts.
+	const sub = subscribe({ server: SERVER, topic: topicFor(room), since: { id: "all", time: 0 }, onEnvelope: (env) => seen.push({ at: Date.now(), ...env }) });
 	return { seen, stop: () => sub.stop() };
 }
 
@@ -103,7 +104,8 @@ async function joinAs(agent, kase, room, watch) {
 		}
 	}
 	const joined = await until(() => watch.seen.find((e) => e.kind === "join" && e.from === agent.name), 240_000, `${agent.name}'s join on the relay`);
-	return { firstJoinSec: ((joined.at - (launched ?? t0)) / 1000).toFixed(1), steps: list.length };
+	// Timed by the join's own timestamp: a replayed join is read later than it was sent.
+	return { firstJoinSec: ((Date.parse(joined.ts) - (launched ?? t0)) / 1000).toFixed(1), steps: list.length };
 }
 
 // The receiver is ready when its first duet tool call ("listen on duet" / "check duet") is done.
@@ -171,8 +173,9 @@ async function pair(askerKind, receiverKind, what, kase = "fresh") {
 			const content = existsSync(file) ? readFileSync(file, "utf8") : null;
 			check(`hello.txt on disk in ${b.name}'s folder`, content?.trim() === `hi from ${b.name}`, `${file}: ${JSON.stringify(content)}`);
 			// The line from the receiver's real ls output, as its tool printed it.
-			const real = eb.filter((e) => e.type === "tool" && /ls -la/.test(JSON.stringify(e.input)) && /hello\.txt/.test(e.output ?? "")).at(-1);
-			const line = real?.output.split("\n").find((l) => l.includes("hello.txt"))?.trim();
+			const real = eb.filter((e) => e.type === "tool" && /ls -la/.test(JSON.stringify(e.input)) && /^[-l][rwxsStT-]{9}.*hello\.txt$/m.test(e.output ?? "")).at(-1);
+			// The ls -la row itself (a combined command may also print e.g. git status lines).
+			const line = real?.output.split("\n").find((l) => /^[-l][rwxsStT-]{9}.*\bhello\.txt$/.test(l.trim()))?.trim();
 			check(`${b.name}'s real ls -la listed hello.txt`, !!line, `${real?.name}: ${JSON.stringify(line)}`);
 			const got = ea.filter((e) => e.type === "in").map((e) => e.text);
 			check(`${a.name} received that real ls output`, !!line && got.some((t) => t.includes(line)), `real line ${JSON.stringify(line)}; ${a.name} got ${JSON.stringify(got.map((t) => t.slice(0, 400)))}`);
@@ -308,18 +311,57 @@ async function remote(os, askerKind = "pi") {
 	}
 }
 
-killTmux();
+// A closed Codex window must not run what arrives: Codex keeps the session alive for about a
+// minute after /quit, so duet must stop pushing. Resuming and "check duet" then delivers it.
+async function closed() {
+	scenario = "codex closed: nothing runs, delivered on resume";
+	await guardBudget();
+	const room = randomBytes(16).toString("hex");
+	const watch = watchRoom(room);
+	const a = new Agent("codex", "quinn", { permissive: true }).seed();
+	try {
+		await joinAs(a, "fresh", room, watch);
+		await ready(a);
+		await a.type("/quit");
+		await a.waitShell(30_000, "/quit");
+		const quitAt = Date.now();
+		const { envelope, publish } = await import("../transport.js");
+		await publish(SERVER, topicFor(room), envelope({ fromId: "peer", from: "peer", kind: "msg", text: "Please create a file AFTER-QUIT.txt containing x in your folder." }));
+		await sleep(75_000); // past the ~1 min Codex keeps a closed session
+		const ran = existsSync(join(a.cwd, "AFTER-QUIT.txt")) || a.events().some((e) => e.type === "in" && e.at > quitAt);
+		check("nothing ran after the window closed", !ran, `75 s after a request arrived for a closed window: file ${existsSync(join(a.cwd, "AFTER-QUIT.txt"))}, turns ${a.events().filter((e) => e.type === "in" && e.at > quitAt).length}`);
+		await a.clear();
+		await a.type("codex resume --last");
+		await a.waitScreen(/›/, 60_000, "codex resumed");
+		await sleep(3000);
+		await a.type("check duet");
+		const got = await until(() => a.events().find((e) => e.type === "in" && e.at > quitAt && e.text.includes("AFTER-QUIT")), 180_000, "the request after resume");
+		check("delivered after resume", !!got, `${got.how}: ${JSON.stringify(got.text.slice(0, 120))}`);
+	} catch (err) {
+		check("scenario", false, err.message);
+		log(`--- ${a.name} screen ---\n${a.screen().split("\n").filter(Boolean).slice(-25).join("\n")}`);
+	} finally {
+		watch.stop();
+		scenarioCost = a.cost();
+		log(`$ ${scenario}: ${scenarioCost.toFixed(4)}`);
+		results.push({ scenario, name: "spend", ok: true, usd: scenarioCost });
+		a.stop();
+	}
+}
+
+if (!process.env.DUET_KEEP_TMUX) killTmux();
 try {
 	for (const arg of process.argv.slice(2)) {
 		const parts = arg.split(":");
 		if (parts[0] === "loop") await loop(parts[1], parts[2]);
 		else if (parts[0] === "remote") await remote(parts[1], parts[2]);
+		else if (parts[0] === "closed") await closed();
 		else await pair(parts[0], parts[1], parts[2], parts[3]);
 	}
 } catch (err) {
 	check("harness", false, err.message);
 }
-killTmux();
+if (!process.env.DUET_KEEP_TMUX) killTmux();
 const failed = results.filter((r) => !r.ok);
 const total = results.filter((r) => r.name === "spend").reduce((s, r) => s + r.usd, 0);
 log(`${results.length - failed.length}/${results.length} passed; $${total.toFixed(4)} spent (from the agents' logs); pinned to ${PIN.slice(0, 7)}; relay ${SERVER}`);
