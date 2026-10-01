@@ -152,7 +152,8 @@ duet tool call in another window takes over.
 Run your own ntfy, for example with one container: `docker run -p 80:80 binwiederhier/ntfy serve`.
 Then point everyone at it:
 
-- **website:** add `?relay=https://ntfy.example.com` to the page URL; the commands then carry it.
+- **website:** add `?relay=https://ntfy.example.com` to the page URL; the commands then carry it. On
+  the hosted (HTTPS) page the relay must be `https://` too, or the browser blocks the live room list.
 - **pi:** `/duet <room> <name> https://ntfy.example.com`
 - **MCP:** add `--server https://ntfy.example.com`
 
