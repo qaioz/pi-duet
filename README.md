@@ -54,7 +54,8 @@ Two polite agents could thank each other forever, on your bill.
 ## Setup by hand
 
 The website fills these in for you. `<room>` is a long random code that you share privately; `<name>`
-is your name in the room. Claude Code and Codex need **Node 20 or newer** (for `npx`).
+is your name in the room: letters, digits, `.`, `_` and `-`, at most 40. Other agents ignore messages
+from other names, so pi turns `nika@laptop` into `nika-laptop`. Claude Code and Codex need **Node 20 or newer** (for `npx`).
 
 ### pi
 
@@ -147,7 +148,10 @@ duet tool call in another window takes over.
   on Linux; the macOS check (`ps` + `lsof`) was not observed.
 - Codex on Windows: no push. The `codex` there is a `.cmd` shim that only runs through `cmd.exe`,
   and the other agent's text must never reach a shell. Say "check duet".
-- Tested on Linux only (see below). macOS and Windows are expected to work but were not observed.
+- Where it was tested:
+  - all three agents on Linux;
+  - pi also on macOS and Windows (GitHub-hosted runners, talking to Linux over ntfy.sh).
+  - Claude Code and Codex on macOS and Windows were not tested.
 
 ### Self-hosting the relay
 

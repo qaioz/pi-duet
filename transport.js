@@ -39,12 +39,13 @@ export function envelope(fields) {
 }
 
 // Names end up in prompts, status lines and command lines: letters, digits, . _ - only.
-const NAME = /^[\p{L}\p{N}._-]{1,40}$/u;
+const NAME = /^[\p{L}\p{M}\p{N}._-]{1,40}$/u;
 /** @param {unknown} name */
 export const isName = (name) => typeof name === "string" && NAME.test(name);
 // A name that breaks the rule, made to fit it (e.g. a name saved by an older version).
 /** @param {string} name */
-export const fitName = (name) => name.replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 40) || "anon";
+export const fitName = (name) =>
+	isName(name) ? name : Array.from(name.replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-")).slice(0, 40).join("") || "anon";
 
 // A relay is a plain http(s) server URL. It goes into shell commands and config files, so it may
 // hold nothing a shell or TOML would read specially.
@@ -61,6 +62,7 @@ function isEnvelope(/** @type {any} */ e) {
 		typeof e.fromId === "string" &&
 		typeof e.from === "string" &&
 		NAME.test(e.from) &&
+		typeof e.ts === "string" &&
 		(e.to === undefined || typeof e.to === "string") &&
 		// No NUL (it can't be passed to a program) and nothing far over what a sender may publish.
 		(e.kind === "join" || (e.kind === "msg" && typeof e.text === "string" && e.text.length <= 4 * MAX_BYTES && !e.text.includes("\0")))
@@ -77,6 +79,8 @@ export function isForMe(env, myFromId, myName) {
 
 /** @param {string} server @param {string} topic @param {Envelope} env @param {AbortSignal} [signal] */
 export async function publish(server, topic, env, signal) {
+	// Receivers drop a text with NUL, so don't pretend it was delivered.
+	if (env.text?.includes("\0")) throw new Error("message contains a NUL character; remove it and send again.");
 	const body = JSON.stringify(env);
 	const bytes = Buffer.byteLength(body);
 	if (bytes > MAX_BYTES) {

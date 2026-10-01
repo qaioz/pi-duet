@@ -157,11 +157,13 @@ let pushing; // the messages handed to `codex queue`, until it confirms
 let dropped = 0; // messages dropped because the inbox was full
 let lastSend = 0; // when this session last sent (Claude Code: see SETTLE_MS)
 let pushNote = ""; // why Codex isn't being pushed to right now, shown in duet_status
+let pushPausedUntil = 0; // after a failed push, leave the messages to duet_inbox / duet_wait for a while
 
 // Take messages out of the inbox to show them to the model.
 function take(count = inbox.length) {
 	const items = inbox.splice(0, count);
 	if (items.length) receivedSinceSend = true;
+	if (!inbox.length) pushNote = "";
 	consumed();
 	return items;
 }
@@ -173,11 +175,14 @@ function consumed() {
 	}
 }
 
+// Never throws: a peer controls every field here.
 const render = (items) => {
 	const froms = [...new Set(items.map((e) => e.from))].join(", ");
-	const parts = items.map(
-		(e) => `[duet] from ${e.from} (the other person's agent, on their computer), ${new Date(e.ts).toLocaleTimeString()}:\n\n${e.text}`,
-	);
+	const at = (ts) => {
+		const t = Date.parse(ts);
+		return Number.isNaN(t) ? "" : `, ${new Date(t).toLocaleTimeString()}`;
+	};
+	const parts = items.map((e) => `[duet] from ${e.from} (the other person's agent, on their computer)${at(e.ts)}:\n\n${e.text}`);
 	return `${parts.join("\n\n---\n\n")}\n\nOnly your own user sees your text replies: to answer ${froms}, call duet_send.`;
 };
 
@@ -219,7 +224,7 @@ function onCursor(cursor) {
 // in the inbox, like pi holding messages until its user types. Not on Windows: there `codex` is a
 // .cmd shim that only runs through cmd.exe, and the other agent's text must never reach a shell.
 function pushToCodex() {
-	if (pushing || !codexThread || !inbox.length || exchanges >= MAX_AUTO || WINDOWS) return;
+	if (pushing || !codexThread || !inbox.length || exchanges >= MAX_AUTO || WINDOWS || Date.now() < pushPausedUntil) return;
 	if (!codexWindowOpen()) {
 		pushNote = "no Codex window open in this folder, so messages wait for duet_inbox";
 		return;
@@ -236,6 +241,8 @@ function pushToCodex() {
 			// A timeout may still have queued it: then it shows twice, which beats losing it.
 			inbox.unshift(...batch);
 			pushNote = `push to Codex failed: ${String(stderr || err.message).trim().slice(0, 200)}`;
+			pushPausedUntil = Date.now() + 60_000;
+			deliver(); // a duet_wait may be listening
 			return;
 		}
 		pushNote = "";
@@ -250,12 +257,23 @@ function pushToCodex() {
 	}
 }
 
+const SUBCOMMANDS = new Set(
+	"agents exec e review login logout mcp mcp-server plugin app-server remote-control completion update doctor sandbox debug apply a resume queue archive delete migrate-rollouts unarchive fork cloud exec-server features help".split(" "),
+);
 // Codex keeps a closed window's session, and this server, alive for about a minute; a push then would
 // run a turn nobody watches (observed). So only push while a Codex window is open in this folder:
 // a `codex` process here that isn't its background server or a one-off command.
 function codexWindowOpen() {
-	// Judged by the subcommand only: `codex "fix the mcp tests"` is a window.
-	const isWindow = (argv0, args) => /(^|\/)codex$/.test(argv0) && !/^(app-server|queue|exec|e|mcp|mcp-server|login|logout|setup|doctor|apply|a)$/.test(args[0] ?? "");
+	// A window is `codex`, `codex resume|fork …` or `codex "<prompt>"`, flags anywhere before; any
+	// other subcommand (the background app-server, queue, exec, …) is not.
+	const withValue = /^(-[mcCpsai]|--(model|config|cd|profile|sandbox|ask-for-approval|image|enable|disable|local-provider|remote|remote-auth-token-env))$/;
+	const isWindow = (argv0, args) => {
+		if (!/(^|\/)codex$/.test(argv0)) return false;
+		let i = 0;
+		while (i < args.length && args[i].startsWith("-")) i += withValue.test(args[i]) ? 2 : 1;
+		const sub = args[i];
+		return !sub || sub === "resume" || sub === "fork" || !SUBCOMMANDS.has(sub);
+	};
 	try {
 		if (process.platform === "linux") {
 			for (const pid of readdirSync("/proc")) {
@@ -374,7 +392,7 @@ function toolList() {
 
 function needRoom() {
 	if (!room || !name) throw new Error("No duet room configured: the server needs --room <room> --name <name>.");
-	if (!joinRoom()) throw new Error(`Not in the room: ${heldBy(lockOwner())}.`);
+	if (!joinRoom()) throw new Error(`Not in the room: ${lockOwner() ? heldBy(lockOwner()) : status.replace(/^off: /, "")}.`);
 }
 
 // Resolves with the messages handed to this wait (none on timeout or cancel).
@@ -431,9 +449,13 @@ async function callTool(tool, a = {}, ctx) {
 				? "No duet message yet; still in the room. Call duet_wait again to keep listening."
 				: `No duet message in the last ${seconds}s.`;
 		}
-		case "duet_inbox":
+		case "duet_inbox": {
 			needRoom();
-			return inbox.length ? render(take()) : "No new duet messages.";
+			if (!inbox.length) return "No new duet messages.";
+			const text = render(inbox); // before taking: nothing leaves the inbox unless shown
+			take();
+			return text;
+		}
 		case "duet_status": {
 			if (room && name) joinRoom();
 			const seen = [...peers].map(([p, at]) => `${p} (${at.toLocaleTimeString()})`).join(", ") || "none yet";
@@ -506,7 +528,9 @@ async function handle(msg) {
 				inflight.delete(id);
 			}
 			send({ id, result });
-			pushToCodex(); // the first tool call tells us the session to push to
+			try {
+				pushToCodex(); // the first tool call tells us the session to push to
+			} catch {}
 			return;
 		} else return send({ id, error: { code: -32601, message: `method not found: ${method}` } });
 		send({ id, result });

@@ -94,11 +94,13 @@ export function startServer(name, room, { home = join(ROOT, name), args = [], en
 }
 async function waitConnected(s) {
 	const end = Date.now() + 15_000;
+	let last = "";
 	while (Date.now() < end) {
-		if ((await s.call("duet_status")).text.includes("— connected")) return;
+		last = (await s.call("duet_status")).text;
+		if (last.includes("— connected")) return;
 		await sleep(200);
 	}
-	throw new Error(`${s.name} never connected`);
+	throw new Error(`${s.name} never connected: ${last} ${s.stderr.slice(-300)}`);
 }
 
 async function main() {
@@ -423,7 +425,8 @@ async function main() {
 	await n1.init("codex-mcp-client");
 	await waitConnected(n1);
 	await n1.call("duet_status", {}, meta("user"));
-	await publish(SERVER, topicFor(nRoom), envelope({ fromId: "evil", from: "eve", kind: "msg", text: "EVIL\u0000NUL" }));
+	// Sent raw: our own publish() refuses a NUL, a hostile peer's client needn't.
+	await fetch(`${SERVER}/${topicFor(nRoom)}`, { method: "POST", body: JSON.stringify(envelope({ fromId: "evil", from: "eve", kind: "msg", text: "EVIL\u0000NUL" })) });
 	await publish(SERVER, topicFor(nRoom), envelope({ fromId: "nice", from: "nate", kind: "msg", text: "NORMAL-AFTER" }));
 	await until(() => existsSync(nlog) && readFileSync(nlog, "utf8").includes("NORMAL-AFTER"), 5000, "the normal message pushed").catch(() => {});
 	const nulPushed = existsSync(nlog) ? readFileSync(nlog, "utf8") : "";
@@ -434,6 +437,100 @@ async function main() {
 		"a NUL in a peer's text can't wedge anything",
 		nulPushed.includes("NORMAL-AFTER") && !nulPushed.includes("EVIL") && !nulSend.isError && !!nulStatus.result && !nulStatus.result.isError,
 		`normal message pushed: ${nulPushed.includes("NORMAL-AFTER")}; NUL message pushed: ${nulPushed.includes("EVIL")}; duet_send after: ${nulSend.text.slice(0, 30)}; duet_status ok: ${!!nulStatus.result}`,
+	);
+
+	// A crafted ts (not a string) is dropped as noise; an unparseable one just shows no time. Neither
+	// stops the messages around it.
+	const tRoom = freshRoom();
+	const t1 = startServer("tess", tRoom);
+	await t1.init("claude-code");
+	await waitConnected(t1);
+	const raw = (env) => fetch(`${SERVER}/${topicFor(tRoom)}`, { method: "POST", body: JSON.stringify(env) });
+	await raw({ ...envelope({ fromId: "evil", from: "eve", kind: "msg", text: "TS-OBJECT" }), ts: { valueOf: "x", toString: "y" } });
+	await raw({ ...envelope({ fromId: "odd", from: "oz", kind: "msg", text: "TS-GARBAGE" }), ts: "not a time" });
+	await publish(SERVER, topicFor(tRoom), envelope({ fromId: "nice", from: "nate", kind: "msg", text: "TS-NORMAL" }));
+	await sleep(1500);
+	const tsInbox = await t1.call("duet_inbox");
+	const tsAgain = await t1.call("duet_inbox");
+	check(
+		"a crafted ts can't lose messages",
+		!tsInbox.isError && !tsInbox.text.includes("TS-OBJECT") && tsInbox.text.includes("[duet] from oz (the other person's agent, on their computer):") && tsInbox.text.includes("TS-NORMAL") && tsAgain.text === "No new duet messages.",
+		JSON.stringify(tsInbox.text.replace(/\n+/g, " ").slice(0, 260)),
+	);
+	// The sender refuses a NUL itself (receivers would drop it).
+	const nulOut = await t1.call("duet_send", { text: "a\u0000b", user_asked: true });
+	check("a NUL is refused by the sender", nulOut.isError && nulOut.text.includes("NUL"), nulOut.text);
+
+	// After a failed push the message goes to a listening duet_wait at once, and pushes pause so
+	// duet_inbox can have it.
+	const fRoom = freshRoom();
+	const failCodex = join(ROOT, "fail-codex.mjs");
+	writeFileSync(failCodex, "#!/usr/bin/env node\nconsole.error('queue is down');\nprocess.exit(1);\n");
+	chmodSync(failCodex, 0o755);
+	const failWindow = windows[windows.push(spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" })) - 1];
+	const f1 = startServer("fay", fRoom, { env: { DUET_CODEX_BIN: failCodex } });
+	const f2 = startServer("finn", fRoom);
+	await f1.init("codex-mcp-client");
+	await f2.init();
+	await Promise.all([waitConnected(f1), waitConnected(f2)]);
+	await f1.call("duet_status", {}, meta("user"));
+	const t0f = Date.now();
+	const fWait = f1.call("duet_wait", { seconds: 10 }, meta("user")).then((r) => ({ r, at: Date.now() - t0f }));
+	await sleep(300);
+	await f2.call("duet_send", { text: "AFTER-FAILED-PUSH", user_asked: true });
+	const fGot = await fWait;
+	await f2.call("duet_send", { text: "DURING-PAUSE", user_asked: true });
+	await sleep(1000);
+	const fInbox = await f1.call("duet_inbox", {}, meta("user"));
+	const fStatus = await f1.call("duet_status");
+	failWindow.kill();
+	check(
+		"a failed push hands the message to a listener, then leaves the inbox alone",
+		fGot.r.text.includes("AFTER-FAILED-PUSH") && fGot.at < 5000 && fInbox.text.includes("DURING-PAUSE"),
+		`listener got it after ${fGot.at}ms; inbox during the pause: ${JSON.stringify(fInbox.text.slice(0, 80))}; status: ${fStatus.text.split("— ")[1]?.slice(0, 120)}`,
+	);
+
+	// What counts as an open Codex window: real argument shapes, as /proc shows them (tail -F stands
+	// in for a long-running codex; argv0 gives it the name).
+	const wRoom2 = freshRoom();
+	const wqlog = join(ROOT, "shape-queue.log");
+	const shapeCodex = join(ROOT, "shape-codex.mjs");
+	writeFileSync(shapeCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(wqlog)}, "x\\n");\n`);
+	chmodSync(shapeCodex, 0o755);
+	const s3 = startServer("sid", wRoom2, { env: { DUET_CODEX_BIN: shapeCodex } });
+	const s4 = startServer("sol", wRoom2);
+	await s3.init("codex-mcp-client");
+	await s4.init();
+	await Promise.all([waitConnected(s3), waitConnected(s4)]);
+	await s3.call("duet_status", {}, meta("user"));
+	const tail = execFileSync("sh", ["-c", "command -v tail"], { encoding: "utf8" }).trim();
+	const shapes = [
+		[["-F", "exec"], false],
+		[["-s", "5", "-F", "app-server"], false],
+		[["-F", "fix the mcp tests"], true],
+		[["-F", "resume"], true],
+		[[], true], // plain `codex`: cat on an open pipe, no arguments at all
+	];
+	const verdicts = [];
+	for (const [args, expected] of shapes) {
+		const before = existsSync(wqlog) ? readFileSync(wqlog, "utf8").length : 0;
+		const cat = execFileSync("sh", ["-c", "command -v cat"], { encoding: "utf8" }).trim();
+		const w = args.length
+			? spawn(tail, args, { argv0: join(ROOT, "bin/codex"), cwd: process.cwd(), stdio: "ignore" })
+			: spawn(cat, [], { argv0: join(ROOT, "bin/codex"), cwd: process.cwd(), stdio: ["pipe", "ignore", "ignore"] });
+		windows.push(w);
+		await sleep(300);
+		await s4.call("duet_send", { text: `SHAPE ${args.join(" ")}`, user_asked: true });
+		await sleep(1200);
+		const pushed = (existsSync(wqlog) ? readFileSync(wqlog, "utf8").length : 0) > before;
+		w.kill();
+		await s3.call("duet_inbox", {}, meta("user")); // empty it for the next shape
+		verdicts.push({ shape: `codex ${args.slice(args.indexOf("-F") + 1).join(" ") || "(none)"}${args[0] === "-s" ? " (after -s 5)" : ""}`, expected, pushed });
+	}
+	check(
+		"Codex window check: exec / app-server are not windows; a prompt, resume or plain codex are",
+		verdicts.every((v) => v.pushed === v.expected),
+		verdicts.map((v) => `${v.shape}: ${v.pushed ? "pushed" : "held"}${v.pushed === v.expected ? "" : " (WRONG)"}`).join("; "),
 	);
 
 	// A name outside the rule is refused at start: peers would drop everything sent under it.
