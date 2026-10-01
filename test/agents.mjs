@@ -16,7 +16,8 @@ export const MODELS = {
 	pi: process.env.DUET_PI_MODEL || "deepseek/deepseek-v4-flash",
 	// deepseek-v4-flash made up text in Claude Code (RESEARCH-v2.md), so Claude Code runs on Haiku.
 	claude: process.env.DUET_CLAUDE_MODEL || "anthropic/claude-haiku-4.5",
-	codex: process.env.DUET_CODEX_MODEL || "deepseek/deepseek-v4-flash",
+	// deepseek-v4-flash misread its tools in the Codex TUI and never answered (2 of 2 runs, 2026-10-01).
+	codex: process.env.DUET_CODEX_MODEL || "openai/gpt-5.6-luna",
 };
 // OpenRouter prices, USD per token (read from openrouter.ai/api/v1/models on 2026-10-01).
 const PRICE = {
@@ -74,6 +75,8 @@ const text = (content) =>
 // ---------- one agent ----------
 
 export class Agent {
+	// permissive: no permission prompts and no sandbox (Codex's bubblewrap sandbox can't start on the
+	// test box). Off, the agent keeps its defaults, and only the site's own duet allowances apply.
 	constructor(kind, name, { dir, cwd, model = MODELS[kind], permissive = true } = {}) {
 		this.kind = kind;
 		this.name = name;
@@ -128,7 +131,7 @@ export class Agent {
 				join(codexHome, "config.toml"),
 				`model = ${JSON.stringify(this.model)}
 model_provider = "openrouter"
-${this.permissive ? 'approval_policy = "never"\nsandbox_mode = "workspace-write"\n' : ""}
+${this.permissive ? 'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n' : ""}
 [model_providers.openrouter]
 name = "OpenRouter"
 base_url = "https://openrouter.ai/api/v1"

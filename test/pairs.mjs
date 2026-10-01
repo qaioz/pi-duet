@@ -125,8 +125,11 @@ async function pair(askerKind, receiverKind, what, kase = "fresh") {
 	const room = randomBytes(16).toString("hex");
 	const watch = watchRoom(room);
 	const names = askerKind === receiverKind ? ["alice", "bob"] : ["ana", "ben"];
-	const a = new Agent(askerKind, names[0]).seed();
-	const b = new Agent(receiverKind, names[1]).seed();
+	// "talk" needs no tools beyond duet's, so those agents keep their default permissions: that checks
+	// the page's own allowances (--allowedTools mcp__duet, Codex's approve) are enough.
+	const permissive = what === "do";
+	const a = new Agent(askerKind, names[0], { permissive }).seed();
+	const b = new Agent(receiverKind, names[1], { permissive }).seed();
 	const agents = [a, b];
 	let nudged = false;
 	try {
@@ -135,11 +138,13 @@ async function pair(askerKind, receiverKind, what, kase = "fresh") {
 		await Promise.all([ready(a), ready(b)]);
 		const bSeenBefore = b.events().filter((e) => e.type === "in").length;
 		await a.type(REQUESTS[what](b.name));
+		await until(() => a.events().some((e) => e.type === "send" && !e.error), 300_000, `${a.name} sends the request with duet_send`);
 		// The receiver must get it by itself; if it doesn't within 3 minutes, the harness may only type
 		// the page's fixed nudge, and that is reported.
 		try {
 			await until(() => b.events().filter((e) => e.type === "in").length > bSeenBefore, 180_000, `${b.name} receives the request`);
-		} catch {
+		} catch (err) {
+			if (b.kind === "pi") throw err; // pi has push and no "check duet"
 			nudged = true;
 			log(`${b.name} did not receive by itself: typing the page's nudge "check duet"`);
 			await b.type("check duet");

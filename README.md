@@ -34,6 +34,10 @@ same way. The answer arrives back in your session.
 
 Any agent can also read waiting messages with `duet_inbox` ("check duet").
 
+Claude Code's 2-minute threshold is its own setting. Starting Claude with
+`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=10000` moves the wait to the background after 10 seconds, but it
+also does that for every other MCP tool.
+
 ### Unattended back-and-forth is capped
 
 Two polite agents could thank each other forever, on your bill.
