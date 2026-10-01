@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { envelope, isForMe, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
+import { envelope, isForMe, isName, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
 
 if (process.argv[2] === "setup") {
 	await import("./setup.js");
@@ -39,6 +39,11 @@ const name = args.name || process.env.DUET_NAME;
 const server = (args.server || process.env.DUET_SERVER || "https://ntfy.sh").replace(/\/+$/, "");
 if (!isRelayUrl(server)) {
 	console.error(`duet: --server must be an http(s) URL like https://ntfy.sh, got ${JSON.stringify(server)}`);
+	process.exit(1);
+}
+// Peers drop messages from names outside the rule, so never send under one.
+if (name !== undefined && !isName(name)) {
+	console.error(`duet: --name may only use letters, digits, . _ - (at most 40), got ${JSON.stringify(name)}`);
 	process.exit(1);
 }
 // Unattended back-and-forth allowed before the agent must check with its user.
@@ -125,7 +130,8 @@ function takeLock() {
 				// Empty: another window created it a moment ago and is still writing its pid.
 				if (!held && Date.now() - statSync(lockFile).mtimeMs < 5000) return false;
 				if (Number(held) === process.pid) return true;
-				rmSync(lockFile); // a dead owner's
+				// A dead owner's: remove it only if it is still that one, not a lock just taken over.
+				if (readFileSync(lockFile, "utf8") === held && !lockOwner()) rmSync(lockFile);
 			} catch {}
 		}
 	}
@@ -150,6 +156,7 @@ let codexThread; // learned from Codex's tool-call metadata; lets us push with `
 let pushing; // the messages handed to `codex queue`, until it confirms
 let dropped = 0; // messages dropped because the inbox was full
 let lastSend = 0; // when this session last sent (Claude Code: see SETTLE_MS)
+let pushNote = ""; // why Codex isn't being pushed to right now, shown in duet_status
 
 // Take messages out of the inbox to show them to the model.
 function take(count = inbox.length) {
@@ -194,7 +201,7 @@ function deliver() {
 	// older (backgrounded) listeners get it once the sending turn has had time to end.
 	const settling = isClaude() && Date.now() - lastSend < SETTLE_MS;
 	const waiter = waiters.find((w) => !settling || w.since >= lastSend);
-	if (waiter) return waiter.wake(); // one listener takes it; others keep listening
+	if (waiter) return waiter.wake(take()); // one listener takes it all; others keep listening
 	if (settling && waiters.length) {
 		clearTimeout(settleTimer);
 		settleTimer = setTimeout(deliver, lastSend + SETTLE_MS - Date.now());
@@ -214,7 +221,7 @@ function onCursor(cursor) {
 function pushToCodex() {
 	if (pushing || !codexThread || !inbox.length || exchanges >= MAX_AUTO || WINDOWS) return;
 	if (!codexWindowOpen()) {
-		status = "connected; no Codex window open in this folder, so messages wait for duet_inbox";
+		pushNote = "no Codex window open in this folder, so messages wait for duet_inbox";
 		return;
 	}
 	// A batch at a time keeps the argument well under OS limits. Out of the inbox while on its way,
@@ -222,42 +229,50 @@ function pushToCodex() {
 	let size = 0;
 	let count = 0;
 	while (count < inbox.length && count < 8 && size + inbox[count].text.length < 30_000) size += inbox[count++].text.length;
-	pushing = inbox.splice(0, Math.max(1, count));
-	execFile(CODEX, ["queue", "--thread", codexThread, "--message", render(pushing)], { timeout: 30_000 }, (err, _out, stderr) => {
-		const batch = pushing;
+	const batch = (pushing = inbox.splice(0, Math.max(1, count)));
+	const finish = (err, stderr) => {
 		pushing = undefined;
 		if (err) {
 			// A timeout may still have queued it: then it shows twice, which beats losing it.
 			inbox.unshift(...batch);
-			status = `connected; push to Codex failed: ${(stderr || err.message).trim().slice(0, 200)}`;
+			pushNote = `push to Codex failed: ${String(stderr || err.message).trim().slice(0, 200)}`;
 			return;
 		}
+		pushNote = "";
 		receivedSinceSend = true;
 		consumed();
 		pushToCodex(); // anything that arrived meanwhile
-	});
+	};
+	try {
+		execFile(CODEX, ["queue", "--thread", codexThread, "--message", render(batch)], { timeout: 30_000 }, (err, _out, stderr) => finish(err, stderr));
+	} catch (err) {
+		finish(err); // e.g. an argument execFile refuses outright
+	}
 }
 
 // Codex keeps a closed window's session, and this server, alive for about a minute; a push then would
 // run a turn nobody watches (observed). So only push while a Codex window is open in this folder:
 // a `codex` process here that isn't its background server or a one-off command.
 function codexWindowOpen() {
-	const isWindow = (argv0, rest) => /(^|\/)codex$/.test(argv0) && !/app-server|queue|exec|mcp/.test(rest);
+	// Judged by the subcommand only: `codex "fix the mcp tests"` is a window.
+	const isWindow = (argv0, args) => /(^|\/)codex$/.test(argv0) && !/^(app-server|queue|exec|e|mcp|mcp-server|login|logout|setup|doctor|apply|a)$/.test(args[0] ?? "");
 	try {
 		if (process.platform === "linux") {
 			for (const pid of readdirSync("/proc")) {
 				if (!/^\d+$/.test(pid)) continue;
 				try {
-					const [argv0, ...rest] = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
-					if (isWindow(argv0, rest.join(" ")) && readlinkSync(`/proc/${pid}/cwd`) === process.cwd()) return true;
+					const [argv0, ...args] = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+					if (isWindow(argv0, args) && readlinkSync(`/proc/${pid}/cwd`) === process.cwd()) return true;
 				} catch {} // gone, or not ours to read
 			}
 		} else if (process.platform === "darwin") {
 			for (const line of execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" }).split("\n")) {
 				const m = line.trim().match(/^(\d+)\s+(\S+)(.*)$/);
-				if (!m || !isWindow(m[2], m[3])) continue;
-				const lsof = execFileSync("lsof", ["-a", "-d", "cwd", "-p", m[1], "-Fn"], { encoding: "utf8" });
-				if (lsof.split("\n").some((l) => l === `n${process.cwd()}`)) return true;
+				if (!m || !isWindow(m[2], m[3].trim().split(/\s+/))) continue;
+				try {
+					const lsof = execFileSync("lsof", ["-a", "-d", "cwd", "-p", m[1], "-Fn"], { encoding: "utf8" });
+					if (lsof.split("\n").some((l) => l === `n${process.cwd()}`)) return true;
+				} catch {} // that process is gone or not ours
 			}
 		}
 	} catch {}
@@ -271,7 +286,14 @@ function joinRoom() {
 		status = `off: ${heldBy(owner)}`;
 		return false;
 	}
-	if (!takeLock()) {
+	let took;
+	try {
+		took = takeLock();
+	} catch (err) {
+		status = `off: can't write ${lockFile}: ${err.message}`;
+		return false;
+	}
+	if (!took) {
 		status = `off: ${heldBy(lockOwner())}`;
 		return false;
 	}
@@ -355,22 +377,24 @@ function needRoom() {
 	if (!joinRoom()) throw new Error(`Not in the room: ${heldBy(lockOwner())}.`);
 }
 
-async function wait(seconds, signal, progress) {
-	if (inbox.length) return;
-	await new Promise((resolve) => {
+// Resolves with the messages handed to this wait (none on timeout or cancel).
+function wait(seconds, signal, progress) {
+	if (inbox.length) return Promise.resolve(take());
+	return new Promise((resolve) => {
 		let timer, beat;
-		const waiter = { since: Date.now(), wake: () => done() };
-		const done = () => {
+		const done = (items = []) => {
 			clearTimeout(timer);
 			clearInterval(beat);
-			signal.removeEventListener("abort", done);
+			signal.removeEventListener("abort", stop);
 			const i = waiters.indexOf(waiter);
 			if (i >= 0) waiters.splice(i, 1);
-			resolve();
+			resolve(items);
 		};
-		timer = setTimeout(done, seconds * 1000);
+		const stop = () => done();
+		const waiter = { since: Date.now(), wake: done };
+		timer = setTimeout(stop, seconds * 1000);
 		if (progress) beat = setInterval(progress, PROGRESS_MS);
-		signal.addEventListener("abort", done);
+		signal.addEventListener("abort", stop);
 		waiters.push(waiter);
 	});
 }
@@ -400,8 +424,7 @@ async function callTool(tool, a = {}, ctx) {
 			needRoom();
 			const max = isClaude() ? LISTEN_MAX : WAIT_MAX;
 			const seconds = Math.min(max, Math.max(1, Number(a.seconds) || max));
-			await wait(seconds, ctx.signal, ctx.progress);
-			const got = take();
+			const got = await wait(seconds, ctx.signal, ctx.progress);
 			if (got.length) return render(got) + (isClaude() ? "\n\nWhen you have handled this, call duet_wait again to keep listening." : "");
 			if (ctx.signal.aborted) return "Stopped waiting.";
 			return isClaude()
@@ -417,7 +440,8 @@ async function callTool(tool, a = {}, ctx) {
 			// Only the start of the room code: the whole code would go to the model's provider.
 			const shown = room ? `"${room.slice(0, 4)}…"` : "(none)";
 			const lost = dropped ? `; ${dropped} older message(s) dropped (inbox full)` : "";
-			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}`;
+			const note = pushNote && sub ? `; ${pushNote}` : "";
+			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}${note}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}`;
 		}
 	}
 	throw new Error(`unknown tool ${tool}`);
@@ -481,7 +505,9 @@ async function handle(msg) {
 			} finally {
 				inflight.delete(id);
 			}
+			send({ id, result });
 			pushToCodex(); // the first tool call tells us the session to push to
+			return;
 		} else return send({ id, error: { code: -32601, message: `method not found: ${method}` } });
 		send({ id, result });
 	} catch (err) {

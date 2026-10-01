@@ -179,7 +179,9 @@ async function withSpend(name, agents, fn) {
 	try {
 		await fn();
 	} finally {
-		log(`$ spent in ${name}: ${agents.reduce((sum, a) => sum + cost(a), 0).toFixed(4)} (per pi's usage records)`);
+		const usd = agents.reduce((sum, a) => sum + cost(a), 0);
+		log(`$ spent in ${name}: ${usd.toFixed(4)} (per pi's usage records)`);
+		results.push({ name: "spend", ok: true, usd });
 	}
 }
 
@@ -312,6 +314,12 @@ async function plumbing() {
 	await Promise.all([bob.stop(), bob2.stop()]);
 
 	await printModeStaysOut(fake);
+
+	// A name outside the rule (e.g. saved by v1) is made to fit, or peers would drop everything it sends.
+	const odd = startAgent("bob", freshRoom(), { agentDir: join(ROOT, "fit-agent"), cwd: join(ROOT, "fit"), extraEnv: { DUET_NAME: "bob q@laptop" } });
+	const fitted = await until(() => statusOf(odd)?.startsWith("duet: bob-q-laptop") && statusOf(odd), 20_000, "fitted name").catch(() => statusOf(odd));
+	await odd.stop();
+	check("a name outside the rule is made to fit", fitted === "duet: bob-q-laptop", `DUET_NAME="bob q@laptop" → status ${JSON.stringify(fitted)}`);
 	fake.close();
 }
 
@@ -499,8 +507,9 @@ try {
 	check("harness", false, err.message);
 }
 await Promise.all([...live].map((a) => a.stop()));
-const failed = results.filter((r) => !r.ok);
-log(`${results.length - failed.length}/${results.length} checks passed`);
+const checks = results.filter((r) => r.name !== "spend");
+const failed = checks.filter((r) => !r.ok);
+log(`${checks.length - failed.length}/${checks.length} checks passed`);
 if (process.env.DUET_RESULTS) {
 	const { appendFileSync } = await import("node:fs");
 	appendFileSync(process.env.DUET_RESULTS, JSON.stringify({ suite: `pi-${which.join("+") || "plumbing"}`, server: SERVER, at: new Date().toISOString(), results }) + "\n");

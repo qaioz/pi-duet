@@ -8,6 +8,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { envelope, publish, topicFor } from "../transport.js";
@@ -33,6 +34,8 @@ async function until(pred, ms, what) {
 	throw new Error(`timed out after ${ms}ms waiting for ${what}`);
 }
 const freshRoom = () => `t-${randomUUID()}`;
+const windows = []; // fake Codex windows; never left running after the test
+process.on("exit", () => windows.forEach((w) => w.kill()));
 const live = new Set();
 
 // A minimal MCP client around one server process.
@@ -232,7 +235,7 @@ async function main() {
 	// but only while a Codex window is open in the server's folder: here a `sleep` named codex.
 	mkdirSync(join(ROOT, "bin"), { recursive: true });
 	symlinkSync(execFileSync("sh", ["-c", "command -v sleep"], { encoding: "utf8" }).trim(), join(ROOT, "bin/codex"));
-	const codexWindow = spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" });
+	const codexWindow = windows[windows.push(spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" })) - 1];
 	const qlog = join(ROOT, "codex-queue.log");
 	const fakeCodex = join(ROOT, "fake-codex.mjs");
 	writeFileSync(fakeCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(qlog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nconsole.log("Queued message");\n`);
@@ -291,7 +294,7 @@ async function main() {
 		queued().length === beforeClose && closedStatus.includes("no Codex window open") && closedInbox.text.includes("AFTER-WINDOW-CLOSED"),
 		`pushes after close: ${queued().length - beforeClose}; status: ${closedStatus.split("— ")[1]}`,
 	);
-	const codexWindow2 = spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" });
+	const codexWindow2 = windows[windows.push(spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" })) - 1];
 
 	// A slow `codex queue` racing a duet_inbox: every message reaches the model exactly once.
 	const slowLog = join(ROOT, "slow-queue.log");
@@ -315,13 +318,12 @@ async function main() {
 	const seen = (t) => (raceInbox.text.split(t).length - 1) + (slowPushed.split(t).length - 1);
 	check(
 		"Codex push racing duet_inbox: each message shown exactly once",
-		seen("RACE-1") === 1 && seen("RACE-2") === 1,
+		seen("RACE-1") === 1 && seen("RACE-2") === 1 && slowPushed.includes("RACE-1") && !raceInbox.text.includes("RACE-1"),
 		`RACE-1 pushed ${slowPushed.includes("RACE-1")}, in inbox ${raceInbox.text.includes("RACE-1")}; RACE-2 pushed ${slowPushed.includes("RACE-2")}, in inbox ${raceInbox.text.includes("RACE-2")}`,
 	);
 
-	codexWindow2.kill();
-
-	// Windows: no push at all (the codex shim would put the peer's text through cmd.exe).
+	// Windows: no push at all (the codex shim would put the peer's text through cmd.exe), even with a
+	// Codex window open; the same setup without the Windows switch does push (control).
 	const wRoom = freshRoom();
 	const wlog = join(ROOT, "win-queue.log");
 	const winCodex = join(ROOT, "win-codex.mjs");
@@ -336,7 +338,21 @@ async function main() {
 	await w2.call("duet_send", { text: "WIN & calc.exe", user_asked: true });
 	await sleep(2000);
 	const winInbox = await w1.call("duet_inbox", {}, meta("user"));
-	check("Windows: never pushes through codex, messages wait in the inbox", !existsSync(wlog) && winInbox.text.includes("WIN & calc.exe"), `codex shim called: ${existsSync(wlog)}; inbox: ${JSON.stringify(winInbox.text.slice(0, 80))}`);
+	const winCalled = existsSync(wlog);
+	const c1 = startServer("cal", wRoom, { env: { DUET_CODEX_BIN: winCodex } });
+	await c1.init("codex-mcp-client");
+	await waitConnected(c1);
+	await c1.call("duet_status", {}, meta("user"));
+	await w2.call("duet_send", { text: "CONTROL", to: "cal", user_asked: true });
+	await until(() => existsSync(wlog), 5000, "control push").catch(() => {});
+	const controlPushed = existsSync(wlog);
+	await c1.stop();
+	codexWindow2.kill();
+	check(
+		"Windows: never pushes through codex, messages wait in the inbox",
+		!winCalled && winInbox.text.includes("WIN & calc.exe") && controlPushed,
+		`with a Codex window open: shim called on "win32": ${winCalled}; inbox has the message: ${winInbox.text.includes("WIN & calc.exe")}; control (same, not win32) pushed: ${controlPushed}`,
+	);
 
 	// Peer names are letters, digits, . _ - only; anything else is dropped as noise.
 	await publish(SERVER, topicFor(wRoom), envelope({ fromId: "evil", from: 'x" & calc', kind: "msg", text: "BAD-NAME" }));
@@ -395,6 +411,78 @@ async function main() {
 		p.on("exit", (code) => r({ code, err }));
 	});
 	check("bad --server refused", bad.code === 1 && bad.err.includes("--server must be"), `exit ${bad.code}: ${bad.err.trim()}`);
+
+	// A NUL byte in a peer's text is dropped as noise: normal traffic, pushes and tool calls go on.
+	const nRoom = freshRoom();
+	const nlog = join(ROOT, "nul-queue.log");
+	const nulCodex = join(ROOT, "nul-codex.mjs");
+	writeFileSync(nulCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(nlog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`);
+	chmodSync(nulCodex, 0o755);
+	const nulWindow = windows[windows.push(spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" })) - 1];
+	const n1 = startServer("nell", nRoom, { env: { DUET_CODEX_BIN: nulCodex } });
+	await n1.init("codex-mcp-client");
+	await waitConnected(n1);
+	await n1.call("duet_status", {}, meta("user"));
+	await publish(SERVER, topicFor(nRoom), envelope({ fromId: "evil", from: "eve", kind: "msg", text: "EVIL\u0000NUL" }));
+	await publish(SERVER, topicFor(nRoom), envelope({ fromId: "nice", from: "nate", kind: "msg", text: "NORMAL-AFTER" }));
+	await until(() => existsSync(nlog) && readFileSync(nlog, "utf8").includes("NORMAL-AFTER"), 5000, "the normal message pushed").catch(() => {});
+	const nulPushed = existsSync(nlog) ? readFileSync(nlog, "utf8") : "";
+	const nulSend = await n1.call("duet_send", { text: "still fine", user_asked: true });
+	const nulStatus = await n1.request("tools/call", { name: "duet_status", arguments: {} });
+	nulWindow.kill();
+	check(
+		"a NUL in a peer's text can't wedge anything",
+		nulPushed.includes("NORMAL-AFTER") && !nulPushed.includes("EVIL") && !nulSend.isError && !!nulStatus.result && !nulStatus.result.isError,
+		`normal message pushed: ${nulPushed.includes("NORMAL-AFTER")}; NUL message pushed: ${nulPushed.includes("EVIL")}; duet_send after: ${nulSend.text.slice(0, 30)}; duet_status ok: ${!!nulStatus.result}`,
+	);
+
+	// A name outside the rule is refused at start: peers would drop everything sent under it.
+	const badName = await new Promise((r) => {
+		const p = spawn(process.execPath, [BIN, "--room", "r", "--name", "Nika Q", "--server", SERVER], { env: { HOME: ROOT, PATH: process.env.PATH } });
+		let err = "";
+		p.stderr.on("data", (d) => (err += d));
+		p.on("exit", (code) => r({ code, err }));
+	});
+	check("bad --name refused", badName.code === 1 && badName.err.includes("--name may only use"), `exit ${badName.code}: ${badName.err.trim()}`);
+
+	// Two messages close together never leave a second listener returning empty.
+	const dRoom = freshRoom();
+	const d1 = startServer("dora", dRoom);
+	const d2 = startServer("dan", dRoom);
+	await d1.init("claude-code");
+	await d2.init();
+	await Promise.all([waitConnected(d1), waitConnected(d2)]);
+	const t0d = Date.now();
+	const w1d = d1.call("duet_wait", { seconds: 6 }).then((r) => ({ r, at: Date.now() - t0d }));
+	const w2d = d1.call("duet_wait", { seconds: 6 }).then((r) => ({ r, at: Date.now() - t0d }));
+	await sleep(300);
+	await Promise.all([d2.call("duet_send", { text: "BURST-1", user_asked: true }), d2.call("duet_send", { text: "BURST-2", user_asked: true })]);
+	const [rd1, rd2] = await Promise.all([w1d, w2d]);
+	const emptyEarly = [rd1, rd2].filter((x) => !x.r.text.includes("BURST") && x.at < 5000).length;
+	const bursts = (rd1.r.text + rd2.r.text).match(/BURST-\d/g) ?? [];
+	check("a burst wakes listeners only with messages", emptyEarly === 0 && bursts.length === 2, `listener results: ${[rd1, rd2].map((x) => `${x.at}ms ${x.r.text.includes("BURST") ? (x.r.text.match(/BURST-\d/g) ?? []).join("+") : "empty"}`).join(", ")}`);
+
+	// Same, with both messages in one chunk from the relay (a fake one that writes them together).
+	const chunkRelay = createServer((req, res) => {
+		if (req.method !== "GET") return res.writeHead(200).end("{}");
+		res.writeHead(200, { "content-type": "application/x-ndjson" });
+		const line = (id, text) => JSON.stringify({ id, time: Math.floor(Date.now() / 1000), event: "message", message: JSON.stringify(envelope({ fromId: "p", from: "pat", kind: "msg", text })) }) + "\n";
+		setTimeout(() => res.write(line("c1", "CHUNK-1") + line("c2", "CHUNK-2")), 1500);
+	});
+	await new Promise((r) => chunkRelay.listen(0, "127.0.0.1", r));
+	const k1 = startServer("kim", "chunkroom", { args: ["--server", `http://127.0.0.1:${chunkRelay.address().port}`] });
+	await k1.init("claude-code");
+	const t0k = Date.now();
+	const [rk1, rk2] = await Promise.all([1, 2].map(() => k1.call("duet_wait", { seconds: 5 }).then((r) => ({ r, at: Date.now() - t0k }))));
+	chunkRelay.closeAllConnections();
+	chunkRelay.close();
+	await k1.stop();
+	const chunks = (rk1.r.text + rk2.r.text).match(/CHUNK-\d/g) ?? [];
+	check(
+		"one chunk of messages: no listener wakes empty, each message shown once",
+		[rk1, rk2].every((x) => x.r.text.includes("CHUNK") || x.at >= 4500) && chunks.sort().join() === "CHUNK-1,CHUNK-2",
+		`listener results: ${[rk1, rk2].map((x) => `${x.at}ms ${(x.r.text.match(/CHUNK-\d/g) ?? ["empty"]).join("+")}`).join(", ")}`,
+	);
 
 	// setup codex writes the server into config.toml (and replaces an earlier duet block).
 	const codexHome = join(ROOT, "codex-home");

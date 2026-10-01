@@ -12,7 +12,7 @@
 //      DUET_BUDGET (stop above this OpenRouter key usage, default 4.5).
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { subscribe, topicFor } from "../transport.js";
 import { Agent, killTmux, sleep, until } from "./agents.mjs";
@@ -253,6 +253,7 @@ async function loop(kindA, kindB) {
 		);
 	} catch (err) {
 		check("scenario", false, err.message);
+		for (const x of [a, b]) log(`--- ${x.name} screen ---\n${x.screen().split("\n").filter(Boolean).slice(-25).join("\n")}`);
 	} finally {
 		watch.stop();
 		scenarioCost = a.cost() + b.cost();
@@ -327,9 +328,23 @@ async function closed() {
 		const quitAt = Date.now();
 		const { envelope, publish } = await import("../transport.js");
 		await publish(SERVER, topicFor(room), envelope({ fromId: "peer", from: "peer", kind: "msg", text: "Please create a file AFTER-QUIT.txt containing x in your folder." }));
-		await sleep(75_000); // past the ~1 min Codex keeps a closed session
+		// The duet server must still be running then, so it's duet that holds back, not Codex
+		// that already stopped it.
+		await sleep(5000);
+		const serverAlive = readdirSync("/proc").some((pid) => {
+			try {
+				return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("--name\0quinn") && readlinkSync(`/proc/${pid}/cwd`).startsWith(a.dir);
+			} catch {
+				return false;
+			}
+		});
+		await sleep(70_000); // past the ~1 min Codex keeps a closed session
 		const ran = existsSync(join(a.cwd, "AFTER-QUIT.txt")) || a.events().some((e) => e.type === "in" && e.at > quitAt);
-		check("nothing ran after the window closed", !ran, `75 s after a request arrived for a closed window: file ${existsSync(join(a.cwd, "AFTER-QUIT.txt"))}, turns ${a.events().filter((e) => e.type === "in" && e.at > quitAt).length}`);
+		check(
+			"nothing ran after the window closed",
+			!ran && serverAlive,
+			`duet server still running 5 s after the request arrived: ${serverAlive}; 75 s later: file ${existsSync(join(a.cwd, "AFTER-QUIT.txt"))}, turns ${a.events().filter((e) => e.type === "in" && e.at > quitAt).length}`,
+		);
 		await a.clear();
 		await a.type("codex resume --last");
 		await a.waitScreen(/›/, 60_000, "codex resumed");
@@ -362,8 +377,9 @@ try {
 	check("harness", false, err.message);
 }
 if (!process.env.DUET_KEEP_TMUX) killTmux();
-const failed = results.filter((r) => !r.ok);
+const checks = results.filter((r) => r.name !== "spend");
+const failed = checks.filter((r) => !r.ok);
 const total = results.filter((r) => r.name === "spend").reduce((s, r) => s + r.usd, 0);
-log(`${results.length - failed.length}/${results.length} passed; $${total.toFixed(4)} spent (from the agents' logs); pinned to ${PIN.slice(0, 7)}; relay ${SERVER}`);
+log(`${checks.length - failed.length}/${checks.length} checks passed; $${total.toFixed(4)} spent (from the agents' logs); pinned to ${PIN.slice(0, 7)}; relay ${SERVER}`);
 if (process.env.DUET_RESULTS) appendFileSync(process.env.DUET_RESULTS, JSON.stringify({ suite: "pairs", pin: PIN, server: SERVER, at: new Date().toISOString(), results }) + "\n");
 process.exit(failed.length ? 1 : 0);

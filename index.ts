@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { envelope, isForMe, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
+import { envelope, fitName, isForMe, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
 import type { Cursor, Envelope } from "./transport.js";
 
 type Config = { room?: string; name?: string; server?: string; fromId?: string; cursors: Record<string, Cursor> };
@@ -56,7 +56,9 @@ export default function (pi: ExtensionAPI) {
 	const fromId = saved.fromId!;
 	// Env wins over the file, so one machine can run several test identities.
 	let room = process.env.DUET_ROOM || saved.room;
+	// Peers drop names outside the rule (letters, digits, . _ -), so an older saved name is made to fit.
 	let name = process.env.DUET_NAME || saved.name;
+	if (name) name = fitName(name);
 	let server = (process.env.DUET_SERVER || saved.server || DEFAULT_SERVER).replace(/\/+$/, "");
 	const cursorKey = () => `${server} ${room}`;
 
@@ -164,11 +166,10 @@ export default function (pi: ExtensionAPI) {
 				return notify("duet: left the room");
 			}
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
-			if (!/^[\p{L}\p{N}._-]{1,40}$/u.test(parts[1])) return notify("duet: a name may only use letters, digits, . _ -", "error");
 			if (parts[2] && !isRelayUrl(parts[2].replace(/\/+$/, ""))) return notify("duet: the server must be an http(s) URL", "error");
 			const owner = lockOwner();
 			if (owner) return notify(`duet: ${heldBy(owner)}`, "error");
-			[room, name] = parts;
+			[room, name] = [parts[0], fitName(parts[1])];
 			if (parts[2]) server = parts[2].replace(/\/+$/, "");
 			updateConfig((c) => Object.assign(c, { room, name, server }));
 			joinRoom();

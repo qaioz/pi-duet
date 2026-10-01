@@ -26,7 +26,8 @@ const server = opt("--server");
 const pkg = opt("--package") || "github:qaioz/pi-duet";
 if (!off) {
 	if (!room || !name) fail("--room and --name are required");
-	for (const [k, v] of Object.entries({ room, name })) if (!/^[A-Za-z0-9._-]+$/.test(v)) fail(`${k} may only use letters, digits, . _ -`);
+	for (const [k, v] of Object.entries({ room, name })) if (!/^[A-Za-z0-9._-]{1,64}$/.test(v)) fail(`${k} may only use letters, digits, . _ - (at most 64)`);
+	if (name.length > 40) fail("--name may be at most 40 characters");
 	if (server && !isRelayUrl(server)) fail("--server must be an http(s) URL like https://ntfy.example.com");
 }
 
