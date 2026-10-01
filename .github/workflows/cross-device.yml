@@ -1,0 +1,52 @@
+# Cross-device test, started by hand only: a pi agent on a GitHub-hosted machine (another OS, another
+# network) joins a duet room over ntfy.sh and does what an agent elsewhere asks. The room is derived
+# from the CI key and the nonce (test/remote.mjs), so the public inputs don't reveal it.
+name: cross-device
+on:
+  workflow_dispatch:
+    inputs:
+      nonce:
+        description: Public nonce; the room is derived from it and the CI key
+        required: true
+      os:
+        description: Runner
+        type: choice
+        options: [macos-latest, windows-latest, ubuntu-latest]
+        default: macos-latest
+      name:
+        description: The runner agent's name in the room
+        default: runner
+      minutes:
+        description: How long the runner stays in the room
+        default: "8"
+      server:
+        description: Relay
+        default: https://ntfy.sh
+permissions:
+  contents: read
+jobs:
+  agent:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pi
+        run: npm i -g @mariozechner/pi-coding-agent@0.73.1
+      - name: Join the room and serve requests
+        run: node test/remote.mjs
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY_CI }}
+          DUET_NONCE: ${{ inputs.nonce }}
+          DUET_NAME: ${{ inputs.name }}
+          DUET_SERVER: ${{ inputs.server }}
+          DUET_MINUTES: ${{ inputs.minutes }}
+          DUET_PIN: ${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: remote-events-${{ inputs.os }}
+          path: remote-events.jsonl
+          if-no-files-found: ignore
