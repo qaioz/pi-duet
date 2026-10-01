@@ -43,7 +43,7 @@ if (!isRelayUrl(server)) {
 }
 // Peers drop messages from names outside the rule, so never send under one.
 if (name !== undefined && !isName(name)) {
-	console.error(`duet: --name may only use letters, digits, . _ - (at most 40), got ${JSON.stringify(name)}`);
+	console.error(`duet: --name may only use letters, digits, . _ -, must start with a letter or digit, at most 40; got ${JSON.stringify(name)}`);
 	process.exit(1);
 }
 // Unattended back-and-forth allowed before the agent must check with its user.
@@ -164,7 +164,7 @@ const PUSH_PAUSE_MS = Number(process.env.DUET_PUSH_PAUSE_MS) || 60_000;
 function take(count = inbox.length) {
 	const items = inbox.splice(0, count);
 	if (items.length) receivedSinceSend = true;
-	if (!inbox.length && Date.now() >= pushPausedUntil) pushNote = "";
+	if (!inbox.length && !pushPausedUntil) pushNote = "";
 	consumed();
 	return items;
 }
@@ -225,6 +225,10 @@ function onCursor(cursor) {
 // in the inbox, like pi holding messages until its user types. Not on Windows: there `codex` is a
 // .cmd shim that only runs through cmd.exe, and the other agent's text must never reach a shell.
 function pushToCodex() {
+	if (pushPausedUntil && Date.now() >= pushPausedUntil) {
+		pushPausedUntil = 0;
+		pushNote = ""; // the pause is over
+	}
 	if (pushing || !codexThread || !inbox.length || exchanges >= MAX_AUTO || WINDOWS || Date.now() < pushPausedUntil) return;
 	if (!codexWindowOpen()) {
 		pushNote = "no Codex window open in this folder, so messages wait for duet_inbox";
@@ -431,11 +435,19 @@ async function callTool(tool, a = {}, ctx) {
 						"Stop here and ask your user whether to continue; only if they say so, send again with user_asked: true.",
 				);
 			}
-			await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "msg", to: a.to, text: a.text }), ctx.signal);
-			// Counted only once it really went out.
+			// Counted before the await, so parallel sends can't slip past the cap; given back if it
+			// never went out.
+			const before = { exchanges, receivedSinceSend };
 			if (a.user_asked === true) exchanges = 0;
 			else if (unattended) exchanges++;
 			receivedSinceSend = false;
+			try {
+				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "msg", to: a.to, text: a.text }), ctx.signal);
+			} catch (err) {
+				exchanges = before.exchanges;
+				receivedSinceSend ||= before.receivedSinceSend;
+				throw err;
+			}
 			lastSend = Date.now();
 			pushToCodex(); // a user turn may have lifted the cap
 			return "sent — the other agent has not answered yet; its reply will arrive later";

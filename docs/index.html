@@ -105,7 +105,7 @@ function newRoom() {
 	return out;
 }
 const roomFromHash = () => (/^#([a-z2-7]{20,64})$/.exec(location.hash) || [])[1];
-const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24);
+const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").replace(/^[_-]+/, "").slice(0, 24); // starts with a letter or digit
 
 // Each case: [where it is typed, the command]. {room}, {name} and the relay are filled in.
 const AGENTS = {

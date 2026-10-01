@@ -27,7 +27,7 @@ const pkg = opt("--package") || "github:qaioz/pi-duet";
 if (!off) {
 	if (!room || !name) fail("--room and --name are required");
 	if (!/^[A-Za-z0-9._-]{1,64}$/.test(room)) fail("--room may only use a-z, A-Z, 0-9, . _ - (at most 64)");
-	if (!isName(name)) fail("--name may only use letters, digits, . _ - (at most 40)");
+	if (!isName(name)) fail("--name may only use letters, digits, . _ -, must start with a letter or digit, at most 40");
 	if (server && !isRelayUrl(server)) fail("--server must be an http(s) URL like https://ntfy.example.com");
 }
 

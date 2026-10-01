@@ -11,7 +11,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, sy
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { envelope, publish, topicFor } from "../transport.js";
+import { envelope, fitName, isForMe, isName, publish, topicFor } from "../transport.js";
 
 const SERVER = (process.env.DUET_SERVER || "http://127.0.0.1:18080").replace(/\/+$/, "");
 const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test-v2/mcp");
@@ -461,14 +461,33 @@ async function main() {
 	const nulOut = await t1.call("duet_send", { text: "a\u0000b", user_asked: true });
 	check("a NUL is refused by the sender", nulOut.isError && nulOut.text.includes("NUL"), nulOut.text);
 
+	// A refused unattended send doesn't use up the cap: with cap 1, after a received message, a
+	// refused send leaves the one allowed reply.
+	const capRoom2 = freshRoom();
+	const u1 = startServer("uma", capRoom2, { env: { DUET_MAX_AUTO: "1" } });
+	const u2 = startServer("udo", capRoom2);
+	await Promise.all([u1.init(), u2.init()]);
+	await Promise.all([waitConnected(u1), waitConnected(u2)]);
+	await u2.call("duet_send", { text: "hi", user_asked: true });
+	await u1.call("duet_wait", { seconds: 10 });
+	const refusedFirst = await u1.call("duet_send", { text: "bad\u0000" });
+	const thenReply = await u1.call("duet_send", { text: "the one allowed reply" });
+	check("a refused send doesn't use up the cap", refusedFirst.isError && !thenReply.isError, `cap 1: NUL send ${refusedFirst.isError ? "refused" : "sent"}, then the reply ${thenReply.isError ? "refused" : "sent"}`);
+
+	// The name rule and addressing, directly.
+	const nameCases = [isName("nika"), !isName("_nika"), !isName("\u0301"), isName("Jose\u0301"), fitName("_x") === "x", fitName("nika@laptop") === "nika-laptop", isForMe({ fromId: "p", to: "Jose\u0301" }, "me", "Jos\u00e9")];
+	check("name rule and NFC addressing", nameCases.every(Boolean), `cases: ${nameCases.join(", ")}`);
+
 	// A failed push: a duet_wait that started while the push was in flight gets the message as soon
 	// as the push fails; then pushes pause, so duet_inbox has the next one.
 	const fRoom = freshRoom();
 	const failCodex = join(ROOT, "fail-codex.mjs");
-	writeFileSync(failCodex, "#!/usr/bin/env node\nsetTimeout(() => { console.error('queue is down'); process.exit(1); }, 1500);\n");
+	const failLog = join(ROOT, "fail-queue.log");
+	writeFileSync(failCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(failLog)}, "call\\n");\nsetTimeout(() => { console.error("queue is down"); process.exit(1); }, 1500);\n`);
+	const failCalls = () => (existsSync(failLog) ? readFileSync(failLog, "utf8").split("\n").filter(Boolean).length : 0);
 	chmodSync(failCodex, 0o755);
 	const failWindow = windows[windows.push(spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" })) - 1];
-	const f1 = startServer("fay", fRoom, { env: { DUET_CODEX_BIN: failCodex } });
+	const f1 = startServer("fay", fRoom, { env: { DUET_CODEX_BIN: failCodex, DUET_PUSH_PAUSE_MS: "4000" } });
 	const f2 = startServer("finn", fRoom);
 	await f1.init("codex-mcp-client");
 	await f2.init();
@@ -482,11 +501,15 @@ async function main() {
 	await sleep(1000);
 	const fStatus = await f1.call("duet_status");
 	const fInbox = await f1.call("duet_inbox", {}, meta("user"));
+	const callsBefore = failCalls();
+	await f2.call("duet_send", { text: "WAITS-FOR-RETRY", user_asked: true });
+	await sleep(5500); // the 4 s pause ends; the retry must push it without any other nudge
+	const retried = failCalls() > callsBefore;
 	failWindow.kill();
 	check(
 		"a failed push hands the message to a listener, then leaves the inbox alone",
-		fGot.r.text.includes("AFTER-FAILED-PUSH") && fGot.at < 5000 && fInbox.text.includes("DURING-PAUSE") && fStatus.text.includes("push to Codex failed"),
-		`a wait started during the failing push got the message after ${fGot.at}ms; inbox during the pause: ${JSON.stringify(fInbox.text.slice(0, 80))}; status: ${fStatus.text.split("— ")[1]?.slice(0, 120)}`,
+		fGot.r.text.includes("AFTER-FAILED-PUSH") && fGot.at >= 700 && fGot.at < 5000 && callsBefore >= 1 && fInbox.text.includes("DURING-PAUSE") && fStatus.text.includes("push to Codex failed") && retried,
+		`a wait started during the failing push got the message after ${fGot.at}ms (push in flight: ${callsBefore} codex call(s)); inbox during the pause: ${JSON.stringify(fInbox.text.slice(0, 60))}; status: ${fStatus.text.split("— ")[1]?.slice(0, 100)}; retried after the pause with no nudge: ${retried}`,
 	);
 
 	// What counts as an open Codex window: real argument shapes, as /proc shows them (tail -F stands
@@ -506,6 +529,7 @@ async function main() {
 	const shapes = [
 		[["-F", "exec"], false],
 		[["-s", "5", "-F", "app-server"], false],
+		[["--add-dir", "/x", "-F", "exec"], false],
 		[["-F", "fix the mcp tests"], true],
 		[["-F", "resume"], true],
 		[[], true], // plain `codex`: cat on an open pipe, no arguments at all
@@ -524,7 +548,7 @@ async function main() {
 		const pushed = (existsSync(wqlog) ? readFileSync(wqlog, "utf8").length : 0) > before;
 		w.kill();
 		await s3.call("duet_inbox", {}, meta("user")); // empty it for the next shape
-		verdicts.push({ shape: `codex ${args.slice(args.indexOf("-F") + 1).join(" ") || "(none)"}${args[0] === "-s" ? " (after -s 5)" : ""}`, expected, pushed });
+		verdicts.push({ shape: `codex ${args.slice(args.indexOf("-F") + 1).join(" ") || "(none)"}${args[0]?.startsWith("-") && args[0] !== "-F" ? ` (after ${args.slice(0, 2).join(" ")})` : ""}`, expected, pushed });
 	}
 	check(
 		"Codex window check: exec / app-server are not windows; a prompt, resume or plain codex are",
@@ -539,7 +563,13 @@ async function main() {
 		p.stderr.on("data", (d) => (err += d));
 		p.on("exit", (code) => r({ code, err }));
 	});
-	check("bad --name refused", badName.code === 1 && badName.err.includes("--name may only use"), `exit ${badName.code}: ${badName.err.trim()}`);
+	const underscore = await new Promise((r) => {
+		const p = spawn(process.execPath, [BIN, "--room", "r", "--name", "_x", "--server", SERVER], { env: { HOME: ROOT, PATH: process.env.PATH } });
+		let err = "";
+		p.stderr.on("data", (d) => (err += d));
+		p.on("exit", (code) => r({ code, err }));
+	});
+	check("bad --name refused", badName.code === 1 && badName.err.includes("--name may only use") && underscore.code === 1 && underscore.err.includes("start with a letter or digit"), `"Nika Q": exit ${badName.code}; "_x": exit ${underscore.code}: ${underscore.err.trim()}`);
 
 	// Two messages close together never leave a second listener returning empty.
 	const dRoom = freshRoom();

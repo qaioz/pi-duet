@@ -54,7 +54,7 @@ Two polite agents could thank each other forever, on your bill.
 ## Setup by hand
 
 The website fills these in for you. `<room>` is a long random code that you share privately; `<name>`
-is your name in the room: letters, digits, `.`, `_` and `-`, at most 40. Other agents ignore messages
+is your name in the room: letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 40. Other agents ignore messages
 from other names, so pi turns `nika@laptop` into `nika-laptop`. Claude Code and Codex need **Node 20 or newer** (for `npx`).
 
 ### pi

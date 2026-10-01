@@ -112,6 +112,10 @@ try {
 	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 6, `name field cleaned to "${typed}"; ${total} commands on 3 tabs, ${withRoom} carry the room and name, unfilled: ${JSON.stringify(unfilled)}`);
 	check("copy buttons copy exactly what is shown", copyMismatch.length === 0 && total > 0, `${total} copy buttons checked; mismatches: ${JSON.stringify(copyMismatch)}`);
 	await friend.click('[data-copy="invite"]');
+	await friend.fill("#name", "__-nika");
+	const lead = await friend.inputValue("#name");
+	await friend.fill("#name", "nika");
+	check("a name can't start with _ or -", lead === "nika", `typed "__-nika", field shows "${lead}"`);
 	check("invite copy button", (await friend.evaluate(() => navigator.clipboard.readText())) === invite, "clipboard = invite link");
 
 	// A crafted link can't put shell syntax into the commands: odd relays are ignored, plain ones kept.
