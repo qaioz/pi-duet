@@ -37,6 +37,16 @@ if (!site) {
 const relayQuery = SERVER === "https://ntfy.sh" ? "" : `?relay=${encodeURIComponent(SERVER)}`;
 const start = site + relayQuery;
 
+// Every command on every agent tab, as shown.
+async function allCommands(page) {
+	const out = [];
+	for (const agent of ["pi", "claude", "codex"]) {
+		await page.click(`.tabs button[data-agent="${agent}"]`);
+		out.push(...(await page.$$eval(".cmd code", (cs) => cs.map((c) => c.textContent))));
+	}
+	return out.join("\n");
+}
+
 const browser = await chromium.launch();
 try {
 	const ctx = await browser.newContext({ permissions: ["clipboard-read", "clipboard-write"] });
@@ -103,6 +113,28 @@ try {
 	check("copy buttons copy exactly what is shown", copyMismatch.length === 0 && total > 0, `${total} copy buttons checked; mismatches: ${JSON.stringify(copyMismatch)}`);
 	await friend.click('[data-copy="invite"]');
 	check("invite copy button", (await friend.evaluate(() => navigator.clipboard.readText())) === invite, "clipboard = invite link");
+
+	// A crafted link can't put shell syntax into the commands: odd relays are ignored, plain ones kept.
+	const evilCtx = await browser.newContext();
+	const evil = await evilCtx.newPage();
+	const attempts = ["http://127.0.0.1:9;touch /tmp/PWNED;#", "https://x.com/$(id)", "https://x.com/`id`", "https://a b", 'https://x.com/"q', "https://u:p@x.com", "javascript:alert(1)", "https://x.com/$&"];
+	const leaks = [];
+	for (const relay of attempts) {
+		await evil.goto(`${site}?relay=${encodeURIComponent(relay)}#${room}`);
+		await evil.waitForSelector("#room:not(.hidden)");
+		const all = await allCommands(evil);
+		const note = await evil.textContent("#relay");
+		if (/PWNED|\$\(|`|"q|u:p@|javascript|\$&|--server|DUET_SERVER/.test(all) || !/ignored/.test(note)) leaks.push(relay);
+	}
+	await evil.goto(`${site}?relay=${encodeURIComponent("https://ntfy.example.com/")}#${room}`);
+	await evil.waitForSelector("#room:not(.hidden)");
+	const kept = await allCommands(evil);
+	check(
+		"crafted ?relay= can't inject into the commands",
+		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 5 && kept.includes(`/duet ${room} YOUR_NAME https://ntfy.example.com`) && kept.includes("DUET_SERVER=https://ntfy.example.com "),
+		`${attempts.length} hostile relays ignored with a note (failures: ${JSON.stringify(leaks)}); a plain https relay is carried into the commands`,
+	);
+	await evilCtx.close();
 
 	// Live "who's in the room": a join on the relay shows up on both pages.
 	await publish(SERVER, topicFor(room), envelope({ fromId: "site-test", from: "nika", kind: "join" }));

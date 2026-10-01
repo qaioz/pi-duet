@@ -5,9 +5,9 @@
 //
 // Env: DUET_SERVER (default the local test container http://127.0.0.1:18080),
 //      DUET_TEST_DIR (default ~/coding/personal/duet-test-v2/mcp).
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { envelope, publish, topicFor } from "../transport.js";
@@ -228,7 +228,11 @@ async function main() {
 		`progress beats during ~1.5s wait (every 300ms): ${beats}; first listener got FOR-ONE-LISTENER, second listener got SECOND`,
 	);
 
-	// Codex: once a tool call has shown the thread id, arriving messages are pushed with `codex queue`.
+	// Codex: once a tool call has shown the thread id, arriving messages are pushed with `codex queue`,
+	// but only while a Codex window is open in the server's folder: here a `sleep` named codex.
+	mkdirSync(join(ROOT, "bin"), { recursive: true });
+	symlinkSync(execFileSync("sh", ["-c", "command -v sleep"], { encoding: "utf8" }).trim(), join(ROOT, "bin/codex"));
+	const codexWindow = spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" });
 	const qlog = join(ROOT, "codex-queue.log");
 	const fakeCodex = join(ROOT, "fake-codex.mjs");
 	writeFileSync(fakeCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(qlog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nconsole.log("Queued message");\n`);
@@ -273,6 +277,124 @@ async function main() {
 		replies.join() === "sent,sent,refused" && pushedPings === 1 && held === "2" && checked.text.includes("PING-2") && checked.text.includes("PING-3"),
 		`cap 2: replies ${replies.join(", ")}; pings pushed before the user came back: ${pushedPings}, held: ${held}; "check duet" returned the held ones; the next message was pushed again`,
 	);
+
+	// Closing the Codex window stops the pushes: Codex would otherwise run the turn with nobody there.
+	codexWindow.kill();
+	await sleep(500);
+	const beforeClose = queued().length;
+	await h.call("duet_send", { text: "AFTER-WINDOW-CLOSED", user_asked: true });
+	await sleep(2000);
+	const closedStatus = (await g.call("duet_status")).text;
+	const closedInbox = await g.call("duet_inbox", {}, meta("user"));
+	check(
+		"Codex: no push once the window is closed",
+		queued().length === beforeClose && closedStatus.includes("no Codex window open") && closedInbox.text.includes("AFTER-WINDOW-CLOSED"),
+		`pushes after close: ${queued().length - beforeClose}; status: ${closedStatus.split("— ")[1]}`,
+	);
+	const codexWindow2 = spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" });
+
+	// A slow `codex queue` racing a duet_inbox: every message reaches the model exactly once.
+	const slowLog = join(ROOT, "slow-queue.log");
+	const slowCodex = join(ROOT, "slow-codex.mjs");
+	writeFileSync(slowCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nawait new Promise((r) => setTimeout(r, 2000));\nappendFileSync(${JSON.stringify(slowLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`);
+	chmodSync(slowCodex, 0o755);
+	const rRoom = freshRoom();
+	const r1 = startServer("rita", rRoom, { env: { DUET_CODEX_BIN: slowCodex } });
+	const r2 = startServer("rob", rRoom);
+	await r1.init("codex-mcp-client");
+	await r2.init();
+	await Promise.all([waitConnected(r1), waitConnected(r2)]);
+	await r1.call("duet_status", {}, meta("user"));
+	await r2.call("duet_send", { text: "RACE-1", user_asked: true });
+	await sleep(700); // RACE-1 is now on its way through the slow codex queue
+	await r2.call("duet_send", { text: "RACE-2", user_asked: true });
+	await sleep(700);
+	const raceInbox = await r1.call("duet_inbox", {}, meta("user"));
+	await sleep(5000);
+	const slowPushed = existsSync(slowLog) ? readFileSync(slowLog, "utf8") : "";
+	const seen = (t) => (raceInbox.text.split(t).length - 1) + (slowPushed.split(t).length - 1);
+	check(
+		"Codex push racing duet_inbox: each message shown exactly once",
+		seen("RACE-1") === 1 && seen("RACE-2") === 1,
+		`RACE-1 pushed ${slowPushed.includes("RACE-1")}, in inbox ${raceInbox.text.includes("RACE-1")}; RACE-2 pushed ${slowPushed.includes("RACE-2")}, in inbox ${raceInbox.text.includes("RACE-2")}`,
+	);
+
+	codexWindow2.kill();
+
+	// Windows: no push at all (the codex shim would put the peer's text through cmd.exe).
+	const wRoom = freshRoom();
+	const wlog = join(ROOT, "win-queue.log");
+	const winCodex = join(ROOT, "win-codex.mjs");
+	writeFileSync(winCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(wlog)}, "called\\n");\n`);
+	chmodSync(winCodex, 0o755);
+	const w1 = startServer("wim", wRoom, { env: { DUET_CODEX_BIN: winCodex, DUET_TEST_PLATFORM: "win32" } });
+	const w2 = startServer("wes", wRoom);
+	await w1.init("codex-mcp-client");
+	await w2.init();
+	await Promise.all([waitConnected(w1), waitConnected(w2)]);
+	await w1.call("duet_status", {}, meta("user"));
+	await w2.call("duet_send", { text: "WIN & calc.exe", user_asked: true });
+	await sleep(2000);
+	const winInbox = await w1.call("duet_inbox", {}, meta("user"));
+	check("Windows: never pushes through codex, messages wait in the inbox", !existsSync(wlog) && winInbox.text.includes("WIN & calc.exe"), `codex shim called: ${existsSync(wlog)}; inbox: ${JSON.stringify(winInbox.text.slice(0, 80))}`);
+
+	// Peer names are letters, digits, . _ - only; anything else is dropped as noise.
+	await publish(SERVER, topicFor(wRoom), envelope({ fromId: "evil", from: 'x" & calc', kind: "msg", text: "BAD-NAME" }));
+	await publish(SERVER, topicFor(wRoom), envelope({ fromId: "nice", from: "Ünïcode_ok-1.2", kind: "msg", text: "GOOD-NAME" }));
+	await sleep(1500);
+	const names = await w1.call("duet_inbox", {}, meta("user"));
+	check("peer names are checked", !names.text.includes("BAD-NAME") && names.text.includes("GOOD-NAME"), JSON.stringify(names.text.slice(0, 120)));
+
+	// Claude Code: right after a send, an older (backgrounded) listener doesn't take the reply until
+	// the sending turn had time to end; a duet_wait started after the send gets it at once.
+	const sRoom = freshRoom();
+	const s1 = startServer("sam", sRoom, { env: { DUET_SETTLE_MS: "3000" } });
+	const s2 = startServer("sue", sRoom);
+	await s1.init("claude-code");
+	await s2.init();
+	await Promise.all([waitConnected(s1), waitConnected(s2)]);
+	const t0s = Date.now();
+	const oldListener = s1.call("duet_wait", {}).then((r) => ({ r, at: Date.now() - t0s }));
+	await sleep(300);
+	await s1.call("duet_send", { text: "question", user_asked: true });
+	await s2.call("duet_send", { text: "QUICK-REPLY", user_asked: true });
+	const early = await Promise.race([oldListener, sleep(1500).then(() => "still listening")]);
+	const late = await oldListener;
+	await s1.call("duet_send", { text: "question 2", user_asked: true });
+	const fresh = s1.call("duet_wait", { seconds: 10 }).then((r) => ({ r, at: Date.now() }));
+	const sentAt = Date.now();
+	await s2.call("duet_send", { text: "REPLY-TO-NEW-WAIT", user_asked: true });
+	const freshGot = await fresh;
+	check(
+		"Claude Code: a reply right after a send wakes a fresh turn, not the ending one",
+		early === "still listening" && late.r.text.includes("QUICK-REPLY") && late.at >= 3000 && freshGot.r.text.includes("REPLY-TO-NEW-WAIT") && freshGot.at - sentAt < 2500,
+		`old listener: still waiting 1.5s after the reply, got it after ${late.at}ms (settle 3000ms); a wait started after the send got its reply in ${freshGot.at - sentAt}ms`,
+	);
+	const st = await s1.call("duet_status");
+	check("status doesn't show the room code", !st.text.includes(sRoom) && st.text.includes(sRoom.slice(0, 4)), st.text);
+
+	// Two windows starting at the same moment: exactly one gets the room.
+	const lockRoom = freshRoom();
+	let owners = [];
+	for (let i = 0; i < 8; i++) {
+		const home = join(ROOT, `lock-${i}`);
+		const pair = [startServer("lou", lockRoom, { home }), startServer("lou", lockRoom, { home })];
+		await Promise.all(pair.map((x) => x.init()));
+		await sleep(1500);
+		const st2 = await Promise.all(pair.map((x) => x.call("duet_status")));
+		owners.push(st2.filter((x) => /— (connected|connecting)/.test(x.text)).length);
+		for (const x of pair) await x.stop();
+	}
+	check("simultaneous start: one owner", owners.every((n) => n === 1), `owners per try: ${owners.join(", ")}`);
+
+	// A relay that isn't a plain http(s) URL is refused before anything runs.
+	const bad = await new Promise((r) => {
+		const p = spawn(process.execPath, [BIN, "--room", "r", "--name", "n", "--server", "http://x;touch /tmp/duet-pwned"], { env: { HOME: ROOT, PATH: process.env.PATH } });
+		let err = "";
+		p.stderr.on("data", (d) => (err += d));
+		p.on("exit", (code) => r({ code, err }));
+	});
+	check("bad --server refused", bad.code === 1 && bad.err.includes("--server must be"), `exit ${bad.code}: ${bad.err.trim()}`);
 
 	// setup codex writes the server into config.toml (and replaces an earlier duet block).
 	const codexHome = join(ROOT, "codex-home");

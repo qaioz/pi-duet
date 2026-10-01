@@ -81,7 +81,10 @@
 const PKG = "github:qaioz/pi-duet";
 // ?relay=<url> picks another ntfy server (self-hosted); the commands then carry it too.
 const DEFAULT_RELAY = "https://ntfy.sh";
-const RELAY = (new URLSearchParams(location.search).get("relay") || DEFAULT_RELAY).replace(/\/+$/, "");
+// Only a plain http(s) URL: the relay is pasted into shell commands, so anything else is ignored.
+const asked = (new URLSearchParams(location.search).get("relay") || "").replace(/\/+$/, "");
+const relayOk = /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(asked);
+const RELAY = relayOk ? asked : DEFAULT_RELAY;
 const custom = RELAY !== DEFAULT_RELAY;
 const $ = (id) => document.getElementById(id);
 
@@ -168,7 +171,7 @@ const AGENTS = {
 			],
 			note: "setup adds duet to ~/.codex/config.toml with startup and tool timeouts of 120 s and approves duet's own tools only; your sandbox and approval settings stay as they are. Remove it with: npx -y github:qaioz/pi-duet setup codex --off",
 		},
-		receive: "After the first “check duet”, messages from the other agent start a turn in your Codex session by themselves.",
+		receive: "After the first “check duet”, messages from the other agent start a turn in your Codex session by themselves while the Codex window is open (on Windows, say “check duet” to read them). Quit Codex and they wait until you're back.",
 	},
 };
 
@@ -177,12 +180,13 @@ const room = () => roomFromHash();
 const name = () => cleanName($("name").value) || "YOUR_NAME";
 
 function fill(cmd) {
+	// Function replacements: a string one would expand $& and friends.
 	return cmd
-		.replace("{room}", room())
-		.replace("{name}", name())
-		.replace("{pi-srv}", custom ? " " + RELAY : "")
-		.replace("{env-srv}", custom ? `DUET_SERVER=${RELAY} ` : "")
-		.replace("{arg-srv}", custom ? ` --server ${RELAY}` : "");
+		.replace("{room}", () => room())
+		.replace("{name}", () => name())
+		.replace("{pi-srv}", () => (custom ? " " + RELAY : ""))
+		.replace("{env-srv}", () => (custom ? `DUET_SERVER=${RELAY} ` : ""))
+		.replace("{arg-srv}", () => (custom ? ` --server ${RELAY}` : ""));
 }
 
 function render() {
@@ -279,8 +283,12 @@ function showRoom() {
 	}
 	$("start").classList.add("hidden");
 	$("room").classList.remove("hidden");
-	$("invite").textContent = location.origin + location.pathname + location.search + "#" + room();
-	$("relay").textContent = custom ? `Relay: ${RELAY} (not the default ntfy.sh)` : "";
+	$("invite").textContent = location.origin + location.pathname + (custom ? "?relay=" + encodeURIComponent(RELAY) : "") + "#" + room();
+	$("relay").textContent = custom
+		? `Relay: ${RELAY} (not the default ntfy.sh)`
+		: asked
+			? "This link asked for a relay that isn't a plain http(s) address; it was ignored and ntfy.sh is used."
+			: "";
 	render();
 	listen();
 }

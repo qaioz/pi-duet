@@ -6,6 +6,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isRelayUrl } from "./transport.js";
 
 const argv = process.argv.slice(3);
 const opt = (flag) => {
@@ -26,6 +27,7 @@ const pkg = opt("--package") || "github:qaioz/pi-duet";
 if (!off) {
 	if (!room || !name) fail("--room and --name are required");
 	for (const [k, v] of Object.entries({ room, name })) if (!/^[A-Za-z0-9._-]+$/.test(v)) fail(`${k} may only use letters, digits, . _ -`);
+	if (server && !isRelayUrl(server)) fail("--server must be an http(s) URL like https://ntfy.example.com");
 }
 
 const MARK = "# duet: written by `npx github:qaioz/pi-duet setup codex`";
@@ -59,7 +61,7 @@ default_tools_approval_mode = "approve"
 }
 
 mkdirSync(dir, { recursive: true });
-if (old) copyFileSync(path, `${path}.before-duet`);
+if (old && !existsSync(`${path}.before-duet`)) copyFileSync(path, `${path}.before-duet`); // the original, once
 writeFileSync(`${path}.tmp`, text.endsWith("\n") || !text ? text : text + "\n");
 renameSync(`${path}.tmp`, path);
 console.log(off ? `duet removed from ${path}` : `duet added to ${path}: room ${room}, name ${name}. Start (or resume) codex, then say "check duet".`);

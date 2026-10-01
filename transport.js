@@ -38,6 +38,16 @@ export function envelope(fields) {
 	return { v: 1, id: randomUUID(), ...fields, ts: new Date().toISOString() };
 }
 
+// Names end up in prompts and status lines: letters, digits, . _ - only.
+const NAME = /^[\p{L}\p{N}._-]{1,40}$/u;
+
+// A relay is a plain http(s) server URL. It goes into shell commands and config files, so it may
+// hold nothing a shell or TOML would read specially.
+/** @param {string} url */
+export function isRelayUrl(url) {
+	return /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(url);
+}
+
 // Anything on the topic that isn't a well-formed envelope is someone else's noise.
 /** @returns {e is Envelope} */
 function isEnvelope(/** @type {any} */ e) {
@@ -45,6 +55,7 @@ function isEnvelope(/** @type {any} */ e) {
 		e?.v === 1 &&
 		typeof e.fromId === "string" &&
 		typeof e.from === "string" &&
+		NAME.test(e.from) &&
 		(e.to === undefined || typeof e.to === "string") &&
 		(e.kind === "join" || (e.kind === "msg" && typeof e.text === "string"))
 	);

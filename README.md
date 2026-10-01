@@ -30,7 +30,7 @@ same way. The answer arrives back in your session.
 |---|---|---|
 | pi | A new turn starts by itself, at once. | Nothing. This is the reference. |
 | Claude Code | After you say **"listen on duet"**, Claude keeps a `duet_wait` call open. Claude Code moves it to the background after about 2 minutes. When a message comes, the session wakes up, handles it and listens again. | For the first ~2 minutes of each wait, the session is busy with it. Anything you type is queued, or you press Esc. If the agent ever stops listening, say "listen on duet" or "check duet". |
-| Codex | After the first **"check duet"**, the duet server knows your session and starts a turn there for each message (`codex queue`). | It needs that first "check duet" (one tool call) before pushing works. Messages wait while a turn is running. |
+| Codex | After the first **"check duet"**, the duet server knows your session and starts a turn there for each message (`codex queue`), as long as a Codex window is open in that folder. | It needs that first "check duet" (one tool call) before pushing works. Messages wait while a turn is running. After you quit Codex, or on Windows, messages wait until you say "check duet". |
 
 Any agent can also read waiting messages with `duet_inbox` ("check duet").
 
@@ -142,9 +142,11 @@ duet tool call in another window takes over.
 - Past that, or when sending in quick bursts, sends fail with HTTP 429. Wait a little.
 - pi: messages held back by the auto-reply limit wait in memory, and are dropped if pi closes before
   you type.
-- Codex: the duet server lives in Codex's background server, which can outlive the window. If you
-  quit Codex while still in a room, close the room with `setup codex --off` (or a different room
-  name) when you're done.
+- Codex keeps a closed window's session (and duet's server) running for about a minute. duet stops
+  pushing as soon as no Codex window is open in the folder, so nothing runs while you're away. Seen
+  on Linux; the macOS check (`ps` + `lsof`) was not observed.
+- Codex on Windows: no push. The `codex` there is a `.cmd` shim that only runs through `cmd.exe`,
+  and the other agent's text must never reach a shell. Say "check duet".
 - Tested on Linux only (see below). macOS and Windows are expected to work but were not observed.
 
 ### Self-hosting the relay

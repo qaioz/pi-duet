@@ -83,11 +83,11 @@ async function joinAs(agent, kase, room, watch) {
 		await until(() => agent.events().some((e) => e.type === "user" && /Say just: OK/.test(e.text)), 90_000, "the first conversation turn");
 		await sleep(8000);
 	}
-	let launched;
+	let launched = kase === "open" ? Date.now() : undefined; // already open: from the first join step
 	for (const { where, cmd } of list) {
 		const inAgent = where.startsWith("in ");
 		log(`${agent.name} (${agent.kind}) ${inAgent ? "types in the agent" : "runs in the terminal"}: ${cmd.replace(room, "<room>")}`);
-		if (!inAgent && /^\s*(claude|codex|pi|DUET_)/.test(cmd) && !/ (mcp|install) /.test(cmd)) launched = Date.now();
+		if (kase === "fresh" && !inAgent && /^\s*(claude|codex|pi|DUET_)/.test(cmd) && !/ (mcp|install) /.test(cmd)) launched = Date.now();
 		if (!inAgent) {
 			await agent.waitShell(120_000, "before a terminal command");
 			await agent.clear();
@@ -152,6 +152,7 @@ async function pair(askerKind, receiverKind, what, kase = "fresh") {
 		}
 		const expect = what === "talk" ? (t) => t.includes("391") : (t) => /hello\.txt/.test(t);
 		await until(() => a.events().some((e) => e.type === "in" && expect(e.text)), 360_000, `${a.name} receives the answer`);
+		if (what === "talk") await until(() => a.events().some((e) => e.type === "say" && e.text.includes("391")), 120_000, `${a.name} shows the answer`).catch(() => {});
 		await sleep(15_000); // let both finish their turns
 		const ea = a.events();
 		const eb = b.events();
@@ -162,6 +163,9 @@ async function pair(askerKind, receiverKind, what, kase = "fresh") {
 		if (what === "talk") {
 			check(`${b.name} answered 391 with duet_send`, eb.some((e) => e.type === "send" && e.text?.includes("391")), JSON.stringify(eb.filter((e) => e.type === "send").map((e) => e.text)));
 			check(`${a.name} received 391`, ea.some((e) => e.type === "in" && e.text.includes("391")), JSON.stringify(ea.filter((e) => e.type === "in").map((e) => e.text.slice(0, 200))));
+			const gotAt = ea.find((e) => e.type === "in" && e.text.includes("391")).at;
+			const told = ea.find((e) => e.type === "say" && e.at >= gotAt && e.text.includes("391"));
+			check(`${a.name} showed 391 to its user`, !!told, JSON.stringify(told?.text.slice(0, 200) ?? ea.filter((e) => e.type === "say").map((e) => e.text.slice(0, 120))));
 		} else {
 			const file = join(b.cwd, "hello.txt");
 			const content = existsSync(file) ? readFileSync(file, "utf8") : null;
@@ -175,7 +179,12 @@ async function pair(askerKind, receiverKind, what, kase = "fresh") {
 		}
 		if (kase === "open") {
 			// The conversation from before the join is still the one in use.
-			const kept = (x) => x.events().filter((e) => e.type === "user" && /Say just: OK/.test(e.text)).length === 1 && x.events().some((e) => e.type === "user" && !/Say just: OK/.test(e.text));
+			// One session file holds both the turn from before the join and the duet traffic after it.
+			const kept = (x) => {
+				const ev = x.events();
+				const ok = ev.find((e) => e.type === "user" && /Say just: OK/.test(e.text));
+				return !!ok && ev.some((e) => (e.type === "in" || e.type === "send") && e.at > ok.at);
+			};
 			check("conversation kept across the join", agents.every((x) => sameSession(x) && kept(x)), agents.map((x) => `${x.name}: ${sessionCount(x)} session file(s)`).join("; "));
 		}
 		if (a.kind === "claude" || b.kind === "claude") {
@@ -232,7 +241,13 @@ async function loop(kindA, kindB) {
 		}
 		const msgs = watch.seen.filter((e) => e.kind === "msg");
 		const refused = [a, b].flatMap((x) => x.events().filter((e) => e.type === "send" && /auto-reply limit/.test(e.error ?? "")).map(() => x.name));
-		check("unattended conversation comes to rest", rest, `${msgs.length} messages on the relay (ana ${msgs.filter((m) => m.from === "ana").length}, ben ${msgs.filter((m) => m.from === "ben").length}); sends refused by the cap: ${refused.join(", ") || "none"}`);
+		const seenBy = (x) => x.events().filter((e) => e.type === "in").reduce((n, e) => n + (e.text.match(/\[duet\] from/g) ?? []).length, 0);
+		const sent = (n) => msgs.filter((m) => m.from === n).length;
+		check(
+			"unattended conversation comes to rest within the cap",
+			rest && sent("ana") <= 9 && sent("ben") <= 9,
+			`${msgs.length} messages on the relay: ana sent ${sent("ana")} (1 asked by her user + replies), ben sent ${sent("ben")}; shown to ana ${seenBy(a)}, to ben ${seenBy(b)} (the rest held back); sends refused by the cap: ${refused.join(", ") || "none"}`,
+		);
 	} catch (err) {
 		check("scenario", false, err.message);
 	} finally {

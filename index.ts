@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { envelope, isForMe, publish, subscribe, topicFor } from "./transport.js";
+import { envelope, isForMe, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
 import type { Cursor, Envelope } from "./transport.js";
 
 type Config = { room?: string; name?: string; server?: string; fromId?: string; cursors: Record<string, Cursor> };
@@ -67,6 +67,7 @@ export default function (pi: ExtensionAPI) {
 	// Peer-triggered turns since the human last typed — stops two polite agents ping-ponging forever.
 	let autoTurns = 0;
 	let warned = false;
+	let announced = false; // an env join says hello once per process, not on every /reload
 
 	const notify = (text: string, level: "info" | "warning" | "error" = "info") => ui?.notify(text, level);
 	// Said wherever the lock stops this window; a crashed owner whose pid got reused needs the hint.
@@ -125,7 +126,10 @@ export default function (pi: ExtensionAPI) {
 		if (!ui || !room || !name) return;
 		joinRoom();
 		// A join from the environment (the site's "start fresh" command) says hello like /duet does.
-		if (sub && process.env.DUET_ROOM) publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join" })).catch(() => {});
+		if (sub && process.env.DUET_ROOM && !announced) {
+			announced = true;
+			publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join" })).catch(() => {});
+		}
 	});
 
 	// The runtime is rebuilt on /new, /resume, /reload…; session_start will rejoin.
@@ -160,6 +164,8 @@ export default function (pi: ExtensionAPI) {
 				return notify("duet: left the room");
 			}
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
+			if (!/^[\p{L}\p{N}._-]{1,40}$/u.test(parts[1])) return notify("duet: a name may only use letters, digits, . _ -", "error");
+			if (parts[2] && !isRelayUrl(parts[2].replace(/\/+$/, ""))) return notify("duet: the server must be an http(s) URL", "error");
 			const owner = lockOwner();
 			if (owner) return notify(`duet: ${heldBy(owner)}`, "error");
 			[room, name] = parts;

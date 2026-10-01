@@ -219,6 +219,7 @@ trust_level = "trusted"
 	//   send  — a duet_send call ({text, error})
 	//   tool  — any other tool call ({name, input, output})
 	//   user  — a prompt typed by the person ({text})
+	//   say   — text the agent showed its own user ({text})
 	//   cost  — spend of one model call ({usd})
 	events() {
 		if (this.kind === "pi") return this.piEvents();
@@ -246,6 +247,8 @@ trust_level = "trusted"
 			if (m.role === "user") out.push({ at, type: "user", text: text(m.content) });
 			if (m.role === "assistant") {
 				if (m.usage?.cost?.total) out.push({ at, type: "cost", usd: m.usage.cost.total, model: m.model });
+				const said = (m.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("");
+				if (said.trim()) out.push({ at, type: "say", text: said });
 				for (const c of m.content ?? []) {
 					if (c.type !== "toolCall") continue;
 					const r = results.get(c.id);
@@ -269,6 +272,9 @@ trust_level = "trusted"
 		for (const e of entries) {
 			const at = Date.parse(e.timestamp);
 			const m = e.message;
+			// A background task that finishes during a turn is handed to the model as a queued command.
+			const q = e.type === "attachment" && e.attachment?.type === "queued_command" ? String(e.attachment.prompt ?? "") : "";
+			if (q.includes("<task-notification>") && q.includes("[duet] from")) out.push({ at, type: "in", how: "mid-turn", text: q });
 			if (e.type === "user" && m) {
 				const t = text(m.content);
 				if (typeof m.content === "string" || (Array.isArray(m.content) && !m.content.some((c) => c.type === "tool_result"))) {
@@ -285,6 +291,7 @@ trust_level = "trusted"
 				out.push({ at, type: "cost", model: m.model, usd: this.price({ in: u.input_tokens, cacheRead: u.cache_read_input_tokens, cacheWrite: u.cache_creation_input_tokens, out: u.output_tokens }) });
 			}
 			for (const c of m.content ?? []) {
+				if (c.type === "text" && c.text.trim()) out.push({ at, type: "say", text: c.text });
 				if (c.type !== "tool_use") continue;
 				const r = results.get(c.id);
 				const output = r ? text(r.content) : undefined;
@@ -309,7 +316,10 @@ trust_level = "trusted"
 			}
 			if (e.type !== "event_msg" || p?.type !== "item_completed") continue;
 			const it = p.item;
-			if (it.type === "UserMessage") {
+			if (it.type === "AgentMessage") {
+				const said = text(it.content);
+				if (said.trim()) out.push({ at, type: "say", text: said });
+			} else if (it.type === "UserMessage") {
 				const t = text(it.content);
 				out.push(t.includes("[duet] from") ? { at, type: "in", how: "turn", text: t } : { at, type: "user", text: t });
 			} else if (it.type === "McpToolCall" && it.server === "duet") {

@@ -11,12 +11,12 @@
 //                ~2 minutes to the background and wakes the session when it returns.
 //   Codex:       the server runs `codex queue`, which starts a turn in the open session.
 //   any host:    duet_inbox, when the user says "check duet".
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { envelope, isForMe, publish, subscribe, topicFor } from "./transport.js";
+import { envelope, isForMe, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
 
 if (process.argv[2] === "setup") {
 	await import("./setup.js");
@@ -37,6 +37,10 @@ const args = parseArgs(process.argv.slice(2));
 const room = args.room || process.env.DUET_ROOM;
 const name = args.name || process.env.DUET_NAME;
 const server = (args.server || process.env.DUET_SERVER || "https://ntfy.sh").replace(/\/+$/, "");
+if (!isRelayUrl(server)) {
+	console.error(`duet: --server must be an http(s) URL like https://ntfy.sh, got ${JSON.stringify(server)}`);
+	process.exit(1);
+}
 // Unattended back-and-forth allowed before the agent must check with its user.
 const MAX_AUTO = Math.max(1, Number(process.env.DUET_MAX_AUTO) || 8);
 // A short wait must return inside the host's tool timeout; the site sets Codex's to 120s.
@@ -46,6 +50,11 @@ const WAIT_MAX = Math.max(1, Number(process.env.DUET_WAIT_MAX) || 50);
 const LISTEN_MAX = Math.max(1, Number(process.env.DUET_LISTEN_MAX) || 3600);
 const PROGRESS_MS = Number(process.env.DUET_PROGRESS_MS) || 5 * 60_000;
 const CODEX = process.env.DUET_CODEX_BIN || "codex";
+// After a send in Claude Code, a reply that comes back within seconds would reach the session while
+// its turn is still ending, and get lost there. Hold it this long so it starts a turn of its own.
+const SETTLE_MS = Number(process.env.DUET_SETTLE_MS ?? 20_000);
+const INBOX_MAX = 200;
+const WINDOWS = (process.env.DUET_TEST_PLATFORM || process.platform) === "win32"; // overridable for tests
 
 // ---------- state on disk: ~/.duet ----------
 
@@ -76,22 +85,51 @@ const lockFile = file(`${createHash("sha256").update(key).digest("hex").slice(0,
 
 const loadCursor = () => readJson("cursors.json", {})[key];
 function saveCursor(cursor) {
-	const all = readJson("cursors.json", {});
-	all[key] = cursor;
-	writeJson("cursors.json", all);
+	try {
+		const all = readJson("cursors.json", {});
+		all[key] = cursor;
+		writeJson("cursors.json", all);
+	} catch (err) {
+		status = `connected; can't save the resume point: ${err.message}`; // a restart may repeat messages
+	}
 }
 
 // One server per room and name on this computer owns the room, or every open window would answer
 // every message. The lock holds the owner's pid; a dead owner's lock is taken over.
 function lockOwner() {
+	let pid;
 	try {
-		const pid = Number(readFileSync(lockFile, "utf8"));
-		if (pid === process.pid) return undefined;
-		process.kill(pid, 0); // throws if that process is gone
-		return pid;
+		pid = Number(readFileSync(lockFile, "utf8"));
 	} catch {
 		return undefined;
 	}
+	if (!pid || pid === process.pid) return undefined;
+	try {
+		process.kill(pid, 0);
+	} catch (err) {
+		if (err.code !== "EPERM") return undefined; // gone; EPERM means alive, just not ours
+	}
+	return pid;
+}
+// Exclusive create, so two windows starting together can't both take the room.
+function takeLock() {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			writeFileSync(lockFile, String(process.pid), { flag: "wx" });
+			return true;
+		} catch (err) {
+			if (err.code !== "EEXIST") throw err;
+			if (lockOwner()) return false;
+			try {
+				const held = readFileSync(lockFile, "utf8");
+				// Empty: another window created it a moment ago and is still writing its pid.
+				if (!held && Date.now() - statSync(lockFile).mtimeMs < 5000) return false;
+				if (Number(held) === process.pid) return true;
+				rmSync(lockFile); // a dead owner's
+			} catch {}
+		}
+	}
+	return false;
 }
 const heldBy = (pid) =>
 	`another duet window on this computer (pid ${pid}) is in this room as ${name} — use that one, or if it is gone delete ${lockFile}`;
@@ -109,17 +147,23 @@ const waiters = []; // duet_wait calls blocked until something arrives, oldest f
 let exchanges = 0; // replies sent on the agent's own since its user last asked for a send
 let receivedSinceSend = false;
 let codexThread; // learned from Codex's tool-call metadata; lets us push with `codex queue`
-let pushing = false;
+let pushing; // the messages handed to `codex queue`, until it confirms
+let dropped = 0; // messages dropped because the inbox was full
+let lastSend = 0; // when this session last sent (Claude Code: see SETTLE_MS)
 
-// Take up to `count` messages out of the inbox as shown to the model.
+// Take messages out of the inbox to show them to the model.
 function take(count = inbox.length) {
 	const items = inbox.splice(0, count);
-	if (!inbox.length && heldCursor) {
+	if (items.length) receivedSinceSend = true;
+	consumed();
+	return items;
+}
+// Once nothing received is still waiting or on its way into the session, a restart may skip it all.
+function consumed() {
+	if (!inbox.length && !pushing && heldCursor) {
 		saveCursor(heldCursor);
 		heldCursor = undefined;
 	}
-	if (items.length) receivedSinceSend = true;
-	return items;
 }
 
 const render = (items) => {
@@ -135,31 +179,89 @@ function onEnvelope(env) {
 	peers.set(env.from, new Date());
 	if (env.kind === "join") return;
 	inbox.push(env);
-	if (waiters.length) waiters.shift()(); // one listener takes it; others keep listening
-	else pushToCodex();
+	if (inbox.length > INBOX_MAX) {
+		inbox.shift();
+		dropped++;
+	}
+	deliver();
+}
+
+// Hand waiting messages to a listening duet_wait, or push them into Codex.
+let settleTimer;
+function deliver() {
+	if (!inbox.length) return;
+	// Right after a send in Claude Code, only a duet_wait started since then may take a message;
+	// older (backgrounded) listeners get it once the sending turn has had time to end.
+	const settling = isClaude() && Date.now() - lastSend < SETTLE_MS;
+	const waiter = waiters.find((w) => !settling || w.since >= lastSend);
+	if (waiter) return waiter.wake(); // one listener takes it; others keep listening
+	if (settling && waiters.length) {
+		clearTimeout(settleTimer);
+		settleTimer = setTimeout(deliver, lastSend + SETTLE_MS - Date.now());
+		return;
+	}
+	pushToCodex();
 }
 
 function onCursor(cursor) {
-	if (inbox.length) heldCursor = cursor; // not consumed yet: a restart must see it again
+	if (inbox.length || pushing) heldCursor = cursor; // not consumed yet: a restart must see it again
 	else saveCursor(cursor);
 }
 
 // Codex: start a turn in the open session with the waiting messages. Past the loop cap they stay
-// in the inbox, like pi holding messages until its user types.
+// in the inbox, like pi holding messages until its user types. Not on Windows: there `codex` is a
+// .cmd shim that only runs through cmd.exe, and the other agent's text must never reach a shell.
 function pushToCodex() {
-	if (pushing || !codexThread || !inbox.length || exchanges >= MAX_AUTO) return;
-	pushing = true;
-	const count = inbox.length;
-	const opts = { timeout: 30_000, shell: process.platform === "win32" };
-	execFile(CODEX, ["queue", "--thread", codexThread, "--message", render(inbox.slice(0, count))], opts, (err, _out, stderr) => {
-		pushing = false;
+	if (pushing || !codexThread || !inbox.length || exchanges >= MAX_AUTO || WINDOWS) return;
+	if (!codexWindowOpen()) {
+		status = "connected; no Codex window open in this folder, so messages wait for duet_inbox";
+		return;
+	}
+	// A batch at a time keeps the argument well under OS limits. Out of the inbox while on its way,
+	// so duet_inbox can't show it too; back in front if the push fails.
+	let size = 0;
+	let count = 0;
+	while (count < inbox.length && count < 8 && size + inbox[count].text.length < 30_000) size += inbox[count++].text.length;
+	pushing = inbox.splice(0, Math.max(1, count));
+	execFile(CODEX, ["queue", "--thread", codexThread, "--message", render(pushing)], { timeout: 30_000 }, (err, _out, stderr) => {
+		const batch = pushing;
+		pushing = undefined;
 		if (err) {
+			// A timeout may still have queued it: then it shows twice, which beats losing it.
+			inbox.unshift(...batch);
 			status = `connected; push to Codex failed: ${(stderr || err.message).trim().slice(0, 200)}`;
 			return;
 		}
-		take(count);
+		receivedSinceSend = true;
+		consumed();
 		pushToCodex(); // anything that arrived meanwhile
 	});
+}
+
+// Codex keeps a closed window's session, and this server, alive for about a minute; a push then would
+// run a turn nobody watches (observed). So only push while a Codex window is open in this folder:
+// a `codex` process here that isn't its background server or a one-off command.
+function codexWindowOpen() {
+	const isWindow = (argv0, rest) => /(^|\/)codex$/.test(argv0) && !/app-server|queue|exec|mcp/.test(rest);
+	try {
+		if (process.platform === "linux") {
+			for (const pid of readdirSync("/proc")) {
+				if (!/^\d+$/.test(pid)) continue;
+				try {
+					const [argv0, ...rest] = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+					if (isWindow(argv0, rest.join(" ")) && readlinkSync(`/proc/${pid}/cwd`) === process.cwd()) return true;
+				} catch {} // gone, or not ours to read
+			}
+		} else if (process.platform === "darwin") {
+			for (const line of execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" }).split("\n")) {
+				const m = line.trim().match(/^(\d+)\s+(\S+)(.*)$/);
+				if (!m || !isWindow(m[2], m[3])) continue;
+				const lsof = execFileSync("lsof", ["-a", "-d", "cwd", "-p", m[1], "-Fn"], { encoding: "utf8" });
+				if (lsof.split("\n").some((l) => l === `n${process.cwd()}`)) return true;
+			}
+		}
+	} catch {}
+	return false;
 }
 
 function joinRoom() {
@@ -169,7 +271,10 @@ function joinRoom() {
 		status = `off: ${heldBy(owner)}`;
 		return false;
 	}
-	writeFileSync(lockFile, String(process.pid));
+	if (!takeLock()) {
+		status = `off: ${heldBy(lockOwner())}`;
+		return false;
+	}
 	status = "connecting…";
 	sub = subscribe({
 		server,
@@ -254,18 +359,19 @@ async function wait(seconds, signal, progress) {
 	if (inbox.length) return;
 	await new Promise((resolve) => {
 		let timer, beat;
+		const waiter = { since: Date.now(), wake: () => done() };
 		const done = () => {
 			clearTimeout(timer);
 			clearInterval(beat);
 			signal.removeEventListener("abort", done);
-			const i = waiters.indexOf(done);
+			const i = waiters.indexOf(waiter);
 			if (i >= 0) waiters.splice(i, 1);
 			resolve();
 		};
 		timer = setTimeout(done, seconds * 1000);
 		if (progress) beat = setInterval(progress, PROGRESS_MS);
 		signal.addEventListener("abort", done);
-		waiters.push(done);
+		waiters.push(waiter);
 	});
 }
 
@@ -286,6 +392,7 @@ async function callTool(tool, a = {}, ctx) {
 			}
 			receivedSinceSend = false;
 			await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "msg", to: a.to, text: a.text }), ctx.signal);
+			lastSend = Date.now();
 			pushToCodex(); // a user turn may have lifted the cap
 			return "sent — the other agent has not answered yet; its reply will arrive later";
 		}
@@ -307,7 +414,10 @@ async function callTool(tool, a = {}, ctx) {
 		case "duet_status": {
 			if (room && name) joinRoom();
 			const seen = [...peers].map(([p, at]) => `${p} (${at.toLocaleTimeString()})`).join(", ") || "none yet";
-			return `duet: ${name ?? "(no name)"} in room ${room ? `"${room}"` : "(none)"} via ${server} — ${status}; peers seen: ${seen}; messages waiting: ${inbox.length}`;
+			// Only the start of the room code: the whole code would go to the model's provider.
+			const shown = room ? `"${room.slice(0, 4)}…"` : "(none)";
+			const lost = dropped ? `; ${dropped} older message(s) dropped (inbox full)` : "";
+			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}`;
 		}
 	}
 	throw new Error(`unknown tool ${tool}`);
@@ -324,11 +434,17 @@ const instructions = () =>
 	"Your plain-text replies reach only your own user. " +
 	(isClaude()
 		? "To receive messages, keep a duet_wait call listening: start one when your user asks you to join or listen, and again after each message."
-		: "Messages are delivered into this session as they arrive; duet_inbox shows any that are waiting.");
+		: WINDOWS
+			? "Messages wait in duet_inbox: check it when your user says 'check duet'."
+			: "Messages are delivered into this session as they arrive; duet_inbox shows any that are waiting.");
 
 async function handle(msg) {
 	const { id, method, params } = msg;
-	if (process.env.DUET_DEBUG_FILE) appendFileSync(process.env.DUET_DEBUG_FILE, `${new Date().toISOString()} ${JSON.stringify(msg)}\n`);
+	if (process.env.DUET_DEBUG_FILE) {
+		try {
+			appendFileSync(process.env.DUET_DEBUG_FILE, `${new Date().toISOString()} ${JSON.stringify(msg)}\n`);
+		} catch {}
+	}
 	if (method === "notifications/cancelled") return inflight.get(params?.requestId)?.abort();
 	if (id === undefined) return; // other notifications need no answer
 	try {
