@@ -158,12 +158,13 @@ let dropped = 0; // messages dropped because the inbox was full
 let lastSend = 0; // when this session last sent (Claude Code: see SETTLE_MS)
 let pushNote = ""; // why Codex isn't being pushed to right now, shown in duet_status
 let pushPausedUntil = 0; // after a failed push, leave the messages to duet_inbox / duet_wait for a while
+const PUSH_PAUSE_MS = Number(process.env.DUET_PUSH_PAUSE_MS) || 60_000;
 
 // Take messages out of the inbox to show them to the model.
 function take(count = inbox.length) {
 	const items = inbox.splice(0, count);
 	if (items.length) receivedSinceSend = true;
-	if (!inbox.length) pushNote = "";
+	if (!inbox.length && Date.now() >= pushPausedUntil) pushNote = "";
 	consumed();
 	return items;
 }
@@ -240,8 +241,9 @@ function pushToCodex() {
 		if (err) {
 			// A timeout may still have queued it: then it shows twice, which beats losing it.
 			inbox.unshift(...batch);
-			pushNote = `push to Codex failed: ${String(stderr || err.message).trim().slice(0, 200)}`;
-			pushPausedUntil = Date.now() + 60_000;
+			pushPausedUntil = Date.now() + PUSH_PAUSE_MS;
+			pushNote = `push to Codex failed (${String(stderr || err.message).trim().slice(0, 200)}); paused until ${new Date(pushPausedUntil).toLocaleTimeString()}, duet_inbox has the messages`;
+			setTimeout(pushToCodex, PUSH_PAUSE_MS + 100).unref(); // try again once the pause is over
 			deliver(); // a duet_wait may be listening
 			return;
 		}
@@ -258,7 +260,7 @@ function pushToCodex() {
 }
 
 const SUBCOMMANDS = new Set(
-	"agents exec e review login logout mcp mcp-server plugin app-server remote-control completion update doctor sandbox debug apply a resume queue archive delete migrate-rollouts unarchive fork cloud exec-server features help".split(" "),
+	"agents app exec e execpolicy review login logout mcp mcp-server plugin app-server remote-control completion update doctor sandbox debug apply a resume queue archive delete migrate-rollouts unarchive fork cloud cloud-tasks exec-server features help".split(" "),
 );
 // Codex keeps a closed window's session, and this server, alive for about a minute; a push then would
 // run a turn nobody watches (observed). So only push while a Codex window is open in this folder:
@@ -266,7 +268,7 @@ const SUBCOMMANDS = new Set(
 function codexWindowOpen() {
 	// A window is `codex`, `codex resume|fork …` or `codex "<prompt>"`, flags anywhere before; any
 	// other subcommand (the background app-server, queue, exec, …) is not.
-	const withValue = /^(-[mcCpsai]|--(model|config|cd|profile|sandbox|ask-for-approval|image|enable|disable|local-provider|remote|remote-auth-token-env))$/;
+	const withValue = /^(-[mcCpsai]|--(model|config|cd|profile|sandbox|ask-for-approval|image|add-dir|enable|disable|local-provider|remote|remote-auth-token-env))$/;
 	const isWindow = (argv0, args) => {
 		if (!/(^|\/)codex$/.test(argv0)) return false;
 		let i = 0;
@@ -422,18 +424,18 @@ async function callTool(tool, a = {}, ctx) {
 		case "duet_send": {
 			needRoom();
 			if (typeof a.text !== "string" || !a.text) throw new Error("text is required");
-			if (a.user_asked === true) exchanges = 0;
-			else if (receivedSinceSend || ctx.pushedTurn) {
-				if (exchanges >= MAX_AUTO) {
-					throw new Error(
-						`Not sent: auto-reply limit. ${MAX_AUTO} replies have gone to the other agent without your user asking. ` +
-							"Stop here and ask your user whether to continue; only if they say so, send again with user_asked: true.",
-					);
-				}
-				exchanges++;
+			const unattended = a.user_asked !== true && (receivedSinceSend || ctx.pushedTurn);
+			if (unattended && exchanges >= MAX_AUTO) {
+				throw new Error(
+					`Not sent: auto-reply limit. ${MAX_AUTO} replies have gone to the other agent without your user asking. ` +
+						"Stop here and ask your user whether to continue; only if they say so, send again with user_asked: true.",
+				);
 			}
-			receivedSinceSend = false;
 			await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "msg", to: a.to, text: a.text }), ctx.signal);
+			// Counted only once it really went out.
+			if (a.user_asked === true) exchanges = 0;
+			else if (unattended) exchanges++;
+			receivedSinceSend = false;
 			lastSend = Date.now();
 			pushToCodex(); // a user turn may have lifted the cap
 			return "sent — the other agent has not answered yet; its reply will arrive later";

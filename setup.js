@@ -6,7 +6,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isRelayUrl } from "./transport.js";
+import { isName, isRelayUrl } from "./transport.js";
 
 const argv = process.argv.slice(3);
 const opt = (flag) => {
@@ -26,8 +26,8 @@ const server = opt("--server");
 const pkg = opt("--package") || "github:qaioz/pi-duet";
 if (!off) {
 	if (!room || !name) fail("--room and --name are required");
-	for (const [k, v] of Object.entries({ room, name })) if (!/^[A-Za-z0-9._-]{1,64}$/.test(v)) fail(`${k} may only use letters, digits, . _ - (at most 64)`);
-	if (name.length > 40) fail("--name may be at most 40 characters");
+	if (!/^[A-Za-z0-9._-]{1,64}$/.test(room)) fail("--room may only use a-z, A-Z, 0-9, . _ - (at most 64)");
+	if (!isName(name)) fail("--name may only use letters, digits, . _ - (at most 40)");
 	if (server && !isRelayUrl(server)) fail("--server must be an http(s) URL like https://ntfy.example.com");
 }
 

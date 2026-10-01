@@ -39,13 +39,15 @@ export function envelope(fields) {
 }
 
 // Names end up in prompts, status lines and command lines: letters, digits, . _ - only.
-const NAME = /^[\p{L}\p{M}\p{N}._-]{1,40}$/u;
+const NAME = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._-]{0,39}$/u; // starts with a letter or digit
 /** @param {unknown} name */
 export const isName = (name) => typeof name === "string" && NAME.test(name);
 // A name that breaks the rule, made to fit it (e.g. a name saved by an older version).
 /** @param {string} name */
 export const fitName = (name) =>
-	isName(name) ? name : Array.from(name.replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-")).slice(0, 40).join("") || "anon";
+	isName(name)
+		? name
+		: Array.from(name.normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^[^\p{L}\p{N}]+/u, "")).slice(0, 40).join("") || "anon";
 
 // A relay is a plain http(s) server URL. It goes into shell commands and config files, so it may
 // hold nothing a shell or TOML would read specially.
@@ -74,7 +76,7 @@ function isEnvelope(/** @type {any} */ e) {
 /** @param {Envelope} env @param {string} myFromId @param {string} myName */
 export function isForMe(env, myFromId, myName) {
 	if (env.fromId === myFromId) return false;
-	return !env.to || env.to.toLowerCase() === myName.toLowerCase();
+	return !env.to || env.to.normalize("NFC").toLowerCase() === myName.normalize("NFC").toLowerCase();
 }
 
 /** @param {string} server @param {string} topic @param {Envelope} env @param {AbortSignal} [signal] */

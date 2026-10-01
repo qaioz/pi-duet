@@ -461,11 +461,11 @@ async function main() {
 	const nulOut = await t1.call("duet_send", { text: "a\u0000b", user_asked: true });
 	check("a NUL is refused by the sender", nulOut.isError && nulOut.text.includes("NUL"), nulOut.text);
 
-	// After a failed push the message goes to a listening duet_wait at once, and pushes pause so
-	// duet_inbox can have it.
+	// A failed push: a duet_wait that started while the push was in flight gets the message as soon
+	// as the push fails; then pushes pause, so duet_inbox has the next one.
 	const fRoom = freshRoom();
 	const failCodex = join(ROOT, "fail-codex.mjs");
-	writeFileSync(failCodex, "#!/usr/bin/env node\nconsole.error('queue is down');\nprocess.exit(1);\n");
+	writeFileSync(failCodex, "#!/usr/bin/env node\nsetTimeout(() => { console.error('queue is down'); process.exit(1); }, 1500);\n");
 	chmodSync(failCodex, 0o755);
 	const failWindow = windows[windows.push(spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" })) - 1];
 	const f1 = startServer("fay", fRoom, { env: { DUET_CODEX_BIN: failCodex } });
@@ -474,20 +474,19 @@ async function main() {
 	await f2.init();
 	await Promise.all([waitConnected(f1), waitConnected(f2)]);
 	await f1.call("duet_status", {}, meta("user"));
-	const t0f = Date.now();
-	const fWait = f1.call("duet_wait", { seconds: 10 }, meta("user")).then((r) => ({ r, at: Date.now() - t0f }));
-	await sleep(300);
 	await f2.call("duet_send", { text: "AFTER-FAILED-PUSH", user_asked: true });
-	const fGot = await fWait;
+	await sleep(400); // the push is now in flight (it fails after 1.5 s)
+	const t0f = Date.now();
+	const fGot = await f1.call("duet_wait", { seconds: 10 }, meta("user")).then((r) => ({ r, at: Date.now() - t0f }));
 	await f2.call("duet_send", { text: "DURING-PAUSE", user_asked: true });
 	await sleep(1000);
-	const fInbox = await f1.call("duet_inbox", {}, meta("user"));
 	const fStatus = await f1.call("duet_status");
+	const fInbox = await f1.call("duet_inbox", {}, meta("user"));
 	failWindow.kill();
 	check(
 		"a failed push hands the message to a listener, then leaves the inbox alone",
-		fGot.r.text.includes("AFTER-FAILED-PUSH") && fGot.at < 5000 && fInbox.text.includes("DURING-PAUSE"),
-		`listener got it after ${fGot.at}ms; inbox during the pause: ${JSON.stringify(fInbox.text.slice(0, 80))}; status: ${fStatus.text.split("— ")[1]?.slice(0, 120)}`,
+		fGot.r.text.includes("AFTER-FAILED-PUSH") && fGot.at < 5000 && fInbox.text.includes("DURING-PAUSE") && fStatus.text.includes("push to Codex failed"),
+		`a wait started during the failing push got the message after ${fGot.at}ms; inbox during the pause: ${JSON.stringify(fInbox.text.slice(0, 80))}; status: ${fStatus.text.split("— ")[1]?.slice(0, 120)}`,
 	);
 
 	// What counts as an open Codex window: real argument shapes, as /proc shows them (tail -F stands

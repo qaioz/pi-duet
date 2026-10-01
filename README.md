@@ -30,7 +30,7 @@ same way. The answer arrives back in your session.
 |---|---|---|
 | pi | A new turn starts by itself, at once. | Nothing. This is the reference. |
 | Claude Code | After you say **"listen on duet"**, Claude keeps a `duet_wait` call open. Claude Code moves it to the background after about 2 minutes. When a message comes, the session wakes up, handles it and listens again. | For the first ~2 minutes of each wait, the session is busy with it. Anything you type is queued, or you press Esc. If the agent ever stops listening, say "listen on duet" or "check duet". |
-| Codex | After the first **"check duet"**, the duet server knows your session and starts a turn there for each message (`codex queue`), as long as a Codex window is open in that folder. | It needs that first "check duet" (one tool call) before pushing works. Messages wait while a turn is running. After you quit Codex, or on Windows, messages wait until you say "check duet". |
+| Codex | After the first **"check duet"**, the duet server knows your session and starts a turn there for each message (`codex queue`), as long as a Codex window is open in that folder. | It needs that first "check duet" (one tool call) before pushing works. Messages wait while a turn is running. After you quit Codex, or on Windows, messages wait until you say "check duet". If a push fails, duet pauses pushing for a minute (`duet_status` says so) and the messages wait in `duet_inbox`. |
 
 Any agent can also read waiting messages with `duet_inbox` ("check duet").
 
