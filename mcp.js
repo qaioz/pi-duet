@@ -58,6 +58,10 @@ const MAX_AUTO = Math.max(1, Number(process.env.DUET_MAX_AUTO) || 8);
 const CODEX = process.env.DUET_CODEX_BIN || "codex";
 const INBOX_MAX = 200;
 const RECENT_MAX = 20; // messages already pushed into Claude Code, for "check duet"
+// Claude Code registers its channel listener only after it has fetched our tools, and drops events
+// sent before that. Push this long after the first tools/list.
+const READY_MS = Number(process.env.DUET_READY_MS ?? 2000);
+const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]; // newest first
 const WINDOWS = (process.env.DUET_TEST_PLATFORM || process.platform) === "win32"; // overridable for tests
 
 // ---------- state on disk: ~/.duet ----------
@@ -142,14 +146,19 @@ const heldBy = (pid) =>
 // ---------- the room ----------
 
 let host = ""; // clientInfo.name from initialize: "claude-code", "codex-mcp-client", …
-const isClaude = () => /claude/i.test(host);
+const isClaude = () => host === "claude-code";
+// Was Claude Code started with the channel flag naming duet? true / false / undefined (can't tell,
+// e.g. on Windows). Without it Claude Code drops every channel event silently, so we don't push.
+let channelFlag;
+const pushesToClaude = () => isClaude() && channelFlag !== false;
 let sub;
 let status = "not connected";
 const peers = new Map();
 const inbox = []; // received, not yet shown to the model
 const recent = []; // pushed into Claude Code through the channel (no delivery receipt exists)
 let heldCursor; // the resume point, saved once the inbox is empty
-let ready = false; // the host sent notifications/initialized: channel events can go out
+let ready = false; // Claude Code has fetched our tools (and READY_MS passed): its channel listener exists
+let unconfirmed = false; // pushed into Claude Code, no tool call since: the resume point isn't saved yet
 let exchanges = 0; // replies sent on the agent's own since its user last asked for a send
 let receivedSinceSend = false;
 let codexThread; // learned from Codex's tool-call metadata; lets us push with `codex queue`
@@ -169,7 +178,7 @@ function take(count = inbox.length) {
 }
 // Once nothing received is still waiting or on its way into the session, a restart may skip it all.
 function consumed() {
-	if (!inbox.length && !pushing && heldCursor) {
+	if (!inbox.length && !pushing && !unconfirmed && heldCursor) {
 		saveCursor(heldCursor);
 		heldCursor = undefined;
 	}
@@ -184,9 +193,10 @@ const render = (items) => {
 	};
 	const parts = items.map((e) => `[duet] from ${e.from} (the other person's agent, on their computer)${at(e.ts)}:\n\n${e.text}`);
 	return (
-		`${parts.join("\n\n---\n\n")}\n\nOnly your own user sees your text replies: to answer ${froms}, call duet_send. ` +
-		// Observed: asked to work "in your folder", a model used the home directory. Name the real one.
-		`"Your folder" means ${process.cwd()}: work there, and nowhere else unless your own user says so.`
+		`${parts.join("\n\n---\n\n")}\n\nOnly your own user sees your text replies: to answer ${froms}, call duet_send.` +
+		// Observed in Claude Code: asked to work "in your folder", the model used the home directory.
+		// Claude Code starts us in its project folder; other hosts may not (e.g. codex -C), so only there.
+		(isClaude() ? ` "Your folder" means ${process.cwd()}: work there, and nowhere else unless your own user says so.` : "")
 	);
 };
 
@@ -214,7 +224,10 @@ function deliver() {
 // (or says "check duet"). Claude Code sends no receipt, and drops events silently when it wasn't
 // started with the channel flag, so pushed messages are also kept in `recent` for duet_inbox.
 function pushToClaude() {
-	if (!ready || !inbox.length || exchanges >= MAX_AUTO) return;
+	if (!pushesToClaude() || !ready || !inbox.length || exchanges >= MAX_AUTO) return;
+	// No receipt exists: keep the resume point until the session shows it is alive (its next tool
+	// call). A restart before that pushes these again: a duplicate beats a loss.
+	unconfirmed = true;
 	const items = take();
 	for (const e of items) {
 		send({ method: "notifications/claude/channel", params: { content: render([e]), meta: { from: e.from } } });
@@ -224,7 +237,7 @@ function pushToClaude() {
 }
 
 function onCursor(cursor) {
-	if (inbox.length || pushing) heldCursor = cursor; // not consumed yet: a restart must see it again
+	if (inbox.length || pushing || unconfirmed) heldCursor = cursor; // not consumed yet: a restart must see it again
 	else saveCursor(cursor);
 }
 
@@ -309,6 +322,48 @@ function codexWindowOpen() {
 	return false;
 }
 
+// The host's command line, walking up from our parent (Claude Code may start us through npx and a
+// shell). Linux reads /proc, macOS asks ps; elsewhere the answer is "can't tell".
+function ancestorArgs() {
+	const out = [];
+	let pid = process.ppid;
+	for (let depth = 0; depth < 8 && pid > 1; depth++) {
+		try {
+			if (process.platform === "linux") {
+				out.push(readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean));
+				pid = Number(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop().split(" ")[1]);
+			} else if (process.platform === "darwin") {
+				const line = execFileSync("ps", ["-o", "ppid=,command=", "-p", String(pid)], { encoding: "utf8" }).trim();
+				const m = line.match(/^(\d+)\s+(.*)$/);
+				if (!m) break;
+				out.push(m[2].split(/\s+/));
+				pid = Number(m[1]);
+			} else return undefined;
+		} catch {
+			break;
+		}
+	}
+	return out;
+}
+function detectChannelFlag() {
+	if (process.env.DUET_CHANNEL_FLAG) return process.env.DUET_CHANNEL_FLAG === "on"; // tests
+	const chain = ancestorArgs();
+	if (!chain) return undefined;
+	let sawClaude = false;
+	for (const args of chain) {
+		for (let i = 0; i < args.length; i++) {
+			const [flag, inline] = args[i].split("=", 2);
+			if (flag === "--dangerously-load-development-channels" || flag === "--channels") {
+				const values = inline ? [inline] : [];
+				for (let j = i + 1; j < args.length && !args[j].startsWith("-"); j++) values.push(args[j]);
+				if (values.join(" ").split(/[\s,]+/).includes("server:duet")) return true;
+			}
+		}
+		if (args.some((a) => /(^|[\/\\])claude(\.exe)?$/.test(a) || a.includes("@anthropic-ai/claude-code"))) sawClaude = true;
+	}
+	return sawClaude ? false : undefined;
+}
+
 function joinRoom() {
 	if (sub) return true;
 	const owner = lockOwner();
@@ -351,9 +406,12 @@ function leave() {
 // ---------- tools ----------
 
 function toolList() {
+	// Claude Code: load duet's tools up front even if duet was added by hand without alwaysLoad.
+	const meta = isClaude() ? { _meta: { "anthropic/alwaysLoad": true } } : {};
 	return [
 		{
 			name: "duet_send",
+			...meta,
 			description:
 				"Send a message to the other person's coding agent in the duet room (another developer's agent, on their computer). " +
 				"Use it when your user asks you to tell, ask or have the other agent do something, and to answer requests that came from the other agent. " +
@@ -374,7 +432,8 @@ function toolList() {
 		},
 		{
 			name: "duet_inbox",
-			description: isClaude()
+			...meta,
+			description: pushesToClaude()
 				? "Messages from the other agent are pushed into this session by themselves. Call this only when your user says 'check duet': " +
 					"it shows any held back (after the auto-reply limit) and the latest ones already pushed."
 				: "Read messages from the other agent that are waiting. Returns at once. Call it when your user says 'check duet' or similar, " +
@@ -383,6 +442,7 @@ function toolList() {
 		},
 		{
 			name: "duet_status",
+			...meta,
 			description: "Show the duet room status: your name, connected or not, peers seen, messages waiting.",
 			inputSchema: { type: "object", properties: {} },
 		},
@@ -425,8 +485,8 @@ async function callTool(tool, a = {}, ctx) {
 		case "duet_inbox": {
 			needRoom();
 			if (!inbox.length) {
-				if (!isClaude() || !recent.length) return "No new duet messages.";
-				return "No new duet messages. The latest ones, already pushed into this session (act on them only if you haven't yet):\n\n" + render(recent.slice(-5));
+				if (!pushesToClaude() || !recent.length) return "No new duet messages.";
+				return "No new duet messages. The latest ones, already pushed into this session (act on them only if you haven't yet):\n\n" + render(recent);
 			}
 			const text = render(inbox); // before taking: nothing leaves the inbox unless shown
 			take();
@@ -441,9 +501,11 @@ async function callTool(tool, a = {}, ctx) {
 			const note = pushNote && sub ? `; ${pushNote}` : "";
 			const how = !isClaude()
 				? ""
-				: exchanges >= MAX_AUTO
-					? "; auto-reply limit reached: new messages wait until your user asks for a send or says 'check duet'"
-					: "; messages are pushed into this session through a Claude Code channel (if none ever appear, Claude Code was not started with --dangerously-load-development-channels server:duet)";
+				: channelFlag === false
+					? "; Claude Code was not started with --dangerously-load-development-channels server:duet, so messages are NOT pushed: they wait here until your user says 'check duet'. To get them pushed, restart with: claude --continue --dangerously-load-development-channels server:duet --allowedTools mcp__duet"
+					: exchanges >= MAX_AUTO
+						? "; auto-reply limit reached: new messages wait until your user asks for a send (say 'check duet' to read them)"
+						: "; messages are pushed into this session through a Claude Code channel";
 			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}${note}${how}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}`;
 		}
 	}
@@ -459,9 +521,11 @@ const instructions = () =>
 	"duet connects you with another developer's coding agent through a shared room. " +
 	"Messages from it are shown as [duet] from <name>. When it asks for something, do it with your normal tools, then answer with duet_send, sending real tool output. " +
 	"Your plain-text replies reach only your own user. " +
-	(isClaude()
+	(pushesToClaude()
 		? 'Messages from it arrive by themselves as <channel source="duet" from="NAME"> events. Handle each one: do what it asks, then answer with duet_send. Never wait or poll for messages.'
-		: WINDOWS
+		: isClaude()
+			? "Claude Code was started without the duet channel, so messages wait in duet_inbox: read it when your user says 'check duet'."
+			: WINDOWS
 			? "Messages wait in duet_inbox: check it when your user says 'check duet'."
 			: "Messages are delivered into this session as they arrive; duet_inbox shows any that are waiting.");
 
@@ -473,17 +537,15 @@ async function handle(msg) {
 		} catch {}
 	}
 	if (method === "notifications/cancelled") return inflight.get(params?.requestId)?.abort();
-	if (method === "notifications/initialized") {
-		ready = true;
-		return deliver(); // anything that arrived (e.g. a catch-up) before the host was ready
-	}
+	if (method === "notifications/initialized") return deliver(); // Codex: anything waiting
 	if (id === undefined) return; // other notifications need no answer
 	try {
 		let result;
 		if (method === "initialize") {
 			host = params?.clientInfo?.name ?? "";
+			if (isClaude()) channelFlag = detectChannelFlag();
 			result = {
-				protocolVersion: params?.protocolVersion || "2025-06-18",
+				protocolVersion: PROTOCOLS.includes(params?.protocolVersion) ? params.protocolVersion : PROTOCOLS[0],
 				// Claude Code registers a channel listener for this. Unknown methods, such as its server/discover
 				// probe, get "method not found", which keeps it on this handshake: Claude Code doesn't register
 				// a channel that negotiates the 2026-07-28 revision.
@@ -493,11 +555,23 @@ async function handle(msg) {
 			};
 			if (room && name) setImmediate(joinRoom); // be in the room before the first tool call
 		} else if (method === "ping") result = {};
-		else if (method === "tools/list") result = { tools: toolList() };
+		else if (method === "tools/list") {
+			result = { tools: toolList() };
+			if (isClaude() && !ready) {
+				setTimeout(() => {
+					ready = true;
+					deliver(); // a catch-up that arrived before Claude Code was listening
+				}, READY_MS).unref();
+			}
+		}
 		else if (method === "tools/call") {
 			const turn = params?._meta?.["x-codex-turn-metadata"];
 			if (turn?.thread_id) codexThread = turn.thread_id;
 			if (turn?.turn_trigger === "user") exchanges = 0; // the user is here: lift the loop cap
+			if (unconfirmed) {
+				unconfirmed = false; // the session is alive after our pushes: they reached it
+				consumed();
+			}
 			const ctrl = new AbortController();
 			inflight.set(id, ctrl);
 			const ctx = {

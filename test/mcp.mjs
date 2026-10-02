@@ -42,7 +42,9 @@ const live = new Set();
 export function startServer(name, room, { home = join(ROOT, name), args = [], env = {}, bin = [process.execPath, BIN] } = {}) {
 	mkdirSync(home, { recursive: true });
 	const proc = spawn(bin[0], [...bin.slice(1), "--room", room, "--name", name, "--server", SERVER, ...args], {
-		env: { HOME: home, PATH: process.env.PATH, LANG: "C.UTF-8", ...env },
+		// Channel-flag detection walks up the process tree, which here includes whatever runs the
+		// tests (maybe a Claude Code without the flag): pin it on, except where a test checks detection.
+		env: { HOME: home, PATH: process.env.PATH, LANG: "C.UTF-8", DUET_CHANNEL_FLAG: "on", DUET_READY_MS: "300", ...env },
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	const s = { name, home, proc, notes: [], pending: new Map(), nextId: 1, stderr: "", exited: false };
@@ -210,25 +212,26 @@ async function main() {
 	const lRoom = freshRoom();
 	const e = startServer("erin", lRoom, { env: { DUET_MAX_AUTO: "2" } });
 	const f = startServer("frank", lRoom);
-	const eInit = await e.init("claude-code", { initialized: false });
+	const eInit = await e.init("claude-code");
 	await f.init();
-	const eTools = (await e.request("tools/list")).result.tools.map((t) => t.name).join();
 	await Promise.all([waitConnected(e), waitConnected(f)]);
 	await f.call("duet_send", { text: "BEFORE-READY", user_asked: true });
 	await sleep(1500);
-	const early = channel(e).length;
-	e.notify("notifications/initialized");
-	await until(() => channel(e).length >= 1, 5000, "push after initialized");
+	const early = channel(e).length; // initialized, but Claude Code hasn't fetched the tools yet
+	const eToolList = (await e.request("tools/list")).result.tools;
+	const eTools = eToolList.map((t) => t.name).join();
+	await until(() => channel(e).length >= 1, 5000, "push after tools/list");
 	await f.call("duet_send", { text: "SECOND", user_asked: true });
 	await until(() => channel(e).length >= 2, 10_000, "second push");
 	const pushed = channel(e);
 	const eInbox = await e.call("duet_inbox");
 	check(
-		"Claude Code: channel capability, push once initialized, one event per message",
+		"Claude Code: channel capability, push only once it has the tools, one event per message",
 		!!eInit.capabilities?.experimental?.["claude/channel"] && eTools === "duet_send,duet_inbox,duet_status" && early === 0 &&
+			eToolList.every((t) => t._meta?.["anthropic/alwaysLoad"] === true) &&
 			pushed.length === 2 && pushed[0].params.content.includes("BEFORE-READY") && pushed[0].params.meta.from === "frank" &&
 			pushed[1].params.content.includes("SECOND") && eInbox.text.startsWith("No new duet messages.") && eInbox.text.includes("already pushed"),
-		`capability ${JSON.stringify(eInit.capabilities)}; tools ${eTools}; pushed before initialized: ${early}; events: ${pushed.map((n) => `${n.params.meta.from}:${n.params.content.match(/BEFORE-READY|SECOND/)?.[0]}`).join(", ")}; inbox: ${JSON.stringify(eInbox.text.slice(0, 70))}`,
+		`capability ${JSON.stringify(eInit.capabilities)}; tools ${eTools} (alwaysLoad meta on all); pushed before tools/list: ${early}; events: ${pushed.map((n) => `${n.params.meta.from}:${n.params.content.match(/BEFORE-READY|SECOND/)?.[0]}`).join(", ")}; inbox: ${JSON.stringify(eInbox.text.slice(0, 70))}`,
 	);
 	// Past the auto-reply limit (2 here), new messages are held until the user asks for a send.
 	await e.call("duet_send", { text: "reply 1" });
@@ -246,9 +249,88 @@ async function main() {
 		!heldEarly && capStatus.includes("auto-reply limit reached"),
 		`held while capped: ${!heldEarly}; status: ${capStatus.split("; ").find((x) => x.includes("limit"))}; pushed after the user's send`,
 	);
-	// A host that isn't Claude Code is offered no channel and gets no channel events.
+	// A host that isn't exactly Claude Code is offered no channel and gets no channel events.
 	const plainInit = await f.request("tools/list");
-	check("only Claude Code gets the channel", channel(f).length === 0 && plainInit.result.tools.length === 3, `frank (client "test"): ${channel(f).length} channel events`);
+	const gil = startServer("gil", lRoom);
+	const gInit = await gil.init("claude-ai");
+	await gil.stop();
+	check(
+		"only Claude Code gets the channel",
+		channel(f).length === 0 && plainInit.result.tools.length === 3 && !gInit.capabilities.experimental,
+		`frank (client "test"): ${channel(f).length} channel events; client "claude-ai": capabilities ${JSON.stringify(gInit.capabilities)}`,
+	);
+
+	// A catch-up after a restart is pushed only once Claude Code has the tools, and the resume point
+	// is saved only after a tool call shows the session is alive: a crash before that pushes again.
+	const catchRoom = freshRoom();
+	let ccRita = startServer("rita", catchRoom);
+	const ccRob = startServer("rob", catchRoom);
+	await ccRita.init("claude-code");
+	await ccRita.request("tools/list");
+	await ccRob.init();
+	await Promise.all([waitConnected(ccRita), waitConnected(ccRob)]);
+	await ccRob.call("duet_send", { text: "FIRST", user_asked: true });
+	await until(() => channel(ccRita).length >= 1, 5000, "first push");
+	await ccRita.call("duet_status"); // a tool call: FIRST reached the session
+	await ccRita.stop();
+	await ccRob.call("duet_send", { text: "AWAY-1", user_asked: true });
+	await ccRob.call("duet_send", { text: "AWAY-2", user_asked: true });
+	const restart = async () => {
+		const x = startServer("rita", catchRoom);
+		await x.init("claude-code");
+		return x;
+	};
+	ccRita = await restart();
+	await sleep(1500);
+	const beforeTools = channel(ccRita).length;
+	await ccRita.request("tools/list");
+	await until(() => channel(ccRita).length >= 2, 8000, "catch-up pushed").catch(() => {});
+	const caughtUp = channel(ccRita).map((n) => n.params.content.match(/FIRST|AWAY-\d/)?.[0]).join();
+	await ccRita.kill(); // a crash before any tool call
+	ccRita = await restart();
+	await ccRita.request("tools/list");
+	await until(() => channel(ccRita).length >= 2, 8000, "re-push after the crash").catch(() => {});
+	const repushed = channel(ccRita).map((n) => n.params.content.match(/FIRST|AWAY-\d/)?.[0]).join();
+	await ccRita.call("duet_status"); // now confirmed
+	await ccRita.stop();
+	ccRita = await restart();
+	await ccRita.request("tools/list");
+	await sleep(2500);
+	const third = channel(ccRita).length;
+	await ccRita.stop();
+	check(
+		"Claude Code: catch-up waits for the tools; unconfirmed pushes come again after a crash, confirmed ones don't",
+		beforeTools === 0 && caughtUp === "AWAY-1,AWAY-2" && repushed === "AWAY-1,AWAY-2" && third === 0,
+		`pushed before tools/list: ${beforeTools}; catch-up: ${caughtUp}; after a crash before any tool call: ${repushed}; after a tool call and a restart: ${third} events`,
+	);
+
+	// Channel-flag detection from the real process tree: a parent called "claude" with and without
+	// --dangerously-load-development-channels server:duet (not pinned by DUET_CHANNEL_FLAG here).
+	const wrapper = join(ROOT, "fakebin", "claude");
+	mkdirSync(join(ROOT, "fakebin"), { recursive: true });
+	writeFileSync(wrapper, `#!/usr/bin/env node\nimport { spawn } from "node:child_process";\nconst i = process.argv.indexOf("--");\nconst c = spawn(process.execPath, process.argv.slice(i + 1), { stdio: "inherit" });\nc.on("exit", (code) => process.exit(code ?? 0));\nfor (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => c.kill(sig));\n`);
+	chmodSync(wrapper, 0o755);
+	const fRoom2 = freshRoom();
+	const flagged = startServer("fred", fRoom2, { env: { DUET_CHANNEL_FLAG: "" }, bin: [wrapper, "--dangerously-load-development-channels", "server:duet", "--", BIN] });
+	const plainCc = startServer("finn", fRoom2, { home: join(ROOT, "finn2"), env: { DUET_CHANNEL_FLAG: "" }, bin: [wrapper, "--", BIN] });
+	const sender = startServer("sal", fRoom2);
+	for (const x of [flagged, plainCc]) {
+		await x.init("claude-code");
+		await x.request("tools/list");
+	}
+	await sender.init();
+	await Promise.all([waitConnected(flagged), waitConnected(plainCc), waitConnected(sender)]);
+	await sender.call("duet_send", { text: "FLAG-CHECK", user_asked: true });
+	await until(() => channel(flagged).length >= 1, 5000, "flagged push").catch(() => {});
+	await sleep(1500);
+	const plainStatus = (await plainCc.call("duet_status")).text;
+	const plainInbox = (await plainCc.call("duet_inbox")).text;
+	check(
+		"Claude Code without the channel flag: nothing is pushed, messages wait for 'check duet'",
+		channel(flagged).length === 1 && channel(plainCc).length === 0 && plainStatus.includes("NOT pushed") && plainInbox.includes("FLAG-CHECK"),
+		`with the flag: ${channel(flagged).length} push; without: ${channel(plainCc).length} pushes, status says NOT pushed: ${plainStatus.includes("NOT pushed")}, inbox has it: ${plainInbox.includes("FLAG-CHECK")}`,
+	);
+	await Promise.all([flagged.stop(), plainCc.stop(), sender.stop()]);
 
 	// Codex: once a tool call has shown the thread id, arriving messages are pushed with `codex queue`,
 	// but only while a Codex window is open in the server's folder: here a `sleep` named codex.
@@ -573,6 +655,7 @@ async function main() {
 	const d1 = startServer("dora", dRoom);
 	const d2 = startServer("dan", dRoom);
 	await d1.init("claude-code");
+	await d1.request("tools/list");
 	await d2.init();
 	await Promise.all([waitConnected(d1), waitConnected(d2)]);
 	await Promise.all([d2.call("duet_send", { text: "BURST-1", user_asked: true }), d2.call("duet_send", { text: "BURST-2", user_asked: true })]);
@@ -591,6 +674,7 @@ async function main() {
 	await new Promise((r) => chunkRelay.listen(0, "127.0.0.1", r));
 	const k1 = startServer("kim", "chunkroom", { args: ["--server", `http://127.0.0.1:${chunkRelay.address().port}`] });
 	await k1.init("claude-code");
+	await k1.request("tools/list");
 	await until(() => channel(k1).length >= 2, 8000, "both chunked messages pushed").catch(() => {});
 	await sleep(1000);
 	chunkRelay.closeAllConnections();
@@ -615,14 +699,17 @@ async function main() {
 		});
 	const okSetup = await runSetup(["--room", "r00m", "--name", "nika"]);
 	const placeholder = await runSetup(["--room", "r00m", "--name", "YOUR_NAME"]);
-	const calls = readFileSync(claudeLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+	const noValue = await runSetup(["--room", "--name", "nika"]);
+	const offNothing = await runSetup(["--off"]);
+	const calls = readFileSync(claudeLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)).slice(0, 2);
 	const added = JSON.parse(calls[1]?.[5] ?? "{}");
 	check(
 		"setup claude: remove, then add-json with alwaysLoad; placeholder name refused",
 		okSetup.code === 0 && calls.length === 2 && calls[0].join(" ") === "mcp remove -s local duet" && calls[1].slice(0, 5).join(" ") === "mcp add-json -s local duet" &&
 			added.alwaysLoad === true && added.args.join(" ") === "-y github:qaioz/pi-duet --room r00m --name nika" &&
-			okSetup.out.includes("--dangerously-load-development-channels server:duet") && placeholder.code === 1 && placeholder.out.includes("placeholder"),
-		`calls: ${calls.map((c) => c.slice(0, 4).join(" ")).join(" | ")}; config ${JSON.stringify(added)}; YOUR_NAME: exit ${placeholder.code}`,
+			okSetup.out.includes("--dangerously-load-development-channels server:duet") && placeholder.code === 1 && placeholder.out.includes("placeholder") &&
+			noValue.code === 1 && noValue.out.includes("--room needs a value") && offNothing.code === 0 && offNothing.out.includes("nothing to remove"),
+		`calls: ${calls.map((c) => c.slice(0, 4).join(" ")).join(" | ")}; config ${JSON.stringify(added)}; YOUR_NAME: exit ${placeholder.code}; "--room --name nika": exit ${noValue.code}; --off with nothing there: "${offNothing.out.trim().slice(0, 40)}"`,
 	);
 
 	// setup codex writes the server into config.toml (and replaces an earlier duet block).

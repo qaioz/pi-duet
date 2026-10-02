@@ -16,7 +16,10 @@ import { isName, isPlaceholderName, isRelayUrl } from "./transport.js";
 const argv = process.argv.slice(3);
 const opt = (flag) => {
 	const i = argv.indexOf(flag);
-	return i >= 0 ? argv[i + 1] : undefined;
+	if (i < 0) return undefined;
+	const value = argv[i + 1];
+	if (value === undefined || value.startsWith("-")) fail(`${flag} needs a value`);
+	return value;
 };
 const fail = (msg) => {
 	console.error(`duet setup: ${msg}`);
@@ -46,23 +49,37 @@ if (target === "claude") setupClaude();
 else setupCodex();
 
 function setupClaude() {
-	const claude = (a, quiet) => {
+	const config = JSON.stringify({ type: "stdio", command, args, alwaysLoad: true });
+	// Returns { ok, out }; never throws. ENOENT: no claude.exe/binary on PATH (an npm install on
+	// Windows is claude.cmd, which needs a shell; JSON arguments through cmd.exe aren't safe to quote).
+	const claude = (a) => {
 		try {
-			return execFileSync(process.env.DUET_CLAUDE_BIN || "claude", a, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+			return { ok: true, out: execFileSync(process.env.DUET_CLAUDE_BIN || "claude", a, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
 		} catch (err) {
-			if (err.code === "ENOENT") fail("can't find the claude command. Install Claude Code first: https://code.claude.com");
-			if (quiet) return "";
-			fail(String(err.stderr || err.message).trim());
+			return { ok: false, missing: err.code === "ENOENT", out: String(err.stderr || err.message).trim() };
 		}
 	};
-	claude(["mcp", "remove", "-s", "local", "duet"], true); // an earlier room, if any
-	if (off) return console.log("duet removed from this project folder's Claude Code config.");
-	claude(["mcp", "add-json", "-s", "local", "duet", JSON.stringify({ type: "stdio", command, args, alwaysLoad: true })]);
+	const removed = claude(["mcp", "remove", "-s", "local", "duet"]); // an earlier room, if any
+	if (removed.missing) {
+		const quoted = process.platform === "win32" ? `"${config.replace(/"/g, '\\"')}"` : `'${config}'`;
+		fail(
+			"can't run the claude command from here. If Claude Code isn't installed, install it first (https://code.claude.com). " +
+				"If it is (e.g. installed with npm on Windows), run these two yourself in this folder:\n\n" +
+				"  claude mcp remove -s local duet\n" +
+				`  claude mcp add-json -s local duet ${quoted}\n`,
+		);
+	}
+	if (off) {
+		console.log(removed.ok ? "duet removed from this project folder's Claude Code config." : `nothing to remove here (${removed.out})`);
+		return;
+	}
+	const added = claude(["mcp", "add-json", "-s", "local", "duet", config]);
+	if (!added.ok) fail(added.out);
 	console.log(
 		`duet added for this project folder: room ${room}, name ${name}. Start Claude Code here with:\n\n` +
 			"  claude --dangerously-load-development-channels server:duet --allowedTools mcp__duet\n\n" +
-			"(add --continue to keep your last conversation). Confirm the development-channels notice once; " +
-			"messages from the other agent then arrive in the session by themselves.",
+			"(add --continue to keep your last conversation). At each start, choose “I am using this for local development” " +
+			"on the development-channels notice; messages from the other agent then arrive in the session by themselves.",
 	);
 }
 

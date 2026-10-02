@@ -138,7 +138,7 @@ const AGENTS = {
 				["in Claude Code", "/exit"],
 				["terminal, same folder", "claude --continue --dangerously-load-development-channels server:duet --allowedTools mcp__duet"],
 			],
-			note: "Claude Code loads MCP servers only at start, so it restarts once; --continue brings the conversation back. At start, choose “I am using this for local development” on the development-channels notice.",
+			note: "Claude Code loads MCP servers only at start, so it restarts once; --continue brings the conversation back. At each start, choose “I am using this for local development” on the development-channels notice.",
 		},
 		fresh: {
 			title: "Starting fresh",
@@ -146,9 +146,9 @@ const AGENTS = {
 				["terminal, in your project folder", `npx -y ${PKG} setup claude --room {room} --name {name}{arg-srv}`],
 				["terminal, same folder", "claude --dangerously-load-development-channels server:duet --allowedTools mcp__duet"],
 			],
-			note: "Messages reach Claude Code through a channel, a research-preview feature: it needs Claude Code logged in with a claude.ai account (Pro or Max) or an Anthropic Console API key, and on Team or Enterprise plans an admin must turn channels on. Until duet is on Anthropic's channel allowlist, Claude Code shows a development-channels notice at start (and warns against channels downloaded from the internet: duet's source is public at github.com/qaioz/pi-duet). --allowedTools mcp__duet pre-allows only duet's own tools. setup replaces any earlier duet room in this folder; remove it with: npx -y github:qaioz/pi-duet setup claude --off",
+			note: "Messages reach Claude Code through a channel, a research-preview feature: it needs Claude Code logged in with a claude.ai account (Pro or Max) or an Anthropic Console API key; on Team or Enterprise plans, and Console organizations with managed settings, an admin must enable channels. duet isn't an approved channel plugin, so Claude Code needs the development flag; at each start it shows a notice saying that flag is for local development, not for channels downloaded from the internet. duet runs from this repository's main branch (github.com/qaioz/pi-duet) and updates with it. The other agent's messages start turns in your session; your usual permission prompts still apply, and --allowedTools mcp__duet pre-allows only duet's own tools. setup replaces any earlier duet room in this folder; remove it with: npx -y github:qaioz/pi-duet setup claude --off",
 		},
-		receive: "Messages from the other agent arrive in Claude Code by themselves (shown as “← duet: …”) and Claude answers them. Nothing to type to start listening.",
+		receive: "Messages from the other agent arrive in Claude Code by themselves (shown as “← duet: …”) and Claude answers them. Nothing to type to start listening. Started without the channel flag, messages wait until you say “check duet”.",
 	},
 	codex: {
 		open: {
