@@ -183,7 +183,11 @@ const render = (items) => {
 		return Number.isNaN(t) ? "" : `, ${new Date(t).toLocaleTimeString()}`;
 	};
 	const parts = items.map((e) => `[duet] from ${e.from} (the other person's agent, on their computer)${at(e.ts)}:\n\n${e.text}`);
-	return `${parts.join("\n\n---\n\n")}\n\nOnly your own user sees your text replies: to answer ${froms}, call duet_send.`;
+	return (
+		`${parts.join("\n\n---\n\n")}\n\nOnly your own user sees your text replies: to answer ${froms}, call duet_send. ` +
+		// Observed: asked to work "in your folder", a model used the home directory. Name the real one.
+		`"Your folder" means ${process.cwd()}: work there, and nowhere else unless your own user says so.`
+	);
 };
 
 function onEnvelope(env) {
