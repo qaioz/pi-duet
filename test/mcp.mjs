@@ -42,7 +42,9 @@ const live = new Set();
 export function startServer(name, room, { home = join(ROOT, name), args = [], env = {}, bin = [process.execPath, BIN] } = {}) {
 	mkdirSync(home, { recursive: true });
 	const proc = spawn(bin[0], [...bin.slice(1), "--room", room, "--name", name, "--server", SERVER, ...args], {
-		env: { HOME: home, PATH: process.env.PATH, LANG: "C.UTF-8", ...env },
+		// Channel-flag detection walks up the process tree, which here includes whatever runs the
+		// tests (maybe a Claude Code without the flag): pin it on, except where a test checks detection.
+		env: { HOME: home, PATH: process.env.PATH, LANG: "C.UTF-8", DUET_CHANNEL_FLAG: "on", DUET_READY_MS: "300", ...env },
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	const s = { name, home, proc, notes: [], pending: new Map(), nextId: 1, stderr: "", exited: false };
@@ -73,9 +75,20 @@ export function startServer(name, room, { home = join(ROOT, name), args = [], en
 		const res = await s.request("tools/call", { name: tool, arguments: a, ...(_meta && { _meta }) });
 		return { isError: !!res.result?.isError, text: res.result?.content?.[0]?.text ?? JSON.stringify(res.error) };
 	};
-	s.init = async (client = "test") => {
+	// Receive the way a host without push does: ask duet_inbox until something comes or time is up.
+	s.recv = async (seconds = 10, _meta) => {
+		const end = Date.now() + seconds * 1000;
+		let r;
+		do {
+			r = await s.call("duet_inbox", {}, _meta);
+			if (r.isError || r.text !== "No new duet messages.") return r;
+			await sleep(200);
+		} while (Date.now() < end);
+		return { ...r, timedOut: true };
+	};
+	s.init = async (client = "test", { initialized = true } = {}) => {
 		const res = await s.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: client, version: "1" } });
-		s.notify("notifications/initialized");
+		if (initialized) s.notify("notifications/initialized");
 		return res.result;
 	};
 	s.stop = async () => {
@@ -92,6 +105,7 @@ export function startServer(name, room, { home = join(ROOT, name), args = [], en
 	live.add(s);
 	return s;
 }
+const channel = (s) => s.notes.filter((n) => n.method === "notifications/claude/channel");
 async function waitConnected(s) {
 	const end = Date.now() + 15_000;
 	let last = "";
@@ -113,19 +127,17 @@ async function main() {
 	const list = await a.request("tools/list");
 	check(
 		"initialize + tools/list",
-		init.serverInfo.name === "duet" && list.result.tools.map((t) => t.name).join() === "duet_send,duet_wait,duet_inbox,duet_status",
+		init.serverInfo.name === "duet" && list.result.tools.map((t) => t.name).join() === "duet_send,duet_inbox,duet_status",
 		`server ${init.serverInfo.name} ${init.serverInfo.version}, protocol ${init.protocolVersion}, tools ${list.result.tools.map((t) => t.name).join(", ")}`,
 	);
 	await Promise.all([waitConnected(a), waitConnected(b)]);
 
-	// Send and receive through duet_wait, with unicode and U+2028 (a line separator inside JSON).
+	// Send and receive, with unicode and U+2028 (a line separator inside JSON).
 	const text = "héllo ünïcode   line-sep — 17*23?";
 	const t0 = Date.now();
-	const waiting = b.call("duet_wait", { seconds: 20 });
-	await sleep(500);
 	await a.call("duet_send", { text, user_asked: true });
-	const got = await waiting;
-	check("send → duet_wait returns it", got.text.includes(text) && got.text.includes("[duet] from alice"), `${Date.now() - t0}ms: ${JSON.stringify(got.text.slice(0, 140))}`);
+	const got = await b.recv(20);
+	check("send → the other side receives it", got.text.includes(text) && got.text.includes("[duet] from alice"), `${Date.now() - t0}ms: ${JSON.stringify(got.text.slice(0, 140))}`);
 	check("no own echo", !(await a.call("duet_inbox")).text.includes(text), "alice's inbox after her own send: no new messages");
 
 	// Inbox: queued until read, read once.
@@ -140,18 +152,6 @@ async function main() {
 		inbox.text.includes("INBOX-1") && inbox.text.includes("INBOX-3") && !inbox.text.includes("INBOX-2") && again.text === "No new duet messages.",
 		`first read ${JSON.stringify(inbox.text.replace(/\n+/g, " ").slice(0, 200))}; second read ${JSON.stringify(again.text)}`,
 	);
-
-	const w0 = Date.now();
-	const timeout = await b.call("duet_wait", { seconds: 2 });
-	check("duet_wait times out", /No duet message in the last 2s/.test(timeout.text) && Date.now() - w0 < 4000, `${Date.now() - w0}ms: ${timeout.text}`);
-
-	// A cancelled duet_wait ends at once (the host gave up on the call).
-	const c0 = Date.now();
-	const cancelled = b.call("duet_wait", { seconds: 30 });
-	await sleep(300);
-	b.notify("notifications/cancelled", { requestId: b.lastId });
-	await cancelled;
-	check("cancelled duet_wait returns", Date.now() - c0 < 3000, `${Date.now() - c0}ms`);
 
 	// Restart: a message that arrived but was never read survives a crash; one sent while down is caught up.
 	await a.call("duet_send", { text: "UNREAD-BEFORE-CRASH", user_asked: true });
@@ -184,7 +184,7 @@ async function main() {
 	await b.stop();
 	await waitConnected(b2);
 	await a.call("duet_send", { text: "AFTER-HANDOVER", user_asked: true });
-	const handed = await b2.call("duet_wait", { seconds: 10 });
+	const handed = await b2.recv(10);
 	check("second window takes over when the first closes", handed.text.includes("AFTER-HANDOVER"), handed.text.slice(0, 120));
 	b = b2;
 
@@ -197,7 +197,7 @@ async function main() {
 	const outcomes = [];
 	for (let i = 1; i <= 5; i++) {
 		await d.call("duet_send", { text: `ping ${i}`, user_asked: true });
-		await c.call("duet_wait", { seconds: 10 });
+		await c.recv(10);
 		outcomes.push((await c.call("duet_send", { text: `pong ${i}` })).isError ? "refused" : "sent");
 	}
 	const reset = await c.call("duet_send", { text: "user said go on", user_asked: true });
@@ -207,31 +207,136 @@ async function main() {
 		`cap 3: replies ${outcomes.join(", ")}; then user_asked send: ${reset.isError ? "refused" : "sent"}`,
 	);
 
-	// Claude Code: duet_wait listens long (Claude backgrounds it), keeps the call alive with progress
-	// notifications, and one message wakes one listener.
+	// Claude Code: the server offers a channel and pushes each message as a channel event (one per
+	// message, the sender in meta), but only once the host has sent notifications/initialized.
 	const lRoom = freshRoom();
-	const e = startServer("erin", lRoom, { env: { DUET_PROGRESS_MS: "300" } });
+	const e = startServer("erin", lRoom, { env: { DUET_MAX_AUTO: "2" } });
 	const f = startServer("frank", lRoom);
-	await e.init("claude-code");
+	const eInit = await e.init("claude-code");
 	await f.init();
-	const eTools = (await e.request("tools/list")).result.tools;
 	await Promise.all([waitConnected(e), waitConnected(f)]);
-	const l1 = e.request("tools/call", { name: "duet_wait", arguments: {}, _meta: { progressToken: "p1" } });
-	const l2 = e.call("duet_wait", {});
+	await f.call("duet_send", { text: "BEFORE-READY", user_asked: true });
 	await sleep(1500);
-	await f.call("duet_send", { text: "FOR-ONE-LISTENER", user_asked: true });
-	const first = await l1;
-	await sleep(500);
-	const beats = e.notes.filter((n) => n.method === "notifications/progress" && n.params.progressToken === "p1").length;
+	const early = channel(e).length; // initialized, but Claude Code hasn't fetched the tools yet
+	const eToolList = (await e.request("tools/list")).result.tools;
+	const eTools = eToolList.map((t) => t.name).join();
+	await until(() => channel(e).length >= 1, 5000, "push after tools/list");
 	await f.call("duet_send", { text: "SECOND", user_asked: true });
-	const second = await l2;
+	await until(() => channel(e).length >= 2, 10_000, "second push");
+	const pushed = channel(e);
+	const eInbox = await e.call("duet_inbox");
 	check(
-		"Claude Code: long listen, progress keepalive, one listener per message",
-		/background/.test(eTools.find((t) => t.name === "duet_wait").description) &&
-			first.result.content[0].text.includes("FOR-ONE-LISTENER") && first.result.content[0].text.includes("call duet_wait again") &&
-			beats >= 3 && second.text.includes("SECOND") && !second.text.includes("FOR-ONE-LISTENER"),
-		`progress beats during ~1.5s wait (every 300ms): ${beats}; first listener got FOR-ONE-LISTENER, second listener got SECOND`,
+		"Claude Code: channel capability, push only once it has the tools, one event per message",
+		!!eInit.capabilities?.experimental?.["claude/channel"] && eTools === "duet_send,duet_inbox,duet_status" && early === 0 &&
+			eToolList.every((t) => t._meta?.["anthropic/alwaysLoad"] === true) &&
+			pushed.length === 2 && pushed[0].params.content.includes("BEFORE-READY") && pushed[0].params.meta.from === "frank" &&
+			pushed[1].params.content.includes("SECOND") && eInbox.text.startsWith("No new duet messages.") && eInbox.text.includes("already pushed"),
+		`capability ${JSON.stringify(eInit.capabilities)}; tools ${eTools} (alwaysLoad meta on all); pushed before tools/list: ${early}; events: ${pushed.map((n) => `${n.params.meta.from}:${n.params.content.match(/BEFORE-READY|SECOND/)?.[0]}`).join(", ")}; inbox: ${JSON.stringify(eInbox.text.slice(0, 70))}`,
 	);
+	// Past the auto-reply limit (2 here), new messages are held until the user asks for a send.
+	await e.call("duet_send", { text: "reply 1" });
+	await f.call("duet_send", { text: "THIRD", user_asked: true });
+	await until(() => channel(e).length >= 3, 10_000, "third push");
+	await e.call("duet_send", { text: "reply 2" });
+	await f.call("duet_send", { text: "HELD", user_asked: true });
+	await sleep(1500);
+	const heldEarly = channel(e).some((n) => n.params.content.includes("HELD"));
+	const capStatus = (await e.call("duet_status")).text;
+	await e.call("duet_send", { text: "my user says go on", user_asked: true });
+	await until(() => channel(e).some((n) => n.params.content.includes("HELD")), 5000, "held message pushed after the user's send");
+	check(
+		"Claude Code: past the cap, pushes wait until the user asks for a send",
+		!heldEarly && capStatus.includes("auto-reply limit reached"),
+		`held while capped: ${!heldEarly}; status: ${capStatus.split("; ").find((x) => x.includes("limit"))}; pushed after the user's send`,
+	);
+	// A host that isn't exactly Claude Code is offered no channel and gets no channel events.
+	const plainInit = await f.request("tools/list");
+	const gil = startServer("gil", lRoom);
+	const gInit = await gil.init("claude-ai");
+	await gil.stop();
+	check(
+		"only Claude Code gets the channel",
+		channel(f).length === 0 && plainInit.result.tools.length === 3 && !gInit.capabilities.experimental,
+		`frank (client "test"): ${channel(f).length} channel events; client "claude-ai": capabilities ${JSON.stringify(gInit.capabilities)}`,
+	);
+
+	// A catch-up after a restart is pushed only once Claude Code has the tools, and the resume point
+	// is saved only after a tool call shows the session is alive: a crash before that pushes again.
+	const catchRoom = freshRoom();
+	let ccRita = startServer("rita", catchRoom);
+	const ccRob = startServer("rob", catchRoom);
+	await ccRita.init("claude-code");
+	await ccRita.request("tools/list");
+	await ccRob.init();
+	await Promise.all([waitConnected(ccRita), waitConnected(ccRob)]);
+	await ccRob.call("duet_send", { text: "FIRST", user_asked: true });
+	await until(() => channel(ccRita).length >= 1, 5000, "first push");
+	await ccRita.call("duet_inbox"); // reading duet confirms: FIRST reached the session
+	await ccRita.stop();
+	await ccRob.call("duet_send", { text: "AWAY-1", user_asked: true });
+	await ccRob.call("duet_send", { text: "AWAY-2", user_asked: true });
+	const restart = async () => {
+		const x = startServer("rita", catchRoom);
+		await x.init("claude-code");
+		return x;
+	};
+	ccRita = await restart();
+	await sleep(1500);
+	const beforeTools = channel(ccRita).length;
+	await ccRita.request("tools/list");
+	await until(() => channel(ccRita).length >= 2, 8000, "catch-up pushed").catch(() => {});
+	const caughtUp = channel(ccRita).map((n) => n.params.content.match(/FIRST|AWAY-\d/)?.[0]).join();
+	await ccRita.kill(); // a crash before any tool call
+	ccRita = await restart();
+	await ccRita.request("tools/list");
+	await until(() => channel(ccRita).length >= 2, 8000, "re-push after the crash").catch(() => {});
+	const repushed = channel(ccRita).map((n) => n.params.content.match(/FIRST|AWAY-\d/)?.[0]).join();
+	await ccRita.call("duet_status"); // not proof the pushes arrived (channels may be blocked)
+	await ccRita.stop();
+	ccRita = await restart();
+	await ccRita.request("tools/list");
+	await until(() => channel(ccRita).length >= 2, 8000, "re-push after a status call").catch(() => {});
+	const afterStatus = channel(ccRita).length;
+	await ccRita.call("duet_send", { text: "got them, thanks for the update" }); // an answer: confirmed
+	await ccRita.stop();
+	ccRita = await restart();
+	await ccRita.request("tools/list");
+	await sleep(2500);
+	const third = channel(ccRita).length;
+	await ccRita.stop();
+	check(
+		"Claude Code: catch-up waits for the tools; unconfirmed pushes come again after a crash, confirmed ones don't",
+		beforeTools === 0 && caughtUp === "AWAY-1,AWAY-2" && repushed === "AWAY-1,AWAY-2" && afterStatus === 2 && third === 0,
+		`pushed before tools/list: ${beforeTools}; catch-up: ${caughtUp}; after a crash before any tool call: ${repushed}; after only a duet_status: ${afterStatus} pushed again; after a duet_send answer and a restart: ${third} events`,
+	);
+
+	// Channel-flag detection from the real process tree: a parent called "claude" with and without
+	// --dangerously-load-development-channels server:duet (not pinned by DUET_CHANNEL_FLAG here).
+	const wrapper = join(ROOT, "fakebin", "claude");
+	mkdirSync(join(ROOT, "fakebin"), { recursive: true });
+	writeFileSync(wrapper, `#!/usr/bin/env node\nimport { spawn } from "node:child_process";\nconst i = process.argv.indexOf("--");\nconst c = spawn(process.execPath, process.argv.slice(i + 1), { stdio: "inherit" });\nc.on("exit", (code) => process.exit(code ?? 0));\nfor (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => c.kill(sig));\n`);
+	chmodSync(wrapper, 0o755);
+	const fRoom2 = freshRoom();
+	const flagged = startServer("fred", fRoom2, { env: { DUET_CHANNEL_FLAG: "" }, bin: [wrapper, "--dangerously-load-development-channels", "server:duet", "--", BIN] });
+	const plainCc = startServer("finn", fRoom2, { home: join(ROOT, "finn2"), env: { DUET_CHANNEL_FLAG: "" }, bin: [wrapper, "--", BIN] });
+	const sender = startServer("sal", fRoom2);
+	for (const x of [flagged, plainCc]) {
+		await x.init("claude-code");
+		await x.request("tools/list");
+	}
+	await sender.init();
+	await Promise.all([waitConnected(flagged), waitConnected(plainCc), waitConnected(sender)]);
+	await sender.call("duet_send", { text: "FLAG-CHECK", user_asked: true });
+	await until(() => channel(flagged).length >= 1, 5000, "flagged push").catch(() => {});
+	await sleep(1500);
+	const plainStatus = (await plainCc.call("duet_status")).text;
+	const plainInbox = (await plainCc.call("duet_inbox")).text;
+	check(
+		"Claude Code without the channel flag: nothing is pushed, messages wait for 'check duet'",
+		channel(flagged).length === 1 && channel(plainCc).length === 0 && plainStatus.includes("NOT pushed") && plainInbox.includes("FLAG-CHECK"),
+		`with the flag: ${channel(flagged).length} push; without: ${channel(plainCc).length} pushes, status says NOT pushed: ${plainStatus.includes("NOT pushed")}, inbox has it: ${plainInbox.includes("FLAG-CHECK")}`,
+	);
+	await Promise.all([flagged.stop(), plainCc.stop(), sender.stop()]);
 
 	// Codex: once a tool call has shown the thread id, arriving messages are pushed with `codex queue`,
 	// but only while a Codex window is open in the server's folder: here a `sleep` named codex.
@@ -363,31 +468,11 @@ async function main() {
 	const names = await w1.call("duet_inbox", {}, meta("user"));
 	check("peer names are checked", !names.text.includes("BAD-NAME") && names.text.includes("GOOD-NAME"), JSON.stringify(names.text.slice(0, 120)));
 
-	// Claude Code: right after a send, an older (backgrounded) listener doesn't take the reply until
-	// the sending turn had time to end; a duet_wait started after the send gets it at once.
+	// The status line names the room by its first characters only.
 	const sRoom = freshRoom();
-	const s1 = startServer("sam", sRoom, { env: { DUET_SETTLE_MS: "3000" } });
-	const s2 = startServer("sue", sRoom);
-	await s1.init("claude-code");
-	await s2.init();
-	await Promise.all([waitConnected(s1), waitConnected(s2)]);
-	const t0s = Date.now();
-	const oldListener = s1.call("duet_wait", {}).then((r) => ({ r, at: Date.now() - t0s }));
-	await sleep(300);
-	await s1.call("duet_send", { text: "question", user_asked: true });
-	await s2.call("duet_send", { text: "QUICK-REPLY", user_asked: true });
-	const early = await Promise.race([oldListener, sleep(1500).then(() => "still listening")]);
-	const late = await oldListener;
-	await s1.call("duet_send", { text: "question 2", user_asked: true });
-	const fresh = s1.call("duet_wait", { seconds: 10 }).then((r) => ({ r, at: Date.now() }));
-	const sentAt = Date.now();
-	await s2.call("duet_send", { text: "REPLY-TO-NEW-WAIT", user_asked: true });
-	const freshGot = await fresh;
-	check(
-		"Claude Code: a reply right after a send wakes a fresh turn, not the ending one",
-		early === "still listening" && late.r.text.includes("QUICK-REPLY") && late.at >= 3000 && freshGot.r.text.includes("REPLY-TO-NEW-WAIT") && freshGot.at - sentAt < 2500,
-		`old listener: still waiting 1.5s after the reply, got it after ${late.at}ms (settle 3000ms); a wait started after the send got its reply in ${freshGot.at - sentAt}ms`,
-	);
+	const s1 = startServer("sam", sRoom);
+	await s1.init();
+	await waitConnected(s1);
 	const st = await s1.call("duet_status");
 	check("status doesn't show the room code", !st.text.includes(sRoom) && st.text.includes(sRoom.slice(0, 4)), st.text);
 
@@ -443,7 +528,7 @@ async function main() {
 	// stops the messages around it.
 	const tRoom = freshRoom();
 	const t1 = startServer("tess", tRoom);
-	await t1.init("claude-code");
+	await t1.init();
 	await waitConnected(t1);
 	const raw = (env) => fetch(`${SERVER}/${topicFor(tRoom)}`, { method: "POST", body: JSON.stringify(env) });
 	await raw({ ...envelope({ fromId: "evil", from: "eve", kind: "msg", text: "TS-OBJECT" }), ts: { valueOf: "x", toString: "y" } });
@@ -469,7 +554,7 @@ async function main() {
 	await Promise.all([u1.init(), u2.init()]);
 	await Promise.all([waitConnected(u1), waitConnected(u2)]);
 	await u2.call("duet_send", { text: "hi", user_asked: true });
-	await u1.call("duet_wait", { seconds: 10 });
+	await u1.recv(10);
 	const refusedFirst = await u1.call("duet_send", { text: "bad\u0000" });
 	const thenReply = await u1.call("duet_send", { text: "the one allowed reply" });
 	check("a refused send doesn't use up the cap", refusedFirst.isError && !thenReply.isError, `cap 1: NUL send ${refusedFirst.isError ? "refused" : "sent"}, then the reply ${thenReply.isError ? "refused" : "sent"}`);
@@ -478,8 +563,8 @@ async function main() {
 	const nameCases = [isName("nika"), !isName("_nika"), !isName("\u0301"), isName("Jose\u0301"), fitName("_x") === "x", fitName("nika@laptop") === "nika-laptop", isForMe({ fromId: "p", to: "Jose\u0301" }, "me", "Jos\u00e9")];
 	check("name rule and NFC addressing", nameCases.every(Boolean), `cases: ${nameCases.join(", ")}`);
 
-	// A failed push: a duet_wait that started while the push was in flight gets the message as soon
-	// as the push fails; then pushes pause, so duet_inbox has the next one.
+	// A failed push: the message goes back to duet_inbox as soon as the push fails; then pushes pause,
+	// so duet_inbox has the next one too.
 	const fRoom = freshRoom();
 	const failCodex = join(ROOT, "fail-codex.mjs");
 	const failLog = join(ROOT, "fail-queue.log");
@@ -496,7 +581,7 @@ async function main() {
 	await f2.call("duet_send", { text: "AFTER-FAILED-PUSH", user_asked: true });
 	await sleep(400); // the push is now in flight (it fails after 1.5 s)
 	const t0f = Date.now();
-	const fGot = await f1.call("duet_wait", { seconds: 10 }, meta("user")).then((r) => ({ r, at: Date.now() - t0f }));
+	const fGot = await f1.recv(10, meta("user")).then((r) => ({ r, at: Date.now() - t0f }));
 	await f2.call("duet_send", { text: "DURING-PAUSE", user_asked: true });
 	await sleep(1000);
 	const fStatus = await f1.call("duet_status");
@@ -507,9 +592,9 @@ async function main() {
 	const retried = failCalls() > callsBefore;
 	failWindow.kill();
 	check(
-		"a failed push hands the message to a listener, then leaves the inbox alone",
+		"a failed push hands the message back to duet_inbox, then pauses",
 		fGot.r.text.includes("AFTER-FAILED-PUSH") && fGot.at >= 700 && fGot.at < 5000 && callsBefore >= 1 && fInbox.text.includes("DURING-PAUSE") && fStatus.text.includes("push to Codex failed") && retried,
-		`a wait started during the failing push got the message after ${fGot.at}ms (push in flight: ${callsBefore} codex call(s)); inbox during the pause: ${JSON.stringify(fInbox.text.slice(0, 60))}; status: ${fStatus.text.split("— ")[1]?.slice(0, 100)}; retried after the pause with no nudge: ${retried}`,
+		`duet_inbox, asked during the failing push, had the message after ${fGot.at}ms (push in flight: ${callsBefore} codex call(s)); inbox during the pause: ${JSON.stringify(fInbox.text.slice(0, 60))}; status: ${fStatus.text.split("— ")[1]?.slice(0, 100)}; retried after the pause with no nudge: ${retried}`,
 	);
 
 	// What counts as an open Codex window: real argument shapes, as /proc shows them (tail -F stands
@@ -571,22 +656,19 @@ async function main() {
 	});
 	check("bad --name refused", badName.code === 1 && badName.err.includes("--name may only use") && underscore.code === 1 && underscore.err.includes("start with a letter or digit"), `"Nika Q": exit ${badName.code}; "_x": exit ${underscore.code}: ${underscore.err.trim()}`);
 
-	// Two messages close together never leave a second listener returning empty.
+	// Claude Code: two messages close together are pushed once each.
 	const dRoom = freshRoom();
 	const d1 = startServer("dora", dRoom);
 	const d2 = startServer("dan", dRoom);
 	await d1.init("claude-code");
+	await d1.request("tools/list");
 	await d2.init();
 	await Promise.all([waitConnected(d1), waitConnected(d2)]);
-	const t0d = Date.now();
-	const w1d = d1.call("duet_wait", { seconds: 6 }).then((r) => ({ r, at: Date.now() - t0d }));
-	const w2d = d1.call("duet_wait", { seconds: 6 }).then((r) => ({ r, at: Date.now() - t0d }));
-	await sleep(300);
 	await Promise.all([d2.call("duet_send", { text: "BURST-1", user_asked: true }), d2.call("duet_send", { text: "BURST-2", user_asked: true })]);
-	const [rd1, rd2] = await Promise.all([w1d, w2d]);
-	const emptyEarly = [rd1, rd2].filter((x) => !x.r.text.includes("BURST") && x.at < 5000).length;
-	const bursts = (rd1.r.text + rd2.r.text).match(/BURST-\d/g) ?? [];
-	check("a burst wakes listeners only with messages", emptyEarly === 0 && bursts.length === 2, `listener results: ${[rd1, rd2].map((x) => `${x.at}ms ${x.r.text.includes("BURST") ? (x.r.text.match(/BURST-\d/g) ?? []).join("+") : "empty"}`).join(", ")}`);
+	await until(() => channel(d1).length >= 2, 10_000, "both bursts pushed");
+	await sleep(1500);
+	const bursts = channel(d1).map((n) => n.params.content.match(/BURST-\d/)?.[0]).sort();
+	check("Claude Code: a burst is pushed once per message", bursts.join() === "BURST-1,BURST-2", `channel events: ${bursts.join(", ")}`);
 
 	// Same, with both messages in one chunk from the relay (a fake one that writes them together).
 	const chunkRelay = createServer((req, res) => {
@@ -598,16 +680,49 @@ async function main() {
 	await new Promise((r) => chunkRelay.listen(0, "127.0.0.1", r));
 	const k1 = startServer("kim", "chunkroom", { args: ["--server", `http://127.0.0.1:${chunkRelay.address().port}`] });
 	await k1.init("claude-code");
-	const t0k = Date.now();
-	const [rk1, rk2] = await Promise.all([1, 2].map(() => k1.call("duet_wait", { seconds: 5 }).then((r) => ({ r, at: Date.now() - t0k }))));
+	await k1.request("tools/list");
+	await until(() => channel(k1).length >= 2, 8000, "both chunked messages pushed").catch(() => {});
+	await sleep(1000);
 	chunkRelay.closeAllConnections();
 	chunkRelay.close();
 	await k1.stop();
-	const chunks = (rk1.r.text + rk2.r.text).match(/CHUNK-\d/g) ?? [];
+	const chunks = channel(k1).map((n) => n.params.content.match(/CHUNK-\d/)?.[0]).sort();
+	check("Claude Code: one chunk of messages, each pushed once", chunks.join() === "CHUNK-1,CHUNK-2", `channel events: ${chunks.join(", ") || "none"}`);
+
+	// setup claude replaces any earlier duet server through claude mcp remove / add-json (a fake
+	// claude records its arguments), with alwaysLoad; the site's placeholder name is refused.
+	const fakeClaude = join(ROOT, "fake-claude.mjs");
+	const claudeLog = join(ROOT, "fake-claude.log");
+	writeFileSync(fakeClaude, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(claudeLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nif (process.argv[3] === "remove") { console.error("No MCP server named duet"); process.exit(1); }\n`);
+	chmodSync(fakeClaude, 0o755);
+	const runSetup = (extra) =>
+		new Promise((r) => {
+			const p = spawn(process.execPath, [BIN, "setup", "claude", ...extra], { env: { HOME: ROOT, PATH: process.env.PATH, DUET_CLAUDE_BIN: fakeClaude } });
+			let out = "";
+			p.stdout.on("data", (d) => (out += d));
+			p.stderr.on("data", (d) => (out += d));
+			p.on("exit", (code) => r({ code, out }));
+		});
+	const okSetup = await runSetup(["--room", "r00m", "--name", "nika"]);
+	const placeholder = await runSetup(["--room", "r00m", "--name", "YOUR_NAME"]);
+	const noValue = await runSetup(["--room", "--name", "nika"]);
+	const offNothing = await runSetup(["--off"]);
+	const offNoClaude = await new Promise((r) => {
+		const p = spawn(process.execPath, [BIN, "setup", "claude", "--off"], { env: { HOME: ROOT, PATH: process.env.PATH, DUET_CLAUDE_BIN: join(ROOT, "no-such-claude") } });
+		let out = "";
+		p.stderr.on("data", (d) => (out += d));
+		p.on("exit", (code) => r({ code, out }));
+	});
+	const calls = readFileSync(claudeLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)).slice(0, 2);
+	const added = JSON.parse(calls[1]?.[5] ?? "{}");
 	check(
-		"one chunk of messages: no listener wakes empty, each message shown once",
-		[rk1, rk2].every((x) => x.r.text.includes("CHUNK") || x.at >= 4500) && chunks.sort().join() === "CHUNK-1,CHUNK-2",
-		`listener results: ${[rk1, rk2].map((x) => `${x.at}ms ${(x.r.text.match(/CHUNK-\d/g) ?? ["empty"]).join("+")}`).join(", ")}`,
+		"setup claude: remove, then add-json with alwaysLoad; placeholder name refused",
+		okSetup.code === 0 && calls.length === 2 && calls[0].join(" ") === "mcp remove -s local duet" && calls[1].slice(0, 5).join(" ") === "mcp add-json -s local duet" &&
+			added.alwaysLoad === true && added.args.join(" ") === "-y github:qaioz/pi-duet --room r00m --name nika" &&
+			okSetup.out.includes("--dangerously-load-development-channels server:duet") && placeholder.code === 1 && placeholder.out.includes("placeholder") &&
+			noValue.code === 1 && noValue.out.includes("--room needs a value") && offNothing.code === 0 && offNothing.out.includes("nothing to remove") &&
+			offNoClaude.code === 1 && offNoClaude.out.includes("mcp remove -s local duet") && !offNoClaude.out.includes("null") && !offNoClaude.out.includes("mcp add"),
+		`calls: ${calls.map((c) => c.slice(0, 4).join(" ")).join(" | ")}; config ${JSON.stringify(added)}; YOUR_NAME: exit ${placeholder.code}; "--room --name nika": exit ${noValue.code}; --off with nothing there: "${offNothing.out.trim().slice(0, 40)}"`,
 	);
 
 	// setup codex writes the server into config.toml (and replaces an earlier duet block).
@@ -631,7 +746,7 @@ async function main() {
 
 	// Interop with the pi extension's wire format: a hand-made envelope from "pi" arrives.
 	await publish(SERVER, topicFor(room), envelope({ fromId: "pi-install", from: "pia", kind: "msg", text: "FROM-PI" }));
-	const fromPi = await b.call("duet_wait", { seconds: 10 });
+	const fromPi = await b.recv(10);
 	check("receives a pi-format envelope", fromPi.text.includes("[duet] from pia") && fromPi.text.includes("FROM-PI"), fromPi.text.slice(0, 80));
 
 	// No room configured: tools explain instead of crashing.

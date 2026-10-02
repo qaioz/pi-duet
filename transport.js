@@ -42,6 +42,9 @@ export function envelope(fields) {
 const NAME = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._-]{0,39}$/u; // starts with a letter or digit
 /** @param {unknown} name */
 export const isName = (name) => typeof name === "string" && NAME.test(name);
+// The site's stand-in before a name is typed; joining under it means the commands were copied too early.
+/** @param {unknown} name */
+export const isPlaceholderName = (name) => typeof name === "string" && /^your[-_ ]?name$/i.test(name);
 // A name that breaks the rule, made to fit it (e.g. a name saved by an older version).
 /** @param {string} name */
 export const fitName = (name) =>
