@@ -21,6 +21,7 @@
 	button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--code); color: var(--fg); border-radius: 8px; padding: 6px 12px; }
 	button.primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 10px 18px; font-weight: 600; }
 	button:disabled { opacity: .5; cursor: default; }
+	.hint { font-weight: 600; }
 	input { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); width: 220px; }
 	.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 	.cmd { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
@@ -133,23 +134,21 @@ const AGENTS = {
 		open: {
 			title: "Claude Code already open (keeps your conversation)",
 			steps: [
-				["in Claude Code", `!claude mcp add duet -- npx -y ${PKG} --room {room} --name {name}{arg-srv}`],
+				["in Claude Code", `!npx -y ${PKG} setup claude --room {room} --name {name}{arg-srv}`],
 				["in Claude Code", "/exit"],
-				["terminal, same folder", "claude --continue --allowedTools mcp__duet"],
-				["in Claude Code", "listen on duet"],
+				["terminal, same folder", "claude --continue --dangerously-load-development-channels server:duet --allowedTools mcp__duet"],
 			],
-			note: "Claude Code loads new MCP servers only at start, so it restarts once; --continue brings the conversation back.",
+			note: "Claude Code loads MCP servers only at start, so it restarts once; --continue brings the conversation back. At start, choose “I am using this for local development” on the development-channels notice.",
 		},
 		fresh: {
 			title: "Starting fresh",
 			steps: [
-				["terminal, in your project folder", `claude mcp add duet -- npx -y ${PKG} --room {room} --name {name}{arg-srv}`],
-				["terminal", "claude --allowedTools mcp__duet"],
-				["in Claude Code", "listen on duet"],
+				["terminal, in your project folder", `npx -y ${PKG} setup claude --room {room} --name {name}{arg-srv}`],
+				["terminal, same folder", "claude --dangerously-load-development-channels server:duet --allowedTools mcp__duet"],
 			],
-			note: "--allowedTools mcp__duet pre-allows only duet's own tools. On native Windows, put cmd /c before npx.",
+			note: "Messages reach Claude Code through a channel, a research-preview feature: it needs Claude Code logged in with a claude.ai account (Pro or Max) or an Anthropic Console API key, and on Team or Enterprise plans an admin must turn channels on. Until duet is on Anthropic's channel allowlist, Claude Code shows a development-channels notice at start (and warns against channels downloaded from the internet: duet's source is public at github.com/qaioz/pi-duet). --allowedTools mcp__duet pre-allows only duet's own tools. setup replaces any earlier duet room in this folder; remove it with: npx -y github:qaioz/pi-duet setup claude --off",
 		},
-		receive: "“listen on duet” starts a wait that moves to the background after about two minutes; when a message comes, Claude Code wakes up, handles it and listens again. If it has stopped listening, say “check duet”.",
+		receive: "Messages from the other agent arrive in Claude Code by themselves (shown as “← duet: …”) and Claude answers them. Nothing to type to start listening.",
 	},
 	codex: {
 		open: {
@@ -177,7 +176,8 @@ const AGENTS = {
 
 let agent = "pi";
 const room = () => roomFromHash();
-const name = () => cleanName($("name").value) || "YOUR_NAME";
+const typedName = () => cleanName($("name").value);
+const name = () => typedName() || "YOUR_NAME";
 
 function fill(cmd) {
 	// Function replacements: a string one would expand $& and friends.
@@ -193,6 +193,13 @@ function render() {
 	const a = AGENTS[agent];
 	const box = $("commands");
 	box.textContent = "";
+	// The commands carry the name: until one is typed they show a stand-in and can't be copied.
+	if (!typedName()) {
+		const hint = document.createElement("p");
+		hint.className = "hint";
+		hint.textContent = "Type your name above first: every command below uses it.";
+		box.append(hint);
+	}
 	for (const key of ["open", "fresh"]) {
 		const c = a[key];
 		const section = document.createElement("div");
@@ -217,6 +224,8 @@ function render() {
 			wrap.append(w, code);
 			const btn = document.createElement("button");
 			btn.textContent = "Copy";
+			btn.disabled = !typedName();
+			if (btn.disabled) btn.title = "Type your name first";
 			btn.addEventListener("click", () => copy(code.textContent, btn));
 			row.append(n, wrap, btn);
 			section.append(row);

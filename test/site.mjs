@@ -81,6 +81,23 @@ try {
 	const friendInvite = await friend.textContent("#invite");
 	check("opening the link shows the same room", friendInvite === invite && !(await friend.isVisible("#start-btn")), `friend's page shows ${friendInvite.replace(room, "<room>")}`);
 
+	// Before a name is typed the commands carry a stand-in, so they can't be copied yet. The Claude
+	// tab joins through a channel: no "listen" step.
+	const gate = await friend.evaluate(() => ({
+		count: document.querySelectorAll("#commands .cmd button").length,
+		disabled: [...document.querySelectorAll("#commands .cmd button")].every((b) => b.disabled),
+		hint: document.querySelector("#commands .hint")?.textContent ?? "",
+	}));
+	await friend.click('.tabs button[data-agent="claude"]');
+	const claudeTab = await friend.$eval("#commands", (c) => c.textContent);
+	await friend.click('.tabs button[data-agent="pi"]');
+	check(
+		"no name yet: copying is off; the Claude tab uses a channel, no listen step",
+		gate.count > 0 && gate.disabled && gate.hint.includes("Type your name") && !/listen on duet/i.test(claudeTab) &&
+			claudeTab.includes("--dangerously-load-development-channels server:duet") && claudeTab.includes("setup claude"),
+		`${gate.count} command copy buttons, all disabled: ${gate.disabled}; hint "${gate.hint}"; Claude tab: listen step ${/listen on duet/i.test(claudeTab) ? "present" : "absent"}, channel flag ${claudeTab.includes("--dangerously-load-development-channels") ? "present" : "absent"}`,
+	);
+
 	// Name entry fills every command, on every tab; copy buttons copy exactly what is shown.
 	await friend.fill("#name", "ni ka!");
 	const typed = await friend.inputValue("#name");

@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { envelope, fitName, isForMe, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
+import { envelope, fitName, isForMe, isPlaceholderName, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
 import type { Cursor, Envelope } from "./transport.js";
 
 type Config = { room?: string; name?: string; server?: string; fromId?: string; cursors: Record<string, Cursor> };
@@ -166,6 +166,7 @@ export default function (pi: ExtensionAPI) {
 				return notify("duet: left the room");
 			}
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
+			if (isPlaceholderName(parts[1])) return notify(`duet: "${parts[1]}" is the website's placeholder: use your own name`, "error");
 			if (parts[2] && !isRelayUrl(parts[2].replace(/\/+$/, ""))) return notify("duet: the server must be an http(s) URL", "error");
 			const owner = lockOwner();
 			if (owner) return notify(`duet: ${heldBy(owner)}`, "error");

@@ -29,14 +29,10 @@ same way. The answer arrives back in your session.
 | agent | how incoming messages arrive | what's weaker |
 |---|---|---|
 | pi | A new turn starts by itself, at once. | Nothing. This is the reference. |
-| Claude Code | After you say **"listen on duet"**, Claude keeps a `duet_wait` call open. Claude Code moves it to the background after about 2 minutes. When a message comes, the session wakes up, handles it and listens again. | For the first ~2 minutes of each wait, the session is busy with it. Anything you type is queued, or you press Esc. If the agent ever stops listening, say "listen on duet" or "check duet". |
+| Claude Code | Through a **channel**: duet pushes each message into the open session, where it shows as `← duet: …`. Claude starts a turn by itself; if it is busy, the message waits until the current turn ends. Nothing to type to listen. | Channels are a Claude Code **research preview**. They need a claude.ai login (Pro, Max) or an Anthropic Console API key; Team and Enterprise need an admin to turn them on; not on Bedrock, Vertex or other gateways. Until duet is on Anthropic's channel allowlist, Claude Code starts with `--dangerously-load-development-channels` and shows a notice once per start. If channels are off, messages are dropped by Claude Code without an error; say "check duet" to see them. |
 | Codex | After the first **"check duet"**, the duet server knows your session and starts a turn there for each message (`codex queue`), as long as a Codex window is open in that folder. | It needs that first "check duet" (one tool call) before pushing works. Messages wait while a turn is running. After you quit Codex, or on Windows, messages wait until you say "check duet". If a push fails, duet pauses pushing for a minute (`duet_status` says so) and the messages wait in `duet_inbox`. |
 
 Any agent can also read waiting messages with `duet_inbox` ("check duet").
-
-Claude Code's 2-minute threshold is its own setting. Starting Claude with
-`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=10000` moves the wait to the background after 10 seconds, but it
-also does that for every other MCP tool.
 
 ### Unattended back-and-forth is capped
 
@@ -47,7 +43,8 @@ Two polite agents could thank each other forever, on your bill.
   `DUET_MAX_AUTO=20`.
 - **Claude Code and Codex:** after 8 replies the agent sent on its own (not asked by you),
   `duet_send` refuses and tells the agent to ask you first.
-  - Codex also stops pushing new messages until your next duet request (e.g. "check duet").
+  - Codex and Claude Code also stop pushing new messages until your next duet request (e.g. "check
+    duet", or asking it to send something).
   - Claude Code can't tell the MCP server whether you typed. The agent marks a send as yours with
     `user_asked: true`, so the cap there relies on the agent being honest about that.
 
@@ -76,21 +73,29 @@ pi                                # then, inside pi:
 
 ### Claude Code
 
+In your project folder:
+
 ```
-claude mcp add duet -- npx -y github:qaioz/pi-duet --room <room> --name <name>
-claude --allowedTools mcp__duet   # then tell it: listen on duet
+npx -y github:qaioz/pi-duet setup claude --room <room> --name <name>
+claude --dangerously-load-development-channels server:duet --allowedTools mcp__duet
 ```
 
+- At start, Claude Code shows a development-channels notice: choose "I am using this for local
+  development". It appears because channels are a research preview and duet isn't on Anthropic's
+  channel allowlist; the notice also warns against channels downloaded from the internet, so read
+  duet's source (this repo) if you want to be sure what runs.
+- `setup claude` adds duet for this project folder through `claude mcp add-json`, replacing any earlier
+  duet room there, with `alwaysLoad` so its tools are ready when a message arrives. Remove it with
+  `npx -y github:qaioz/pi-duet setup claude --off`.
 - **Claude Code already open:** Claude Code loads MCP servers only at start.
-  1. Run `!claude mcp add …` (same as above) inside Claude Code.
+  1. Run `!npx -y github:qaioz/pi-duet setup claude --room <room> --name <name>` inside Claude Code.
   2. Run `/exit`.
-  3. Run `claude --continue --allowedTools mcp__duet`, which brings the conversation back.
-  4. Tell it "listen on duet".
+  3. Run `claude --continue --dangerously-load-development-channels server:duet --allowedTools mcp__duet`,
+     which brings the conversation back.
 - `--allowedTools mcp__duet` pre-allows duet's own tools only. Without it, Claude asks the first time
   each duet tool is used.
-- `claude mcp add` without `-s user` registers duet for this project folder only.
-- Remove it with `claude mcp remove duet`.
-- On native Windows, use `cmd /c npx …`.
+- Needs a claude.ai login or an Anthropic Console API key (channels don't work through Bedrock,
+  Vertex or an `ANTHROPIC_BASE_URL` gateway). Team and Enterprise: an admin must enable channels.
 
 ### Codex
 
