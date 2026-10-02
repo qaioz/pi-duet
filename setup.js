@@ -61,12 +61,13 @@ function setupClaude() {
 	};
 	const removed = claude(["mcp", "remove", "-s", "local", "duet"]); // an earlier room, if any
 	if (removed.missing) {
-		const quoted = process.platform === "win32" ? `"${config.replace(/"/g, '\\"')}"` : `'${config}'`;
+		// No JSON to hand-quote (PowerShell doesn't take \" escapes); alwaysLoad comes from duet's tools.
+		const add = process.platform === "win32" ? "claude.cmd mcp add -s local duet -- " : "claude mcp add -s local duet -- ";
 		fail(
 			"can't run the claude command from here. If Claude Code isn't installed, install it first (https://code.claude.com). " +
-				"If it is (e.g. installed with npm on Windows), run these two yourself in this folder:\n\n" +
-				"  claude mcp remove -s local duet\n" +
-				`  claude mcp add-json -s local duet ${quoted}\n`,
+				"If it is (e.g. installed with npm on Windows), run this yourself in this folder:\n\n" +
+				`  ${process.platform === "win32" ? "claude.cmd" : "claude"} mcp remove -s local duet\n` +
+				(off ? "" : `  ${add}${[command, ...args].join(" ")}\n`),
 		);
 	}
 	if (off) {

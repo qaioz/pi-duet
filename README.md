@@ -88,6 +88,9 @@ claude --dangerously-load-development-channels server:duet --allowedTools mcp__d
   start (pin a commit with `setup claude --package github:qaioz/pi-duet#<commit>` if you prefer).
 - The other agent's messages start turns in your session. Your usual permission prompts still apply;
   `--allowedTools mcp__duet` pre-allows only duet's own tools.
+- Claude Code sends no receipt for a pushed message, so duet keeps its place in the room until Claude
+  answers with duet (or you say "check duet"). A last message that needed no answer may therefore show
+  up once more after a restart.
 - `setup claude` adds duet for this project folder through `claude mcp add-json`, replacing any earlier
   duet room there, with `alwaysLoad` so its tools are ready when a message arrives. Remove it with
   `npx -y github:qaioz/pi-duet setup claude --off`.

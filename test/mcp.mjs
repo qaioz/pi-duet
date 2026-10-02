@@ -271,7 +271,7 @@ async function main() {
 	await Promise.all([waitConnected(ccRita), waitConnected(ccRob)]);
 	await ccRob.call("duet_send", { text: "FIRST", user_asked: true });
 	await until(() => channel(ccRita).length >= 1, 5000, "first push");
-	await ccRita.call("duet_status"); // a tool call: FIRST reached the session
+	await ccRita.call("duet_inbox"); // reading duet confirms: FIRST reached the session
 	await ccRita.stop();
 	await ccRob.call("duet_send", { text: "AWAY-1", user_asked: true });
 	await ccRob.call("duet_send", { text: "AWAY-2", user_asked: true });
@@ -291,7 +291,13 @@ async function main() {
 	await ccRita.request("tools/list");
 	await until(() => channel(ccRita).length >= 2, 8000, "re-push after the crash").catch(() => {});
 	const repushed = channel(ccRita).map((n) => n.params.content.match(/FIRST|AWAY-\d/)?.[0]).join();
-	await ccRita.call("duet_status"); // now confirmed
+	await ccRita.call("duet_status"); // not proof the pushes arrived (channels may be blocked)
+	await ccRita.stop();
+	ccRita = await restart();
+	await ccRita.request("tools/list");
+	await until(() => channel(ccRita).length >= 2, 8000, "re-push after a status call").catch(() => {});
+	const afterStatus = channel(ccRita).length;
+	await ccRita.call("duet_send", { text: "got them, thanks for the update" }); // an answer: confirmed
 	await ccRita.stop();
 	ccRita = await restart();
 	await ccRita.request("tools/list");
@@ -300,8 +306,8 @@ async function main() {
 	await ccRita.stop();
 	check(
 		"Claude Code: catch-up waits for the tools; unconfirmed pushes come again after a crash, confirmed ones don't",
-		beforeTools === 0 && caughtUp === "AWAY-1,AWAY-2" && repushed === "AWAY-1,AWAY-2" && third === 0,
-		`pushed before tools/list: ${beforeTools}; catch-up: ${caughtUp}; after a crash before any tool call: ${repushed}; after a tool call and a restart: ${third} events`,
+		beforeTools === 0 && caughtUp === "AWAY-1,AWAY-2" && repushed === "AWAY-1,AWAY-2" && afterStatus === 2 && third === 0,
+		`pushed before tools/list: ${beforeTools}; catch-up: ${caughtUp}; after a crash before any tool call: ${repushed}; after only a duet_status: ${afterStatus} pushed again; after a duet_send answer and a restart: ${third} events`,
 	);
 
 	// Channel-flag detection from the real process tree: a parent called "claude" with and without
@@ -701,6 +707,12 @@ async function main() {
 	const placeholder = await runSetup(["--room", "r00m", "--name", "YOUR_NAME"]);
 	const noValue = await runSetup(["--room", "--name", "nika"]);
 	const offNothing = await runSetup(["--off"]);
+	const offNoClaude = await new Promise((r) => {
+		const p = spawn(process.execPath, [BIN, "setup", "claude", "--off"], { env: { HOME: ROOT, PATH: process.env.PATH, DUET_CLAUDE_BIN: join(ROOT, "no-such-claude") } });
+		let out = "";
+		p.stderr.on("data", (d) => (out += d));
+		p.on("exit", (code) => r({ code, out }));
+	});
 	const calls = readFileSync(claudeLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)).slice(0, 2);
 	const added = JSON.parse(calls[1]?.[5] ?? "{}");
 	check(
@@ -708,7 +720,8 @@ async function main() {
 		okSetup.code === 0 && calls.length === 2 && calls[0].join(" ") === "mcp remove -s local duet" && calls[1].slice(0, 5).join(" ") === "mcp add-json -s local duet" &&
 			added.alwaysLoad === true && added.args.join(" ") === "-y github:qaioz/pi-duet --room r00m --name nika" &&
 			okSetup.out.includes("--dangerously-load-development-channels server:duet") && placeholder.code === 1 && placeholder.out.includes("placeholder") &&
-			noValue.code === 1 && noValue.out.includes("--room needs a value") && offNothing.code === 0 && offNothing.out.includes("nothing to remove"),
+			noValue.code === 1 && noValue.out.includes("--room needs a value") && offNothing.code === 0 && offNothing.out.includes("nothing to remove") &&
+			offNoClaude.code === 1 && offNoClaude.out.includes("mcp remove -s local duet") && !offNoClaude.out.includes("null") && !offNoClaude.out.includes("mcp add"),
 		`calls: ${calls.map((c) => c.slice(0, 4).join(" ")).join(" | ")}; config ${JSON.stringify(added)}; YOUR_NAME: exit ${placeholder.code}; "--room --name nika": exit ${noValue.code}; --off with nothing there: "${offNothing.out.trim().slice(0, 40)}"`,
 	);
 

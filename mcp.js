@@ -327,16 +327,18 @@ function codexWindowOpen() {
 function ancestorArgs() {
 	const out = [];
 	let pid = process.ppid;
-	for (let depth = 0; depth < 8 && pid > 1; depth++) {
+	for (let depth = 0; depth < 8 && pid >= 1; depth++) {
 		try {
 			if (process.platform === "linux") {
 				out.push(readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean));
+				if (pid === 1) break;
 				pid = Number(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop().split(" ")[1]);
 			} else if (process.platform === "darwin") {
 				const line = execFileSync("ps", ["-o", "ppid=,command=", "-p", String(pid)], { encoding: "utf8" }).trim();
 				const m = line.match(/^(\d+)\s+(.*)$/);
 				if (!m) break;
 				out.push(m[2].split(/\s+/));
+				if (pid === 1) break;
 				pid = Number(m[1]);
 			} else return undefined;
 		} catch {
@@ -345,23 +347,25 @@ function ancestorArgs() {
 	}
 	return out;
 }
+// The nearest Claude Code process up the tree decides: did it get --dangerously-load-development-
+// channels with server:duet? (--channels takes only approved plugins, so a bare server there is
+// refused by Claude Code.) No Claude Code process found: can't tell.
 function detectChannelFlag() {
 	if (process.env.DUET_CHANNEL_FLAG) return process.env.DUET_CHANNEL_FLAG === "on"; // tests
 	const chain = ancestorArgs();
 	if (!chain) return undefined;
-	let sawClaude = false;
 	for (const args of chain) {
+		if (!args.some((a) => /(^|[\/\\])claude(\.exe)?$/.test(a) || a.includes("@anthropic-ai/claude-code"))) continue;
 		for (let i = 0; i < args.length; i++) {
 			const [flag, inline] = args[i].split("=", 2);
-			if (flag === "--dangerously-load-development-channels" || flag === "--channels") {
-				const values = inline ? [inline] : [];
-				for (let j = i + 1; j < args.length && !args[j].startsWith("-"); j++) values.push(args[j]);
-				if (values.join(" ").split(/[\s,]+/).includes("server:duet")) return true;
-			}
+			if (flag !== "--dangerously-load-development-channels") continue;
+			const values = inline ? [inline] : [];
+			for (let j = i + 1; j < args.length && !args[j].startsWith("-"); j++) values.push(args[j]);
+			if (values.join(" ").split(/[\s,]+/).includes("server:duet")) return true;
 		}
-		if (args.some((a) => /(^|[\/\\])claude(\.exe)?$/.test(a) || a.includes("@anthropic-ai/claude-code"))) sawClaude = true;
+		return false;
 	}
-	return sawClaude ? false : undefined;
+	return undefined;
 }
 
 function joinRoom() {
@@ -505,7 +509,9 @@ async function callTool(tool, a = {}, ctx) {
 					? "; Claude Code was not started with --dangerously-load-development-channels server:duet, so messages are NOT pushed: they wait here until your user says 'check duet'. To get them pushed, restart with: claude --continue --dangerously-load-development-channels server:duet --allowedTools mcp__duet"
 					: exchanges >= MAX_AUTO
 						? "; auto-reply limit reached: new messages wait until your user asks for a send (say 'check duet' to read them)"
-						: "; messages are pushed into this session through a Claude Code channel";
+						: channelFlag === true
+							? "; messages are pushed into this session through a Claude Code channel"
+							: "; messages are pushed through a Claude Code channel (duet couldn't check Claude Code's command line: if none appear, start it with --dangerously-load-development-channels server:duet, and say 'check duet' to read them)";
 			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}${note}${how}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}`;
 		}
 	}
@@ -525,9 +531,9 @@ const instructions = () =>
 		? 'Messages from it arrive by themselves as <channel source="duet" from="NAME"> events. Handle each one: do what it asks, then answer with duet_send. Never wait or poll for messages.'
 		: isClaude()
 			? "Claude Code was started without the duet channel, so messages wait in duet_inbox: read it when your user says 'check duet'."
-			: WINDOWS
-			? "Messages wait in duet_inbox: check it when your user says 'check duet'."
-			: "Messages are delivered into this session as they arrive; duet_inbox shows any that are waiting.");
+			: /codex/i.test(host) && !WINDOWS
+			? "After your first duet tool call, messages are delivered into this session as they arrive; duet_inbox shows any that are waiting."
+			: "Messages wait in duet_inbox: check it when your user says 'check duet'.");
 
 async function handle(msg) {
 	const { id, method, params } = msg;
@@ -568,8 +574,12 @@ async function handle(msg) {
 			const turn = params?._meta?.["x-codex-turn-metadata"];
 			if (turn?.thread_id) codexThread = turn.thread_id;
 			if (turn?.turn_trigger === "user") exchanges = 0; // the user is here: lift the loop cap
-			if (unconfirmed) {
-				unconfirmed = false; // the session is alive after our pushes: they reached it
+			// Our pushes reached the session if it then answers (duet_send, with the flag seen on its command
+			// line) or reads them (duet_inbox). Anything else doesn't prove it: Claude Code drops channel
+			// events silently when channels are blocked, so keep the resume point (a duplicate beats a loss).
+			const tool = params?.name;
+			if (unconfirmed && (tool === "duet_inbox" || (tool === "duet_send" && channelFlag === true))) {
+				unconfirmed = false;
 				consumed();
 			}
 			const ctrl = new AbortController();
