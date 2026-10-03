@@ -5,11 +5,16 @@ import { expect, mock, test } from "claude-code/testing";
 const CWD = "/work/repo";
 
 // Everything session.start calls, answered in Claude Code's place. Returns what the mod did.
-function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean } = {}) {
+function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean; env?: Record<string, string> } = {}) {
 	const did = { logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, seq: 0, push: (env: any) => {} };
 	const clock = mock.clock(on, { now: 1_000_000 });
 	on("session.start", () => ({ cwd: CWD }));
-	on("env.get", ($: any, e: any) => ({ value: e.name === "HOME" ? "/home/g" : undefined }));
+	const env: Record<string, string | undefined> = { HOME: "/home/g", ...(opts.env ?? {}) };
+	on("env.get", ($: any, e: any) => ({ value: env[e.name] }));
+	on("env.set", ($: any, e: any) => {
+		env[e.name] = e.value;
+		return { value: undefined };
+	});
 	on("store.get", ($: any, e: any) => ({ value: did.store.get(e.key) }));
 	on("store.set", ($: any, e: any) => {
 		did.store.set(e.key, e.value);
@@ -358,7 +363,7 @@ test("auto refuses to switch on, unasked, while the permission mode is unknown o
 	did.feeding = false;
 });
 
-test("a turn that isn't duet's own stays unfenced even while a duet request waits", async ($, on) => {
+test("a turn that starts while duet's request is with Claude Code, unexplained by a user prompt, is fenced (fail closed)", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
 	await $.command.run({ command: "duet", args: "test-room-12 gaioz" });
@@ -370,11 +375,18 @@ test("a turn that isn't duet's own stays unfenced even while a duet request wait
 	await band.press({ key: "take" });
 	await band.unmount();
 	await settle(clock);
-	// Another turn starts first (a task notification, a queued prompt): not the peer's.
+	// Another turn starts first (say a task notification) while duet's request is pending: its text
+	// doesn't match, but nothing of the user's explains it, so it is fenced rather than risk a miss.
 	await $.turn.start({ turnId: "other", text: "background task finished" } as any);
+	const other: any = await $.tool.call({ tool: "Write", file_path: "/home/g/notes.txt", content: "x" });
+	expect(String(other.deny ?? other.result)).toMatch(/outside/);
+	await $.turn.complete({ turnId: "other", answer: "ok", durationMs: 1, isAborted: false, usage: null } as any);
+	// The user's own prompt is never fenced, even with the request still pending.
+	await $.prompt.submit({ text: "mine", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.start({ turnId: "mine", text: "mine" } as any);
 	const mine: any = await $.tool.call({ tool: "Write", file_path: "/home/g/notes.txt", content: "x" });
 	expect(mine.result).toBe("ran");
-	await $.turn.complete({ turnId: "other", answer: "ok", durationMs: 1, isAborted: false, usage: null } as any);
+	await $.turn.complete({ turnId: "mine", answer: "ok", durationMs: 1, isAborted: false, usage: null } as any);
 	// Then duet's own turn: fenced.
 	await duetTurn($, did, clock, "duet");
 	const peer: any = await $.tool.call({ tool: "Read", file_path: "/home/g/.ssh/id_ed25519" });
@@ -482,9 +494,17 @@ test("a new process forgets a peer turn a crashed one left behind", async ($, on
 	const { did, start } = world(on);
 	did.store.set("turn:sess-1", { peerTurn: { froms: ["karlo"], roomKey: "k", turnId: "dead", attempted: false, waitNoted: false }, expected: [], peerAgents: [], at: Date.now() });
 	await $.session.start(start());
-	await $.classic.SessionStart({ hook_event_name: "SessionStart", source: "startup", permission_mode: "default", session_id: "s", transcript_path: "/t", cwd: CWD } as any);
 	await $.turn.start({ turnId: "u", text: "mine" } as any);
 	const mine: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
 	expect(mine.result).toBe("ran");
 	expect((did.store.get("turn:sess-1") as any)?.peerTurn ?? null).toBe(null);
+});
+
+test("a module reload in the same process keeps a peer turn fenced", async ($, on) => {
+	// DUET_PROCESS set: this process loaded duet before, so session.start is a reload.
+	const { did, start } = world(on, { env: { DUET_PROCESS: "p1" } });
+	did.store.set("turn:sess-1", { peerTurn: { froms: ["karlo"], roomKey: "k", turnId: "live", attempted: false, waitNoted: false }, expected: [], peerAgents: [], at: Date.now(), runningTurn: "live" });
+	await $.session.start(start());
+	const peer: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(String(peer.deny ?? peer.result)).toMatch(/outside/);
 });

@@ -73,6 +73,7 @@ let expected = []; // [{ text, froms, roomKey, at }]: submitted frames whose tur
 let peerTurn = null; // { froms, roomKey, turnId, attempted (a send was tried), waitNoted }
 let lastPeer = null; // { froms, roomKey }: the peer turn that just ended (an empty-text continuation is still its)
 let runningTurn = ""; // the main loop's turn in progress, "" while Claude is idle
+let userPromptSince = false; // the user's own prompt entered since duet's last submission
 let peerAgents = []; // subagents started from a peer turn (they may outlive it)
 let autoTurns = 0;
 let paused = false;
@@ -354,6 +355,7 @@ async function submitWhenIdle($) {
 	p.submitted = true;
 	const froms = [...new Set(p.envs.map((x) => x.from))];
 	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, at: Date.now() }];
+	userPromptSince = false;
 	pendingPeer = null;
 	await saveTurn($);
 	let result;
@@ -481,6 +483,12 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 // Every 2 s: notice another window taking the room, hand it over when asked, refresh the lock.
 let lastBeat = 0;
 async function beat($) {
+	const fresh = expected.filter((x) => Date.now() - x.at < 30 * 60_000);
+	if (fresh.length !== expected.length) {
+		expected = fresh;
+		await saveTurn($);
+		redraw($);
+	}
 	if (!room) return;
 	const r = room;
 	const cur = await $.store.get(r.lockKey);
@@ -823,6 +831,7 @@ function modeLabel() {
 
 // No turn of this process or conversation is running: forget what a crashed or other one left.
 async function clearTurn($) {
+	if (!sessionId) sessionId = await $.session.id();
 	pendingPeer = null;
 	expected = [];
 	peerTurn = null;
@@ -859,8 +868,12 @@ export function register(on) {
 			} catch {}
 		}
 		// After a module reload in this same process, the request in progress stays fenced: its turn,
-		// a frame Claude Code has queued, its subagents. (A new process clears this: classic.SessionStart.)
-		const turn = await $.store.get("turn:" + sessionId);
+		// a frame Claude Code has queued, its subagents. A variable in Claude Code's own environment
+		// tells a reload (it's set) from a new process (it isn't), whatever order the events come in.
+		const sameProcess = !!(await $.env.get("DUET_PROCESS"));
+		if (!sameProcess) await $.env.set("DUET_PROCESS", randomId());
+		const turn = sameProcess ? await $.store.get("turn:" + sessionId) : null;
+		if (!sameProcess) await $.store.delete("turn:" + sessionId);
 		if (turn && Date.now() - (turn.at ?? 0) < 6 * 3600_000) {
 			pendingPeer = turn.pendingPeer ?? null;
 			expected = Array.isArray(turn.expected) ? turn.expected : [];
@@ -913,7 +926,6 @@ export function register(on) {
 
 	on("classic.SessionStart", { source: "startup" }, async ($, e, next) => {
 		notePermissionMode(e);
-		await clearTurn($);
 		return next(e);
 	});
 
@@ -1000,6 +1012,7 @@ export function register(on) {
 		const kind = e.origin?.kind;
 		if (!result?.drop && (kind === "composer" || kind === "bridge")) {
 			lastPeer = null;
+			userPromptSince = true;
 			autoTurns = 0;
 			if (paused) {
 				paused = false;
@@ -1019,6 +1032,13 @@ export function register(on) {
 			expected = expected.filter((_, j) => j !== i);
 			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, attempted: false, waitNoted: false };
 			lastPeer = null;
+		} else if (expected.length && !userPromptSince) {
+			// duet's request is pending and no prompt of the user's explains this turn: its text may
+			// have been changed on the way. Fence it rather than risk running the request unfenced.
+			const x = expected[0];
+			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, attempted: false, waitNoted: false };
+			lastPeer = null;
+			$.ui.log("a turn started while duet's request was pending and its text didn't match: treating it as the other side's", { to: "debug" });
 		} else if (!e.text && lastPeer) {
 			// A continuation of the peer's turn (a Stop hook asked for more): still the peer's request.
 			peerTurn = { ...lastPeer, turnId: e.turnId, attempted: false, waitNoted: false };

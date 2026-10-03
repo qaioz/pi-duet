@@ -143,9 +143,10 @@ plugin refuses:
 
 duet hands a request to Claude only while Claude is idle, and a turn counts as the other side's when
 Claude Code starts it with that request's text (or continues it without new text). Your own prompts,
-task notifications and other sessions' messages start turns of their own, which aren't fenced. A
-request already handed over stays fenced if the plugin reloads; a new Claude Code process starts
-with nothing fenced.
+task notifications and other sessions' messages start turns of their own, which aren't fenced. If a
+turn starts while a request is with Claude Code and no prompt of yours explains it, duet fences it
+too, rather than risk missing the request. A request already handed over stays fenced if the plugin
+reloads; a new Claude Code process starts with nothing fenced.
 
 Claude reads the reason and can tell the other side to ask you. These are rules about tool names and
 paths, **not a sandbox**. A shell command can still do anything your permission mode allows: in
