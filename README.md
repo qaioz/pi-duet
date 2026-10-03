@@ -98,20 +98,28 @@ The plugin is active as soon as it's installed: no restart. From the shell, the 
 |---|---|
 | `/duet new` | makes a room code, joins it, and shows the code to share |
 | `/duet <room> [name] [relay]` | joins a room (name defaults to your last one, or `git config user.name`) |
-| `/duet` | opens the duet pane: the room, who's here, and a **Talk** tab to write to the other person directly (Claude doesn't see it) |
+| `/duet` | opens the duet pane: the room, who's here, and a **Talk** tab to write to the other person directly (your Claude doesn't see it) |
 | `/duet ask` / `/duet auto` | **ask** (default): each message waits as a card. **auto**: messages start turns by themselves |
 | `/duet leave` | leaves the room |
 
 - The footer shows `duet <room> · <who's here> · ask|auto`. Who's here is who has joined or spoken
   since you joined: an older pi or Codex shows up once it sends something.
 - Claude reads a message under Claude Code's own line "The duet plugin sent a message", so it knows
-  the request isn't yours. Your normal permission prompts still apply, and the other side is told when
-  Claude is waiting for you to approve a step, when you ignore a message, and when you stop Claude.
+  the request isn't yours. Your normal permission prompts still apply.
+- "Let Claude do it", "Ignore" and "Send its answer" take two presses: a digit typed alone into an
+  empty prompt presses a card button, and a stray one shouldn't act for someone else.
 - In ask mode, anything Claude sends back while working on the other side's request is shown to you
   first ("send this to nika?"). In auto mode it goes straight out.
-- If you run Claude Code with `bypassPermissions`, `/duet auto` asks you to confirm first.
-- Restart Claude Code in the same folder and a card offers to rejoin; messages sent meanwhile arrive
-  then (the relay keeps them 12 hours). `/clear` keeps you in the room.
+- `/duet auto` asks you to confirm first unless Claude Code has reported a permission mode that asks
+  before tools (`default`, `acceptEdits`, `plan`, `dontAsk`): so under `bypassPermissions`, and right
+  after start before any prompt, it asks.
+- Restart Claude Code in the same folder and a card offers to rejoin, always in ask mode; messages
+  sent meanwhile arrive then (the relay keeps them 12 hours), including cards you hadn't answered.
+  `/clear` keeps you in the room.
+- With another Claude Code plugin user, each side also sees short notes: the message was ignored,
+  Claude is waiting for its user to approve a step, the user stopped it, it failed, they left. pi,
+  Codex and the channel route ignore these notes, and treat a Talk message like any other message
+  (their agent answers it).
 - If you used the older route in this folder, remove it, or every message arrives twice:
   `npx -y github:qaioz/pi-duet setup claude --off`. The plugin warns you when it sees it.
 - Check that mods can load with `claude plugin test` in an empty folder: `no hooks module to load`
@@ -119,13 +127,21 @@ The plugin is active as soon as it's installed: no restart. From the shell, the 
 
 #### Claude Code plugin: what it guards, and what it doesn't
 
-While Claude works on a request from the other side, the plugin refuses:
+While Claude works on a request from the other side (including subagents it starts for it), the
+plugin refuses:
 
-- reading or writing files outside the session's folder;
-- writing `.claude/`, `.mcp.json`, `.git/`, `CLAUDE.md`, `.vscode/`, `.envrc` or `.husky/` inside it
-  (they decide what runs on your computer later);
+- reading or writing files outside the session's folder (every path argument, and Glob patterns that
+  are paths);
+- writing, anywhere in a path and in any letter case, `.claude`, `.mcp.json`, `.git`, `CLAUDE.md`,
+  `CLAUDE.local.md`, `AGENTS.md`, `.vscode`, `.envrc`, `.husky`, `.pi` or `.codex` (they decide what
+  runs on your computer later);
 - tools that outlive the request: scheduled tasks, background commands, remote agents;
-- every other tool beyond file, search, shell, web and to-do tools, including your other MCP servers.
+- skills, custom subagent types, and every tool beyond file, search, shell, web, plan and to-do
+  tools, including your other MCP servers.
+
+A turn counts as the other side's only when it is the turn Claude Code started for duet's request, so
+your own prompts, task notifications and other sessions' messages are never fenced, and the request
+stays fenced if the plugin reloads in the middle.
 
 Claude reads the reason and can tell the other side to ask you. These are rules about tool names and
 paths, **not a sandbox**. A shell command can still do anything your permission mode allows: in

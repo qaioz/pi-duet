@@ -115,4 +115,22 @@ test("guard: what a peer turn may do", () => {
 	no({ tool: "mcp__github__create_pull_request" }, /off/);
 	no({ tool: "Agent", prompt: "x", isolation: "remote" }, /remote/);
 	no({ tool: "Grep", pattern: "x", path: "/etc" }, /outside/);
+	// Review findings: every segment, any case, Windows spellings, other path fields, skills, agents.
+	no({ tool: "Write", file_path: "src/CLAUDE.md" }, /controls what runs/);
+	no({ tool: "Edit", file_path: "pkg/.claude/settings.json" }, /controls what runs/);
+	no({ tool: "Write", file_path: ".Claude/settings.json" }, /controls what runs/);
+	no({ tool: "Write", file_path: "claude.md" }, /controls what runs/);
+	no({ tool: "Write", file_path: ".git./hooks/pre-commit" }, /controls what runs/);
+	no({ tool: "Write", file_path: ".git::$INDEX_ALLOCATION/hooks/x" }, /controls what runs/);
+	no({ tool: "Write", file_path: "CLAUDE~1.MD" }, /controls what runs/);
+	no({ tool: "Write", file_path: "AGENTS.md" }, /controls what runs/);
+	no({ tool: "LSP", operation: "hover", filePath: "/home/g/secret.ts", line: 1, character: 1 }, /outside/);
+	no({ tool: "Glob", pattern: "/home/g/**/*.pem" }, /outside/);
+	no({ tool: "Glob", pattern: "../**/*" }, /outside/);
+	no({ tool: "Skill", skill: "anything" }, /Skill tool is off/);
+	no({ tool: "Agent", prompt: "x", subagent_type: "my-custom-agent" }, /built-in agent types/);
+	ok({ tool: "Agent", prompt: "x", subagent_type: "Explore" });
+	ok({ tool: "Read", file_path: ".claude/settings.json" }); // reading inside the folder is fine
+	ok({ tool: "Glob", pattern: "src/**/*.ts" });
+	ok({ tool: "LSP", operation: "hover", filePath: "src/a.ts", line: 1, character: 1 });
 });

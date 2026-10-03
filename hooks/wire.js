@@ -11,7 +11,7 @@ export const MAX_AUTO = 8;
 // A Text string child may hold at most 10,000 characters; keep well under.
 export const MAX_SHOWN = 6000;
 
-export const NOTES = ["declined", "stopped", "approval-wait", "left", "moved"];
+export const NOTES = ["declined", "stopped", "failed", "approval-wait", "left", "moved"];
 
 const NAME = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._-]{0,39}$/u;
 export const isName = (name) => typeof name === "string" && NAME.test(name);

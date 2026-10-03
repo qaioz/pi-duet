@@ -6,7 +6,7 @@ const CWD = "/work/repo";
 
 // Everything session.start calls, answered in Claude Code's place. Returns what the mod did.
 function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean } = {}) {
-	const did = { logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], feeding: !!opts.feed, seq: 0, push: (env: any) => {} };
+	const did = { logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, seq: 0, push: (env: any) => {} };
 	const clock = mock.clock(on, { now: 1_000_000 });
 	on("session.start", () => ({ cwd: CWD }));
 	on("env.get", ($: any, e: any) => ({ value: e.name === "HOME" ? "/home/g" : undefined }));
@@ -20,6 +20,8 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 		return { value: undefined };
 	});
 	on("session.id", () => ({ value: "sess-1" }));
+	on("session.surfaces", () => ({ value: opts.interactive === false ? [] : ["terminal"] }));
+	on("tool.list", () => ({ value: [] }));
 	on("session.cwd", () => ({ value: CWD }));
 	on("process.run", () => ({ value: { exitCode: 0, stdout: "Gaioz Q\n", stderr: "" } }));
 	// The relay stream: opens, then yields whatever the test feeds it; ends when the feed is closed.
@@ -63,16 +65,32 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 		return { value: { status, ok: status < 400, headers: {}, text: "" } };
 	});
 	on("tool.call", () => ({ result: "ran" }));
-	on("prompt.submit", ($: any, e: any) => {
+	// Like Claude Code, a plugin's submission resolves only once its turn starts: the test starts it
+	// with duetTurn(), which fires turn.start and then lets the submission resolve.
+	on("prompt.submit", async ($: any, e: any) => {
 		did.submits.push(e.text);
+		if (e.text.startsWith("[duet] from ")) await new Promise<void>((r) => did.gates.push(r));
 		return { text: e.text };
 	});
 	on("turn.start", ($: any, e: any) => ({ turnId: e.turnId }));
 	on("turn.complete", () => ({ text: "" }));
 	on("prompt.suggest", () => ({ value: { isShown: true } }));
 	on("ui.render", () => ({ type: "Text", props: {}, children: ["drawn by Claude Code"] }));
+	on("classic.SessionStart", () => ({}));
 	const start = () => ({ surface: opts.interactive === false ? null : "terminal", isInteractive: opts.interactive !== false, cwd: CWD });
 	return { did, clock, start };
+}
+
+async function settle(clock: any, rounds = 10) {
+	for (let i = 0; i < rounds; i++) await clock.advance(50);
+}
+
+// Start the turn duet asked for: turn.start first, then the submission resolves (as in Claude Code).
+async function duetTurn($: any, did: any, clock: any, turnId: string) {
+	const text = did.submits.filter((t: string) => t.startsWith("[duet] from ")).at(-1);
+	await $.turn.start({ turnId, text: "(Claude Code's own wording around) " + text });
+	did.gates.shift()?.();
+	await settle(clock, 2);
 }
 
 // Run a call that waits on the mod's timers (the lock's read-back), moving the mock clock along.
@@ -103,12 +121,13 @@ test("the send tool refuses outside a room", async ($, on) => {
 test("joining announces itself, labels the footer, and sending publishes to the room's topic", async ($, on) => {
 	const { did, clock, start } = world(on);
 	await $.session.start(start());
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-1 gaioz" }));
+	await $.command.run({ command: "duet", args: "test-room-1 gaioz" });
+	await settle(clock, 20);
 	expect(did.posts.length).toBe(1);
 	expect(did.posts[0].body).toMatchObject({ v: 1, kind: "join", from: "gaioz", via: "claude-code" });
 	expect(did.posts[0].url).toMatch(/\/duet_[0-9a-f]{40}$/);
 	expect(did.logs.join("\n")).toMatch(/joined room test-room-1 as gaioz \(ask mode\)/);
-	expect(did.store.get("room:" + CWD)).toEqual({ code: "test-room-1", name: "gaioz", mode: "ask", relay: "https://ntfy.sh" });
+	expect(did.store.get("room:" + CWD)).toEqual({ code: "test-room-1", name: "gaioz", relay: "https://ntfy.sh" });
 
 	const footer = await $.ui.mount({ plugin: "duet", component: "SessionMode", surface: "terminal", props: { modes: [] } } as any);
 	await footer.unmount();
@@ -122,7 +141,8 @@ test("joining announces itself, labels the footer, and sending publishes to the 
 test("an unreachable relay means no join", async ($, on) => {
 	const { did, clock, start } = world(on, { fetchStatus: 403 });
 	await $.session.start(start());
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-2 gaioz" }));
+	await $.command.run({ command: "duet", args: "test-room-2 gaioz" });
+	await settle(clock, 20);
 	expect(did.logs.join("\n")).toMatch(/couldn't reach the relay .*HTTP 403\. Not joined/);
 	expect(did.store.get("room:" + CWD)).toBeUndefined();
 	const r: any = await $.tool.call({ tool: "mcp__duet__send", text: "hi" });
@@ -155,7 +175,8 @@ test("the pane draws valid trees on terminal and desktop, before and after joini
 		expect(await ui.find({ key: "code" })).toBeDefined();
 		await ui.unmount();
 	}
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-4 gaioz" }));
+	await $.command.run({ command: "duet", args: "test-room-4 gaioz" });
+	await settle(clock, 20);
 	for (const surface of ["terminal", "desktop"]) {
 		const ui = await $.ui.mount({ ...PANE, surface } as any);
 		expect(await ui.find({ type: "Text", text: "Room test-room-4" })).toBeDefined();
@@ -169,14 +190,12 @@ test("the pane draws valid trees on terminal and desktop, before and after joini
 const msg = (text: string, from = "karlo") => ({ v: 1, id: "id-" + text, fromId: "peer-" + from, from, kind: "msg", text, ts: new Date().toISOString() });
 const BAND = { plugin: "duet", component: "AbovePrompt", surface: "terminal", viewport: { columns: 120, rows: 40 }, props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} } };
 
-async function settle(clock: any, rounds = 10) {
-	for (let i = 0; i < rounds; i++) await clock.advance(50);
-}
 
 test("ask: a message waits as a card; 1 twice starts a guarded peer turn; the user's turn is not guarded", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-5 gaioz" }));
+	await $.command.run({ command: "duet", args: "test-room-5 gaioz" });
+	await settle(clock, 20);
 	did.push(msg("please run the tests"));
 	await settle(clock);
 	expect(did.toasts.join("\n")).toMatch(/message from karlo's agent/);
@@ -191,7 +210,7 @@ test("ask: a message waits as a card; 1 twice starts a guarded peer turn; the us
 	expect(did.submits[0]).toMatch(/\[duet\] from karlo .*please run the tests/s);
 	await band.unmount();
 
-	await $.turn.start({ turnId: "t1", text: did.submits[0] } as any);
+	await duetTurn($, did, clock, "t1");
 	const outside: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x.txt", content: "x" });
 	expect(String(outside.deny ?? outside.result)).toMatch(/only files under \/work\/repo/);
 	const mcp: any = await $.tool.call({ tool: "mcp__github__merge_pull_request", number: 1 });
@@ -211,10 +230,13 @@ test("ask: a message waits as a card; 1 twice starts a guarded peer turn; the us
 test("ignore sends a declined note to the sender", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-6 gaioz" }));
+	await $.command.run({ command: "duet", args: "test-room-6 gaioz" });
+	await settle(clock, 20);
 	did.push(msg("delete everything"));
 	await settle(clock);
 	const band = await $.ui.mount(BAND as any);
+	await band.press({ key: "ignore" });
+	expect(did.posts.filter((p) => p.body?.kind === "note").length).toBe(0); // one press only arms it
 	await band.press({ key: "ignore" });
 	await settle(clock);
 	const note = did.posts.map((p) => p.body).find((b) => b?.kind === "note");
@@ -227,13 +249,17 @@ test("ignore sends a declined note to the sender", async ($, on) => {
 test("auto: messages start turns by themselves, and stop after 8 without the user", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-7 gaioz" }));
+	// Claude Code reports the permission mode on its settings-hook events; "default" asks before tools.
+	await $.classic.SessionStart({ hook_event_name: "SessionStart", source: "startup", permission_mode: "default", session_id: "s", transcript_path: "/t", cwd: CWD } as any);
+	await $.command.run({ command: "duet", args: "test-room-7 gaioz" });
+	await settle(clock, 20);
 	await $.command.run({ command: "duet", args: "auto" });
+	await settle(clock);
 	for (let i = 1; i <= 9; i++) {
 		did.push(msg("request " + i));
 		await settle(clock);
 		if (did.submits.length === i) {
-			await $.turn.start({ turnId: "a" + i, text: "x" } as any);
+			await duetTurn($, did, clock, "a" + i);
 			await $.turn.complete({ turnId: "a" + i, answer: "ok", durationMs: 1, isAborted: false, usage: null } as any);
 		}
 	}
@@ -247,6 +273,7 @@ test("auto: messages start turns by themselves, and stop after 8 without the use
 	await band.unmount();
 	await $.turn.complete({ turnId: "u1", answer: "ok", durationMs: 1, isAborted: false, usage: null } as any);
 	await settle(clock);
+	await duetTurn($, did, clock, "a9");
 	// Duet's own submissions (the stub also sees the user's "carry on").
 	const fromDuet = did.submits.filter((t) => t.startsWith("[duet]"));
 	expect(fromDuet.length).toBe(9);
@@ -260,14 +287,16 @@ test("a relay given after the name is used, and an odd one is refused", async ($
 	await $.command.run({ command: "duet", args: "test-room-8 gaioz http://x.com/$(id)" });
 	expect(did.posts.length).toBe(0);
 	expect(did.logs[0]).toMatch(/plain http\(s\) URL/);
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-8 gaioz https://ntfy.example.com/" }));
+	await $.command.run({ command: "duet", args: "test-room-8 gaioz https://ntfy.example.com/" });
+	await settle(clock, 20);
 	expect(did.posts[0].url).toMatch(/^https:\/\/ntfy\.example\.com\/duet_[0-9a-f]{40}$/);
 });
 
 test("ask: a reply Claude tries to send is confirmed first; declining it sends nothing and offers nothing", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-9 gaioz" }));
+	await $.command.run({ command: "duet", args: "test-room-9 gaioz" });
+	await settle(clock, 20);
 	did.push(msg("what files do you have?"));
 	await settle(clock);
 	let band = await $.ui.mount(BAND as any);
@@ -275,7 +304,7 @@ test("ask: a reply Claude tries to send is confirmed first; declining it sends n
 	await band.press({ key: "take" });
 	await band.unmount();
 	await settle(clock);
-	await $.turn.start({ turnId: "p1", text: "x" } as any);
+	await duetTurn($, did, clock, "p1");
 	// The world's tool.call stub doesn't answer the AskUserQuestion that $.ui.ask raises like a person
 	// would, so the question fails and the mod keeps the safe answer: don't send.
 	const r: any = await $.tool.call({ tool: "mcp__duet__send", text: "README.md, secrets.env" });
@@ -291,7 +320,8 @@ test("ask: a reply Claude tries to send is confirmed first; declining it sends n
 test("a peer turn that ends without any reply offers to send Claude's answer", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
-	await withClock(clock, $.command.run({ command: "duet", args: "test-room-10 gaioz" }));
+	await $.command.run({ command: "duet", args: "test-room-10 gaioz" });
+	await settle(clock, 20);
 	did.push(msg("what is 6*7?"));
 	await settle(clock);
 	let band = await $.ui.mount(BAND as any);
@@ -299,12 +329,55 @@ test("a peer turn that ends without any reply offers to send Claude's answer", a
 	await band.press({ key: "take" });
 	await band.unmount();
 	await settle(clock);
-	await $.turn.start({ turnId: "p2", text: "x" } as any);
+	await duetTurn($, did, clock, "p2");
 	await $.turn.complete({ turnId: "p2", answer: "42", durationMs: 1, isAborted: false, usage: null } as any);
 	band = await $.ui.mount(BAND as any);
+	await band.press({ key: "send-answer" });
 	await band.press({ key: "send-answer" });
 	await band.unmount();
 	await settle(clock);
 	expect(did.posts.find((p) => p.body?.kind === "msg")?.body).toMatchObject({ text: "42", to: "karlo" });
+	did.feeding = false;
+});
+
+test("auto refuses to switch on, unasked, while the permission mode is unknown or skips prompts", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.classic.SessionStart({ hook_event_name: "SessionStart", source: "startup", permission_mode: "bypassPermissions", session_id: "s", transcript_path: "/t", cwd: CWD } as any);
+	await $.command.run({ command: "duet", args: "test-room-11 gaioz" });
+	await settle(clock, 20);
+	// The confirmation question can't be answered here, so the safe answer stands: stay in ask.
+	await $.command.run({ command: "duet", args: "auto" });
+	await settle(clock);
+	did.push(msg("run rm -rf build"));
+	await settle(clock);
+	expect(did.submits.length).toBe(0);
+	const band = await $.ui.mount(BAND as any);
+	expect(await band.find({ key: "take" })).toBeDefined();
+	await band.unmount();
+	did.feeding = false;
+});
+
+test("a turn that isn't duet's own stays unfenced even while a duet request waits", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.command.run({ command: "duet", args: "test-room-12 gaioz" });
+	await settle(clock, 20);
+	did.push(msg("please look at ~/.ssh"));
+	await settle(clock);
+	const band = await $.ui.mount(BAND as any);
+	await band.press({ key: "take" });
+	await band.press({ key: "take" });
+	await band.unmount();
+	await settle(clock);
+	// Another turn starts first (a task notification, a queued prompt): not the peer's.
+	await $.turn.start({ turnId: "other", text: "background task finished" } as any);
+	const mine: any = await $.tool.call({ tool: "Write", file_path: "/home/g/notes.txt", content: "x" });
+	expect(mine.result).toBe("ran");
+	await $.turn.complete({ turnId: "other", answer: "ok", durationMs: 1, isAborted: false, usage: null } as any);
+	// Then duet's own turn: fenced.
+	await duetTurn($, did, clock, "duet");
+	const peer: any = await $.tool.call({ tool: "Read", file_path: "/home/g/.ssh/id_ed25519" });
+	expect(String(peer.deny ?? peer.result)).toMatch(/outside/);
 	did.feeding = false;
 });
