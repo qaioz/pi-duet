@@ -447,7 +447,11 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 		await $.store.set(lockKey, { token, cwd, at: Date.now(), released: false });
 	}
 
-	const r = { code, name, key, fromId, topic, lockKey, server: relay, mode: mode === "auto" ? "auto" : "ask", cursor: (await $.store.get("cursor:" + key)) ?? undefined };
+	// No saved place in this room: listen from just before joining, so the others' answers to our
+	// join (sent within a second or two) aren't missed while the stream is still opening.
+	const saved = await $.store.get("cursor:" + key);
+	const cursor = saved ?? { id: "", time: Math.floor(Date.now() / 1000) - 2 };
+	const r = { code, name, key, fromId, topic, lockKey, server: relay, mode: mode === "auto" ? "auto" : "ask", cursor };
 	try {
 		// The first network request: if the relay can't be reached, or this session's policy refuses
 		// network requests from mods, duet doesn't join.

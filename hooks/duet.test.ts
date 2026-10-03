@@ -6,7 +6,7 @@ const CWD = "/work/repo";
 
 // Everything session.start calls, answered in Claude Code's place. Returns what the mod did.
 function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean; env?: Record<string, string> } = {}) {
-	const did = { logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, seq: 0, push: (env: any) => {} };
+	const did = { logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], spawned: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, seq: 0, push: (env: any) => {} };
 	const clock = mock.clock(on, { now: 1_000_000 });
 	on("session.start", () => ({ cwd: CWD }));
 	const env: Record<string, string | undefined> = { HOME: "/home/g", ...(opts.env ?? {}) };
@@ -32,7 +32,8 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 	// The relay stream: opens, then yields whatever the test feeds it; ends when the feed is closed.
 	const feed: string[] = [];
 	let wake: (() => void) | null = null;
-	on("process.spawn", async function* () {
+	on("process.spawn", async function* ($: any, e: any) {
+		did.spawned.push(e.input ?? "");
 		yield { stream: "stdout", text: '{"id":"o1","time":1,"event":"open"}\n' };
 		for (let n = 0; n < 1000; n++) {
 			while (feed.length) yield { stream: "stdout", text: feed.shift()! };
@@ -507,4 +508,18 @@ test("a module reload in the same process keeps a peer turn fenced", async ($, o
 	await $.session.start(start());
 	const peer: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
 	expect(String(peer.deny ?? peer.result)).toMatch(/outside/);
+});
+
+test("a fresh join listens from just before it, so a quick answer to the join isn't missed", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.command.run({ command: "duet", args: "test-room-17 nika" });
+	await settle(clock, 20);
+	expect(did.spawned[0]).toMatch(/\/json\?since=\d{10}"/);
+	did.push({ v: 1, id: "j1", fromId: "peer-gaioz", from: "gaioz", kind: "join", via: "claude-code", ts: new Date().toISOString() });
+	await settle(clock);
+	const footer = await $.ui.mount({ plugin: "duet", component: "Pane", requestId: "duet", surface: "terminal", viewport: { columns: 120, rows: 40 }, props: { title: "duet", isFocused: true, bodyColumns: 80, placement: "inline", scroll: { offset: 0, bodyRows: 20 }, view: {} } } as any);
+	expect(await footer.find({ type: "Text", text: /Here: gaioz \(Claude Code\)/ })).toBeDefined();
+	await footer.unmount();
+	did.feeding = false;
 });
