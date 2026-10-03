@@ -263,3 +263,48 @@ test("a relay given after the name is used, and an odd one is refused", async ($
 	await withClock(clock, $.command.run({ command: "duet", args: "test-room-8 gaioz https://ntfy.example.com/" }));
 	expect(did.posts[0].url).toMatch(/^https:\/\/ntfy\.example\.com\/duet_[0-9a-f]{40}$/);
 });
+
+test("ask: a reply Claude tries to send is confirmed first; declining it sends nothing and offers nothing", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await withClock(clock, $.command.run({ command: "duet", args: "test-room-9 gaioz" }));
+	did.push(msg("what files do you have?"));
+	await settle(clock);
+	let band = await $.ui.mount(BAND as any);
+	await band.press({ key: "take" });
+	await band.press({ key: "take" });
+	await band.unmount();
+	await settle(clock);
+	await $.turn.start({ turnId: "p1", text: "x" } as any);
+	// The world's tool.call stub doesn't answer the AskUserQuestion that $.ui.ask raises like a person
+	// would, so the question fails and the mod keeps the safe answer: don't send.
+	const r: any = await $.tool.call({ tool: "mcp__duet__send", text: "README.md, secrets.env" });
+	expect(String(r.result)).toMatch(/your user chose not to send/);
+	await $.turn.complete({ turnId: "p1", answer: "Should I send karlo the file list?", durationMs: 1, isAborted: false, usage: null } as any);
+	expect(did.posts.filter((p) => p.body?.kind === "msg").length).toBe(0);
+	band = await $.ui.mount(BAND as any);
+	expect(await band.find({ key: "send-answer" })).toBeUndefined();
+	await band.unmount();
+	did.feeding = false;
+});
+
+test("a peer turn that ends without any reply offers to send Claude's answer", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await withClock(clock, $.command.run({ command: "duet", args: "test-room-10 gaioz" }));
+	did.push(msg("what is 6*7?"));
+	await settle(clock);
+	let band = await $.ui.mount(BAND as any);
+	await band.press({ key: "take" });
+	await band.press({ key: "take" });
+	await band.unmount();
+	await settle(clock);
+	await $.turn.start({ turnId: "p2", text: "x" } as any);
+	await $.turn.complete({ turnId: "p2", answer: "42", durationMs: 1, isAborted: false, usage: null } as any);
+	band = await $.ui.mount(BAND as any);
+	await band.press({ key: "send-answer" });
+	await band.unmount();
+	await settle(clock);
+	expect(did.posts.find((p) => p.body?.kind === "msg")?.body).toMatchObject({ text: "42", to: "karlo" });
+	did.feeding = false;
+});

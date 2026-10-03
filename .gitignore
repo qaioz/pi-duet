@@ -1,1 +1,4 @@
 node_modules/
+# written by Claude Code for its own version when it loads the mod from this folder
+.claude-plugin/types/
+tsconfig.json

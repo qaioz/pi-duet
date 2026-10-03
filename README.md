@@ -9,9 +9,11 @@ commands) and replies. Works with **[pi](https://github.com/badlogic/pi-mono)**,
 other developer, and both copy the commands for your agent. It takes about a minute, with no accounts.
 
 > **Safety.** Whoever has the invite link (the room code) can make your agent run commands on your
-> machine. Share it only with someone you trust. duet adds no permission prompts of its own: your
-> agent's own permission mode decides what the other agent's requests can do. If you run your agent in
-> a "yolo" / skip-permissions mode, the other side can do anything that mode allows.
+> machine. Share it only with someone you trust. Your agent's own permission mode decides what the
+> other agent's requests can do: if you run it in a "yolo" / skip-permissions mode, the other side can
+> do anything that mode allows. The Claude Code plugin adds a few guards of its own
+> ([what they do and don't cover](#claude-code-plugin-what-it-guards-and-what-it-doesnt)); pi and the
+> MCP route add none.
 
 ## Using it
 
@@ -21,15 +23,17 @@ Talk to your own agent:
 - "ask nika's agent to run the tests in her checkout and send me the failures"
 - "tell alex's agent the API is on port 8080 now"
 
-Your agent sends the message with `duet_send`. The other agent gets it, does the work and answers the
-same way. The answer arrives back in your session.
+Your agent sends the message with its duet tool (`duet_send`, or `send` in the Claude Code plugin).
+The other agent gets it, does the work and answers the same way. The answer arrives back in your
+session.
 
 ## How a message reaches each agent
 
 | agent | how incoming messages arrive | what's weaker |
 |---|---|---|
 | pi | A new turn starts by itself, at once. | Nothing. This is the reference. |
-| Claude Code | Through a **channel**: duet pushes each message into the open session, where it shows as `← duet: …`. Claude starts a turn by itself; if it is busy, the message waits until the current turn ends. Nothing to type to listen. | Channels are a Claude Code **research preview**. They need a claude.ai login (Pro, Max) or an Anthropic Console API key; Team and Enterprise (and Console orgs with managed settings) need an admin to enable them; not on Bedrock, Vertex or other gateways. duet isn't an approved channel plugin, so Claude Code needs `--dangerously-load-development-channels server:duet` and shows a notice at each start. If Claude Code was started without that flag (duet checks its command line on Linux and macOS), messages wait until you say "check duet". If channels are blocked by an org policy, Claude Code drops pushed messages without telling duet; "check duet" shows the last 20 pushed ones until duet restarts. |
+| Claude Code (plugin, the default) | Each message shows as a **card above your prompt**: press `1` twice to let Claude do it, `2` to put it in your prompt, `3` to reply yourself, `4` to ignore. With `/duet auto`, messages start a turn by themselves (up to 8 in a row without you). | Needs Claude Code **2.1.287 or newer** with **mods** on: Anthropic can switch mods off remotely, and organisations can block them (then use the channel route below). Draws in the terminal and the Desktop app's Code tab only, not in the VS Code panel or `claude -p`. Needs `curl` (macOS, Windows 10+ and most Linux have it). |
+| Claude Code (channel route, older) | Through a **channel**: duet pushes each message into the open session, where it shows as `← duet: …`. Claude starts a turn by itself; if it is busy, the message waits until the current turn ends. Nothing to type to listen. | Channels are a Claude Code **research preview**. They need a claude.ai login (Pro, Max) or an Anthropic Console API key; Team and Enterprise (and Console orgs with managed settings) need an admin to enable them; not on Bedrock, Vertex or other gateways. duet isn't an approved channel plugin, so Claude Code needs `--dangerously-load-development-channels server:duet` and shows a notice at each start. If Claude Code was started without that flag (duet checks its command line on Linux and macOS), messages wait until you say "check duet". If channels are blocked by an org policy, Claude Code drops pushed messages without telling duet; "check duet" shows the last 20 pushed ones until duet restarts. |
 | Codex | After the first **"check duet"**, the duet server knows your session and starts a turn there for each message (`codex queue`), as long as a Codex window is open in that folder. | It needs that first "check duet" (one tool call) before pushing works. Messages wait while a turn is running. After you quit Codex, or on Windows, messages wait until you say "check duet". If a push fails, duet pauses pushing for a minute (`duet_status` says so) and the messages wait in `duet_inbox`. |
 
 Any agent can also read waiting messages with `duet_inbox` ("check duet").
@@ -41,7 +45,10 @@ Two polite agents could thank each other forever, on your bill.
 - **pi:** after 8 turns triggered by the other side with no input from you, messages are still
   delivered but no longer start a turn until you type something. Change the limit with
   `DUET_MAX_AUTO=20`.
-- **Claude Code and Codex:** after 8 replies the agent sent on its own (not asked by you),
+- **Claude Code plugin:** in auto mode, after 8 turns started by the other side with no prompt from
+  you, messages go back to waiting as cards. "From you" is Claude Code's own record of a prompt typed
+  at your prompt box (or sent through Remote Control), not something the model claims.
+- **Claude Code (channel route) and Codex:** after 8 replies the agent sent on its own (not asked by you),
   `duet_send` refuses and tells the agent to ask you first.
   - Codex also stops pushing new messages until your next duet request (e.g. "check duet").
   - Claude Code stops pushing new messages until you ask it to send something; "check duet" shows
@@ -53,7 +60,8 @@ Two polite agents could thank each other forever, on your bill.
 
 The website fills these in for you. `<room>` is a long random code that you share privately; `<name>`
 is your name in the room: letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 40. Other agents ignore messages
-from other names, so pi turns `nika@laptop` into `nika-laptop`. Claude Code and Codex need **Node 20 or newer** (for `npx`).
+from other names, so pi turns `nika@laptop` into `nika-laptop`. Codex and the Claude Code channel route need **Node 20 or newer**
+(for `npx`); the Claude Code plugin doesn't need Node.
 
 ### pi
 
@@ -74,7 +82,60 @@ pi                                # then, inside pi:
 
 ### Claude Code
 
-In your project folder:
+Install the plugin once (Claude Code **2.1.287 or newer**), in any Claude Code session:
+
+```
+/plugin marketplace add qaioz/pi-duet
+/plugin install duet@pi-duet
+/duet <room> <name>
+```
+
+The plugin is active as soon as it's installed: no restart. From the shell, the same is
+`claude plugin marketplace add qaioz/pi-duet` and `claude plugin install duet@pi-duet`, then
+`/duet <room> <name>` inside Claude Code.
+
+| command | what it does |
+|---|---|
+| `/duet new` | makes a room code, joins it, and shows the code to share |
+| `/duet <room> [name] [relay]` | joins a room (name defaults to your last one, or `git config user.name`) |
+| `/duet` | opens the duet pane: the room, who's here, and a **Talk** tab to write to the other person directly (Claude doesn't see it) |
+| `/duet ask` / `/duet auto` | **ask** (default): each message waits as a card. **auto**: messages start turns by themselves |
+| `/duet leave` | leaves the room |
+
+- The footer shows `duet <room> · <who's here> · ask|auto`. Who's here is who has joined or spoken
+  since you joined: an older pi or Codex shows up once it sends something.
+- Claude reads a message under Claude Code's own line "The duet plugin sent a message", so it knows
+  the request isn't yours. Your normal permission prompts still apply, and the other side is told when
+  Claude is waiting for you to approve a step, when you ignore a message, and when you stop Claude.
+- In ask mode, anything Claude sends back while working on the other side's request is shown to you
+  first ("send this to nika?"). In auto mode it goes straight out.
+- If you run Claude Code with `bypassPermissions`, `/duet auto` asks you to confirm first.
+- Restart Claude Code in the same folder and a card offers to rejoin; messages sent meanwhile arrive
+  then (the relay keeps them 12 hours). `/clear` keeps you in the room.
+- If you used the older route in this folder, remove it, or every message arrives twice:
+  `npx -y github:qaioz/pi-duet setup claude --off`. The plugin warns you when it sees it.
+- Check that mods can load with `claude plugin test` in an empty folder: `no hooks module to load`
+  means yes. `hooks modules are turned off …` means no; use the channel route below.
+
+#### Claude Code plugin: what it guards, and what it doesn't
+
+While Claude works on a request from the other side, the plugin refuses:
+
+- reading or writing files outside the session's folder;
+- writing `.claude/`, `.mcp.json`, `.git/`, `CLAUDE.md`, `.vscode/`, `.envrc` or `.husky/` inside it
+  (they decide what runs on your computer later);
+- tools that outlive the request: scheduled tasks, background commands, remote agents;
+- every other tool beyond file, search, shell, web and to-do tools, including your other MCP servers.
+
+Claude reads the reason and can tell the other side to ask you. These are rules about tool names and
+paths, **not a sandbox**. A shell command can still do anything your permission mode allows: in
+`bypassPermissions` that is everything, including reading secrets and sending them back. Your own
+prompts are never fenced.
+
+#### Claude Code without mods: the channel route (older)
+
+Use this when mods can't load (an organisation policy, or Anthropic has switched mods off). In your
+project folder:
 
 ```
 npx -y github:qaioz/pi-duet setup claude --room <room> --name <name>
@@ -128,9 +189,13 @@ codex                             # then tell it: check duet
 
 ### Several windows
 
-Only one window per computer can be in a room under a given name: the first one that started. The
-others refuse to send or receive, and say which process has the room. Close that one, and the next
-duet tool call in another window takes over.
+Only one window per computer can be in a room under a given name.
+
+- **Claude Code plugin:** run `/duet <room>` in a second window and it asks whether to move the room
+  there; the first window hands it over and says so.
+- **pi, MCP:** the first one that started has it. The others refuse to send or receive, and say
+  which process has the room. Close that one, and the next duet tool call in another window takes
+  over.
 
 ## How it works
 
@@ -140,8 +205,14 @@ duet tool call in another window takes over.
 - On the website, the code lives after the `#` in the link. Browsers never send that part to a
   server, and the page has no backend.
 - If an agent was closed, it catches up on what was sent meanwhile when it starts again.
-- pi uses its own extension (`index.ts`). Claude Code and Codex use a small dependency-free MCP
-  server (`mcp.js`, run with `npx`). Both share `transport.js`.
+- pi uses its own extension (`index.ts`). Codex, and Claude Code's channel route, use a small
+  dependency-free MCP server (`mcp.js`, run with `npx`). Both share `transport.js`.
+- The Claude Code plugin is a [mod](https://code.claude.com/docs/en/plugins/mods/overview)
+  (`hooks/duet.js`): it receives with `curl` against the relay's stream (mods have no streaming
+  network call) and sends with Claude Code's own `fetch`, so a session whose policy refuses network
+  requests from mods doesn't join. `hooks/wire.js` is its copy of the wire format, tested against
+  `transport.js`. It adds a `note` message kind (declined, stopped, waiting for approval, left,
+  moved) that older clients ignore.
 
 ### Limits
 
@@ -164,6 +235,8 @@ duet tool call in another window takes over.
   - all three agents on Linux;
   - pi also on macOS and Windows (GitHub-hosted runners, talking to Linux over ntfy.sh).
   - Claude Code and Codex on macOS and Windows were not tested.
+  - The Claude Code plugin: Linux terminal only (Claude Code 2.1.288, Haiku, default permission
+    mode). Not tested in the Desktop app, which needs 2.1.287+.
 
 ### Self-hosting the relay
 
@@ -172,13 +245,15 @@ Then point everyone at it:
 
 - **website:** add `?relay=https://ntfy.example.com` to the page URL; the commands then carry it. On
   the hosted (HTTPS) page the relay must be `https://` too, or the browser blocks the live room list.
-- **pi:** `/duet <room> <name> https://ntfy.example.com`
+- **pi, Claude Code plugin:** `/duet <room> <name> https://ntfy.example.com`
 - **MCP:** add `--server https://ntfy.example.com`
 
 ## Development
 
 ```
 npm test                                  # no-model plumbing: MCP server + pi extension
+node --test test/mod-unit.mjs             # Claude Code plugin: wire format and guards
+claude plugin test                        # Claude Code plugin: hooks, cards, pane (Claude Code's own test kit)
 node test/site.mjs                        # the website in headless Chromium
 node test/e2e.mjs talk do loop            # two real pi agents (needs OPENROUTER_API_KEY; costs cents)
 node test/pairs.mjs                       # mixed pairs: pi, Claude Code, Codex (see the file header)

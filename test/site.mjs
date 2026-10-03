@@ -82,7 +82,7 @@ try {
 	check("opening the link shows the same room", friendInvite === invite && !(await friend.isVisible("#start-btn")), `friend's page shows ${friendInvite.replace(room, "<room>")}`);
 
 	// Before a name is typed the commands carry a stand-in, so they can't be copied yet. The Claude
-	// tab joins through a channel: no "listen" step.
+	// tab joins through the plugin: no "listen" step, no channel flag.
 	const gate = await friend.evaluate(() => ({
 		count: document.querySelectorAll("#commands .cmd button").length,
 		disabled: [...document.querySelectorAll("#commands .cmd button")].every((b) => b.disabled),
@@ -92,10 +92,10 @@ try {
 	const claudeTab = await friend.$eval("#commands", (c) => c.textContent);
 	await friend.click('.tabs button[data-agent="pi"]');
 	check(
-		"no name yet: copying is off; the Claude tab uses a channel, no listen step",
+		"no name yet: copying is off; the Claude tab installs the plugin, no listen step",
 		gate.count > 0 && gate.disabled && gate.hint.includes("Type your name") && !/listen on duet/i.test(claudeTab) &&
-			claudeTab.includes("--dangerously-load-development-channels server:duet") && claudeTab.includes("setup claude"),
-		`${gate.count} command copy buttons, all disabled: ${gate.disabled}; hint "${gate.hint}"; Claude tab: listen step ${/listen on duet/i.test(claudeTab) ? "present" : "absent"}, channel flag ${claudeTab.includes("--dangerously-load-development-channels") ? "present" : "absent"}`,
+			!claudeTab.includes("--dangerously-load-development-channels") && claudeTab.includes("/plugin install duet@pi-duet") && claudeTab.includes("claude plugin marketplace add qaioz/pi-duet"),
+		`${gate.count} command copy buttons, all disabled: ${gate.disabled}; hint "${gate.hint}"; Claude tab: listen step ${/listen on duet/i.test(claudeTab) ? "present" : "absent"}, plugin install ${claudeTab.includes("/plugin install duet@pi-duet") ? "present" : "absent"}, channel flag ${claudeTab.includes("--dangerously-load-development-channels") ? "present" : "absent"}`,
 	);
 
 	// Name entry fills every command, on every tab; copy buttons copy exactly what is shown.
@@ -152,7 +152,7 @@ try {
 	const kept = await allCommands(evil);
 	check(
 		"crafted ?relay= can't inject into the commands",
-		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 5 && kept.includes(`/duet ${room} YOUR_NAME https://ntfy.example.com`) && kept.includes("DUET_SERVER=https://ntfy.example.com "),
+		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 3 && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 4 && kept.includes("DUET_SERVER=https://ntfy.example.com "),
 		`${attempts.length} hostile relays ignored with a note (failures: ${JSON.stringify(leaks)}); a plain https relay is carried into the commands`,
 	);
 	await evilCtx.close();
