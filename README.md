@@ -106,6 +106,8 @@ The plugin is active as soon as it's installed: no restart. From the shell, the 
   since you joined: an older pi or Codex shows up once it sends something.
 - Claude reads a message under Claude Code's own line "The duet plugin sent a message", so it knows
   the request isn't yours. Your normal permission prompts still apply.
+- While Claude is busy, a taken request waits ("starts when Claude is free", with a Cancel button)
+  and is handed over when the running turn ends.
 - "Let Claude do it", "Ignore" and "Send its answer" take two presses: a digit typed alone into an
   empty prompt presses a card button, and a stray one shouldn't act for someone else.
 - In ask mode, anything Claude sends back while working on the other side's request is shown to you
@@ -139,9 +141,11 @@ plugin refuses:
 - skills, custom subagent types, and every tool beyond file, search, shell, web, plan and to-do
   tools, including your other MCP servers.
 
-A turn counts as the other side's only when it is the turn Claude Code started for duet's request, so
-your own prompts, task notifications and other sessions' messages are never fenced, and the request
-stays fenced if the plugin reloads in the middle.
+duet hands a request to Claude only while Claude is idle, and a turn counts as the other side's when
+Claude Code starts it with that request's text (or continues it without new text). Your own prompts,
+task notifications and other sessions' messages start turns of their own, which aren't fenced. A
+request already handed over stays fenced if the plugin reloads; a new Claude Code process starts
+with nothing fenced.
 
 Claude reads the reason and can tell the other side to ask you. These are rules about tool names and
 paths, **not a sandbox**. A shell command can still do anything your permission mode allows: in

@@ -130,6 +130,8 @@ test("guard: what a peer turn may do", () => {
 	no({ tool: "Skill", skill: "anything" }, /Skill tool is off/);
 	no({ tool: "Agent", prompt: "x", subagent_type: "my-custom-agent" }, /built-in agent types/);
 	ok({ tool: "Agent", prompt: "x", subagent_type: "Explore" });
+	no({ tool: "Write", file_path: "GIT~1/hooks/pre-commit" }, /controls what runs/);
+	no({ tool: "Glob", pattern: "src/../../**/*.pem" }, /outside/);
 	ok({ tool: "Read", file_path: ".claude/settings.json" }); // reading inside the folder is fine
 	ok({ tool: "Glob", pattern: "src/**/*.ts" });
 	ok({ tool: "LSP", operation: "hover", filePath: "src/a.ts", line: 1, character: 1 });

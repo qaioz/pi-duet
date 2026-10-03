@@ -14,10 +14,11 @@
 // which tool calls go ahead.
 //
 // Which turn is the peer's: a mod's own `prompt.submit` hook never sees its own submissions, and
-// Claude Code wraps the text it hands to turn.start ("The duet plugin sent a message: …", seen in
-// 2.1.288). But `$.prompt.submit` resolves when its turn starts, so the turn running at that moment
-// (the latest turn.start) is the peer's, until that turn's turn.complete. Other turns (the user's
-// prompt, a task notification, another session's message) are not.
+// `$.prompt.submit` may resolve when its prompt is only queued. But Claude Code hands turn.start the
+// prompt's text wrapped in its own lines ("The duet plugin sent a message: …", seen in 2.1.288),
+// so a turn is the peer's when its text contains a frame duet submitted, until that turn's own
+// turn.complete. duet submits only while Claude is idle, so its turn is the next one. Other turns
+// (the user's prompt, a task notification, another session's message) are not the peer's.
 //
 // Every function that touches `$` is declared at the top level of this file: Claude Code's
 // validator refuses `$` passed to an imported function. wire.js and guard.js are pure.
@@ -67,9 +68,11 @@ let queue = []; // messages waiting for the user (ask) or for Claude to be free 
 let armed = ""; // "<action>:<id>" whose key was pressed once
 let noReply = null; // { peers, answer, id }: a peer turn ended without Claude trying to reply
 let rejoinOffer = null; // { code, name, relay }
-let pendingPeer = null; // { envs, text }: handed to $.prompt.submit, turn not started yet
-let peerTurn = null; // { froms, turnId, attempted (a send was tried), waitNoted }
-let currentTurn = ""; // the id of the main loop's latest turn.start
+let pendingPeer = null; // { envs, text, roomKey, submitted }: taken, waiting for Claude to be idle
+let expected = []; // [{ text, froms, roomKey, at }]: submitted frames whose turn hasn't started yet
+let peerTurn = null; // { froms, roomKey, turnId, attempted (a send was tried), waitNoted }
+let lastPeer = null; // { froms, roomKey }: the peer turn that just ended (an empty-text continuation is still its)
+let runningTurn = ""; // the main loop's turn in progress, "" while Claude is idle
 let peerAgents = []; // subagents started from a peer turn (they may outlive it)
 let autoTurns = 0;
 let paused = false;
@@ -84,6 +87,7 @@ const riskyMode = () => !ASKING_MODES.includes(permissionMode);
 const autoActive = () => !!room && room.mode === "auto" && !paused && (!riskyMode() || riskOk);
 const livePeers = () => [...peers.entries()].filter(([, p]) => !p.left);
 const fromPeerCall = (e) => (e.agentId ? peerAgents.includes(e.agentId) : !!peerTurn);
+const busyWithPeer = () => !!(pendingPeer || peerTurn || expected.length);
 
 function remember(entry) {
 	history.push({ at: new Date().toISOString(), ...entry });
@@ -142,7 +146,7 @@ function sendNote($, note, to) {
 
 // The resume point to keep: just before the oldest message not yet handled, or the newest seen.
 function resumePoint() {
-	const open = pendingPeer?.envs?.[0] ?? queue[0];
+	const open = pendingPeer?.envs?.[0] ?? expected[0]?.envs?.[0] ?? queue[0];
 	if (open) return open._prev ?? null;
 	return heldCursor;
 }
@@ -158,8 +162,11 @@ async function saveCursor($) {
 // The turn in progress, kept across a module reload (which resets module variables).
 async function saveTurn($) {
 	await $.store.set("turn:" + sessionId, {
-		pendingPeer: pendingPeer ? { text: pendingPeer.text, envs: pendingPeer.envs } : null,
+		pendingPeer,
+		expected,
 		peerTurn,
+		lastPeer,
+		runningTurn,
 		peerAgents,
 		at: Date.now(),
 	});
@@ -321,7 +328,7 @@ function onEnvelope($, r, env) {
 // ---------- delivery ----------
 
 async function deliver($) {
-	if (!room || !queue.length || pendingPeer || peerTurn || !autoActive()) return;
+	if (!room || !queue.length || busyWithPeer() || !autoActive()) return;
 	if (autoTurns >= MAX_AUTO) {
 		paused = true;
 		$.ui.toast(`duet: ${MAX_AUTO} requests ran without you — the rest wait for you above the prompt`);
@@ -333,28 +340,32 @@ async function deliver($) {
 }
 
 async function startPeerTurn($, envs) {
-	const text = frameForClaude(envs, cwd, SEND_TOOL);
-	pendingPeer = { envs, text };
+	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false };
 	noReply = null;
 	await saveTurn($);
 	redraw($);
+	await submitWhenIdle($);
+}
+
+// Hand the taken request to Claude once no turn is running, so the turn it starts is the next one.
+async function submitWhenIdle($) {
+	const p = pendingPeer;
+	if (!p || p.submitted || runningTurn) return;
+	p.submitted = true;
+	const froms = [...new Set(p.envs.map((x) => x.from))];
+	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, at: Date.now() }];
+	pendingPeer = null;
+	await saveTurn($);
 	let result;
 	try {
-		// Resolves when the turn starts (after Claude finishes what it is doing); never `asUser`.
-		result = await $.prompt.submit({ text });
+		result = await $.prompt.submit({ text: p.text }); // never `asUser`
 	} catch (err) {
 		result = { drop: String(err?.message ?? err) };
 	}
-	if (!result?.drop && pendingPeer?.text === text) {
-		// "It resolves when that turn starts": the turn running now is the one duet asked for.
-		markPeerTurn(envs, currentTurn);
-		await saveTurn($);
-		await saveCursor($);
-		redraw($);
-	} else if (result?.drop && pendingPeer?.text === text) {
+	if (result?.drop) {
 		// Refused (another mod, or a UserPromptSubmit hook): back to waiting, and no auto retry loop.
-		pendingPeer = null;
-		queue.unshift(...envs);
+		expected = expected.filter((x) => x.text !== p.text);
+		if (room?.key === p.roomKey) queue.unshift(...p.envs);
 		paused = room?.mode === "auto" ? true : paused;
 		await saveTurn($);
 		$.ui.toast("duet: Claude Code didn't take the request: " + sanitize(result.drop, 200));
@@ -362,10 +373,13 @@ async function startPeerTurn($, envs) {
 	}
 }
 
-function markPeerTurn(envs, turnId) {
-	if (peerTurn && peerTurn.turnId === turnId) return;
-	peerTurn = { froms: [...new Set(envs.map((x) => x.from))], turnId, attempted: false, waitNoted: false };
+async function cancelWaiting($) {
+	const p = pendingPeer;
+	if (!p || p.submitted) return;
 	pendingPeer = null;
+	if (room?.key === p.roomKey) queue.unshift(...p.envs);
+	await saveTurn($);
+	redraw($);
 }
 
 // ---------- joining and leaving ----------
@@ -496,6 +510,9 @@ async function leave($, note, forget, lost) {
 	const r = room;
 	if (note) sendNote($, note);
 	await saveCursor($);
+	// A request taken but not yet handed to Claude stays with the room (its resume point is saved).
+	if (pendingPeer && !pendingPeer.submitted) pendingPeer = null;
+	await saveTurn($);
 	room = null;
 	generation++;
 	heartbeat?.cancel?.();
@@ -553,7 +570,7 @@ async function setMode($, mode) {
 // ---------- what the user does with a card ----------
 
 async function take($, env) {
-	if (pendingPeer || peerTurn) {
+	if (busyWithPeer()) {
 		$.ui.toast("Claude is still on the last duet request — this one can start after it");
 		return;
 	}
@@ -640,6 +657,9 @@ async function sendTool($, e) {
 	if (!text) return { result: "Not sent: the message is empty." };
 	const to = typeof e.to === "string" && e.to.trim() ? e.to.trim() : undefined;
 	const fromPeer = fromPeerCall(e);
+	if (fromPeer && (!peerTurn || peerTurn.roomKey !== room.key)) {
+		return { result: "Not sent: the request you're working on came from a room this window has left, or has ended. Tell your user instead." };
+	}
 	if (peerTurn && fromPeer) peerTurn.attempted = true;
 	// In ask mode the user sees what leaves the computer during a peer's request.
 	if (fromPeer && !autoActive()) {
@@ -684,8 +704,14 @@ function drawCard($, e) {
 		]);
 	}
 	if (!room) return null;
-	if (pendingPeer) {
-		return frame(`duet · ${pendingPeer.envs.map((x) => x.from).join(", ")}'s request starts when Claude is free`, [], []);
+	if (pendingPeer && !pendingPeer.submitted) {
+		const p = pendingPeer;
+		return frame(`duet · ${p.envs.map((x) => x.from).join(", ")}'s request starts when Claude is free`, [], [
+			Button({ key: "cancel-waiting", label: "Cancel", hotkey: "2", plain: true, onPress: () => void cancelWaiting($) }),
+		]);
+	}
+	if (expected.length && !peerTurn) {
+		return frame(`duet · ${expected[0].froms.join(", ")}'s request is with Claude Code, starting next`, [], []);
 	}
 	if (queue.length && autoActive()) {
 		const froms = [...new Set(queue.map((x) => x.from))].join(", ");
@@ -795,6 +821,18 @@ function modeLabel() {
 	return `duet ${room.code} · ${who} · ${room.mode}${paused ? " (paused)" : ""}${link}`;
 }
 
+// No turn of this process or conversation is running: forget what a crashed or other one left.
+async function clearTurn($) {
+	pendingPeer = null;
+	expected = [];
+	peerTurn = null;
+	lastPeer = null;
+	runningTurn = "";
+	peerAgents = [];
+	await $.store.delete("turn:" + sessionId);
+	redraw($);
+}
+
 function notePermissionMode(e) {
 	if (typeof e.permission_mode === "string" && e.permission_mode) permissionMode = e.permission_mode;
 }
@@ -820,17 +858,19 @@ export function register(on) {
 				if (git.exitCode === 0 && git.stdout.trim()) defaultName = fitName(git.stdout.trim().split(/\s+/)[0].toLowerCase());
 			} catch {}
 		}
-		// A request that was being handed to Claude, or worked on, when the module reloaded stays fenced.
+		// After a module reload in this same process, the request in progress stays fenced: its turn,
+		// a frame Claude Code has queued, its subagents. (A new process clears this: classic.SessionStart.)
 		const turn = await $.store.get("turn:" + sessionId);
 		if (turn && Date.now() - (turn.at ?? 0) < 6 * 3600_000) {
-			// A submission in flight died with the old module: the saved resume point is before its
-			// messages, so the relay hands them over again as cards.
-			pendingPeer = null;
+			pendingPeer = turn.pendingPeer ?? null;
+			expected = Array.isArray(turn.expected) ? turn.expected : [];
 			peerTurn = turn.peerTurn ?? null;
+			lastPeer = turn.lastPeer ?? null;
+			runningTurn = turn.runningTurn ?? "";
 			peerAgents = Array.isArray(turn.peerAgents) ? turn.peerAgents : [];
 		}
 		void supervise($);
-		if (e.isInteractive) {
+		if (e.isInteractive || (await canDraw($))) {
 			// After a module reload this window was in a room: take it up again, silently.
 			const active = await $.store.get("active:" + sessionId);
 			const owner = active ? await $.store.get(active.lockKey) : null;
@@ -873,11 +913,13 @@ export function register(on) {
 
 	on("classic.SessionStart", { source: "startup" }, async ($, e, next) => {
 		notePermissionMode(e);
+		await clearTurn($);
 		return next(e);
 	});
 
 	on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
 		notePermissionMode(e);
+		if (e.source === "resume") await clearTurn($);
 		// /clear and friends may give the session a new id; the room stays with this window.
 		const old = sessionId;
 		sessionId = await $.session.id();
@@ -902,6 +944,7 @@ export function register(on) {
 			void $.store.set(r.lockKey, { token, cwd, at: 0, released: true });
 			void $.store.delete("active:" + sessionId);
 		}
+		if (e.reason !== "clear" && e.reason !== "resume") void $.store.delete("turn:" + sessionId);
 		return next(e);
 	});
 
@@ -956,6 +999,7 @@ export function register(on) {
 		// Claude Code's own stamp: Enter at the prompt, or Remote Control; a prompt that entered.
 		const kind = e.origin?.kind;
 		if (!result?.drop && (kind === "composer" || kind === "bridge")) {
+			lastPeer = null;
 			autoTurns = 0;
 			if (paused) {
 				paused = false;
@@ -966,21 +1010,41 @@ export function register(on) {
 	});
 
 	on("turn.start", async ($, e, next) => {
-		currentTurn = e.turnId;
+		if (e.agentId) return next(e);
+		runningTurn = e.turnId;
+		expected = expected.filter((x) => Date.now() - x.at < 30 * 60_000);
+		const i = expected.findIndex((x) => e.text.includes(x.text));
+		if (i >= 0) {
+			const x = expected[i];
+			expected = expected.filter((_, j) => j !== i);
+			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, attempted: false, waitNoted: false };
+			lastPeer = null;
+		} else if (!e.text && lastPeer) {
+			// A continuation of the peer's turn (a Stop hook asked for more): still the peer's request.
+			peerTurn = { ...lastPeer, turnId: e.turnId, attempted: false, waitNoted: false };
+		} else {
+			lastPeer = null;
+		}
+		await saveTurn($);
+		await saveCursor($);
+		redraw($);
 		return next(e);
 	});
 
 	on("turn.complete", async ($, e, next) => {
-		if (!e.agentId && peerTurn && (!peerTurn.turnId || peerTurn.turnId === e.turnId)) {
+		if (!e.agentId && e.turnId === runningTurn) runningTurn = "";
+		if (!e.agentId && peerTurn && peerTurn.turnId === e.turnId) {
 			const t = peerTurn;
 			peerTurn = null;
-			await saveTurn($);
+			lastPeer = e.isAborted ? null : { froms: t.froms, roomKey: t.roomKey };
 			if (e.isAborted) for (const p of t.froms) sendNote($, "stopped", p);
 			else if (e.reason === "error" || e.reason === "refusal") for (const p of t.froms) sendNote($, "failed", p);
 			else if (!t.attempted && room && String(e.answer ?? "").trim()) noReply = { peers: t.froms, answer: String(e.answer), id: randomId() };
 			redraw($);
 		}
+		if (!e.agentId) await saveTurn($);
 		const result = await next(e);
+		void submitWhenIdle($);
 		void deliver($);
 		return result;
 	});

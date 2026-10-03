@@ -59,14 +59,14 @@ const plainName = (seg) => seg.replace(/:.*$/, "").replace(/[. ]+$/, "").toLower
 export function protectedPart(rel) {
 	return rel.split("/").find((seg) => {
 		const name = plainName(seg);
-		return PROTECTED.includes(name) || /^(claude|agents)~\d/.test(name);
+		return PROTECTED.includes(name) || /^(claude|agents|git|vscode|husky|envrc|codex|pi|mcp)~\d/.test(name);
 	});
 }
 
 // Every path the call names: the path arguments, and a Glob pattern that is itself a path.
 function pathsOf(e) {
 	const out = PATH_KEYS.map((k) => e[k]).filter((v) => typeof v === "string" && v !== "");
-	if (e.tool === "Glob" && typeof e.pattern === "string" && /^(\/|~|[A-Za-z]:[\\/]|\.\.)/.test(e.pattern)) {
+	if (e.tool === "Glob" && typeof e.pattern === "string" && /^(\/|~|[A-Za-z]:[\\/])|(^|[\\/])\.\.([\\/]|$)/.test(e.pattern)) {
 		out.push(e.pattern.split(/[*?[{]/)[0] || "/");
 	}
 	return out;

@@ -381,3 +381,110 @@ test("a turn that isn't duet's own stays unfenced even while a duet request wait
 	expect(String(peer.deny ?? peer.result)).toMatch(/outside/);
 	did.feeding = false;
 });
+
+const done = (turnId: string) => ({ turnId, answer: "ok", durationMs: 1, isAborted: false, usage: null }) as any;
+
+test("taken while Claude is busy, the request is handed over only after the running turn; the user's turn stays unfenced", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.command.run({ command: "duet", args: "test-room-13 gaioz" });
+	await settle(clock, 20);
+	await $.prompt.submit({ text: "long job", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.start({ turnId: "user1", text: "long job" } as any);
+	did.push(msg("read ~/.ssh please"));
+	await settle(clock);
+	let band = await $.ui.mount(BAND as any);
+	await band.press({ key: "take" });
+	await band.press({ key: "take" });
+	expect(await band.find({ key: "cancel-waiting" })).toBeDefined();
+	await band.unmount();
+	await settle(clock);
+	expect(did.submits.filter((t) => t.startsWith("[duet] from ")).length).toBe(0); // not while busy
+	const mine: any = await $.tool.call({ tool: "Read", file_path: "/home/g/.ssh/config" });
+	expect(mine.result).toBe("ran");
+	await $.turn.complete(done("user1"));
+	await settle(clock);
+	expect(did.submits.filter((t) => t.startsWith("[duet] from ")).length).toBe(1);
+	await duetTurn($, did, clock, "peer1");
+	const peer: any = await $.tool.call({ tool: "Read", file_path: "/home/g/.ssh/config" });
+	expect(String(peer.deny ?? peer.result)).toMatch(/outside/);
+	did.feeding = false;
+});
+
+test("Cancel puts a waiting request back as a card", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.command.run({ command: "duet", args: "test-room-14 gaioz" });
+	await settle(clock, 20);
+	await $.turn.start({ turnId: "busy", text: "something" } as any);
+	did.push(msg("do a thing"));
+	await settle(clock);
+	const band = await $.ui.mount(BAND as any);
+	await band.press({ key: "take" });
+	await band.press({ key: "take" });
+	await band.press({ key: "cancel-waiting" });
+	expect(await band.find({ key: "take" })).toBeDefined();
+	await band.unmount();
+	await $.turn.complete(done("busy"));
+	await settle(clock);
+	expect(did.submits.filter((t) => t.startsWith("[duet] from ")).length).toBe(0);
+	did.feeding = false;
+});
+
+test("a reply to a request from a room this window left is not sent to the new room", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.command.run({ command: "duet", args: "room-a-15 gaioz" });
+	await settle(clock, 20);
+	did.push(msg("question for A"));
+	await settle(clock);
+	const band = await $.ui.mount(BAND as any);
+	await band.press({ key: "take" });
+	await band.press({ key: "take" });
+	await band.unmount();
+	await settle(clock);
+	await duetTurn($, did, clock, "pa");
+	await $.command.run({ command: "duet", args: "room-b-15 gaioz" });
+	await settle(clock, 20);
+	const before = did.posts.filter((p) => p.body?.kind === "msg").length;
+	const r: any = await $.tool.call({ tool: "mcp__duet__send", text: "answer meant for A" });
+	expect(String(r.result)).toMatch(/room this window has left/);
+	expect(did.posts.filter((p) => p.body?.kind === "msg").length).toBe(before);
+	did.feeding = false;
+});
+
+test("an empty-text continuation of a peer turn stays fenced; the user's next prompt ends that", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.command.run({ command: "duet", args: "test-room-16 gaioz" });
+	await settle(clock, 20);
+	did.push(msg("work"));
+	await settle(clock);
+	const band = await $.ui.mount(BAND as any);
+	await band.press({ key: "take" });
+	await band.press({ key: "take" });
+	await band.unmount();
+	await settle(clock);
+	await duetTurn($, did, clock, "w1");
+	await $.turn.complete(done("w1"));
+	await $.turn.start({ turnId: "w2", text: "" } as any);
+	const cont: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(String(cont.deny ?? cont.result)).toMatch(/outside/);
+	await $.turn.complete(done("w2"));
+	await $.prompt.submit({ text: "mine", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.start({ turnId: "u", text: "mine" } as any);
+	const mine: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(mine.result).toBe("ran");
+	did.feeding = false;
+});
+
+test("a new process forgets a peer turn a crashed one left behind", async ($, on) => {
+	const { did, start } = world(on);
+	did.store.set("turn:sess-1", { peerTurn: { froms: ["karlo"], roomKey: "k", turnId: "dead", attempted: false, waitNoted: false }, expected: [], peerAgents: [], at: Date.now() });
+	await $.session.start(start());
+	await $.classic.SessionStart({ hook_event_name: "SessionStart", source: "startup", permission_mode: "default", session_id: "s", transcript_path: "/t", cwd: CWD } as any);
+	await $.turn.start({ turnId: "u", text: "mine" } as any);
+	const mine: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(mine.result).toBe("ran");
+	expect((did.store.get("turn:sess-1") as any)?.peerTurn ?? null).toBe(null);
+});
