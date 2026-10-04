@@ -82,7 +82,18 @@ pi                                # then, inside pi:
 
 ### Claude Code
 
-Install the plugin once (Claude Code **2.1.287 or newer**), in any Claude Code session:
+From a terminal (macOS, Linux), one line installs the plugin, or updates an older one, and starts Claude Code in
+the room (`docs/claude.sh`; it also checks that Claude Code's mods are on):
+
+```
+curl -fsSL https://qaioz.github.io/pi-duet/claude.sh | sh -s -- <room> <name>
+```
+
+Claude Code joins from `DUET_ROOM` and `DUET_NAME` as soon as the plugin loads (`DUET_ROOM=<room> DUET_NAME=<name> claude`
+does the same). Don't start it with `claude "/duet …"`: that prompt can reach Claude Code before the plugin has
+registered `/duet` ("Unknown command").
+
+Or install the plugin once (Claude Code **2.1.287 or newer**), in any Claude Code session:
 
 ```
 /plugin marketplace add qaioz/pi-duet

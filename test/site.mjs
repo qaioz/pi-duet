@@ -94,7 +94,7 @@ try {
 	check(
 		"no name yet: copying is off; the Claude tab installs the plugin, no listen step",
 		gate.count > 0 && gate.disabled && gate.hint.includes("Type your name") && !/listen on duet/i.test(claudeTab) &&
-			!claudeTab.includes("--dangerously-load-development-channels") && claudeTab.includes("/plugin install duet@pi-duet") && claudeTab.includes("claude plugin marketplace add qaioz/pi-duet"),
+			!claudeTab.includes("--dangerously-load-development-channels") && claudeTab.includes("/plugin install duet@pi-duet") && claudeTab.includes("https://qaioz.github.io/pi-duet/claude.sh"),
 		`${gate.count} command copy buttons, all disabled: ${gate.disabled}; hint "${gate.hint}"; Claude tab: listen step ${/listen on duet/i.test(claudeTab) ? "present" : "absent"}, plugin install ${claudeTab.includes("/plugin install duet@pi-duet") ? "present" : "absent"}, channel flag ${claudeTab.includes("--dangerously-load-development-channels") ? "present" : "absent"}`,
 	);
 
@@ -135,7 +135,7 @@ try {
 		"tabs: Claude Code, Codex, pi, Claude chat / ChatGPT; each agent opens with one line to paste in a terminal",
 		tabOrder === "claude,codex,pi,chat" &&
 			fresh("claude").length === 1 && // each line also updates an older install: install alone keeps the old version (seen 2026-10-04)
-			fresh("claude")[0] === `claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet && claude "/duet ${room} nika ${SERVER}"` &&
+			fresh("claude")[0] === `curl -fsSL https://qaioz.github.io/pi-duet/claude.sh | sh -s -- ${room} nika ${SERVER}` &&
 			fresh("pi").length === 1 && fresh("pi")[0].startsWith("pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet && ") && fresh("pi")[0].endsWith(`DUET_ROOM=${room} DUET_NAME=nika pi`),
 		`order ${tabOrder}; ${JSON.stringify([fresh("claude")[0], fresh("pi")[0]].map((c) => c.replace(room, "<room>")))}`,
 	);
@@ -200,7 +200,7 @@ try {
 	const kept = await allCommands(evil);
 	check(
 		"crafted ?relay= can't inject into the commands",
-		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 4 && kept.includes('"--server","https://ntfy.example.com"') && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 4 && kept.includes("DUET_SERVER=https://ntfy.example.com "),
+		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 4 && kept.includes('"--server","https://ntfy.example.com"') && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 3 && kept.includes(`claude.sh | sh -s -- ${room} YOUR_NAME https://ntfy.example.com`) && kept.includes("DUET_SERVER=https://ntfy.example.com "),
 		`${attempts.length} hostile relays ignored with a note (failures: ${JSON.stringify(leaks)}); a plain https relay is carried into the commands`,
 	);
 	await evilCtx.close();
