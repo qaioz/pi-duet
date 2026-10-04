@@ -6,7 +6,7 @@ const CWD = "/work/repo";
 
 // Everything session.start calls, answered in Claude Code's place. Returns what the mod did.
 function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean; env?: Record<string, string>; answer?: (q: string) => string | undefined; store?: Record<string, unknown> } = {}) {
-	const did = { files: new Map<string, string>(), asks: [] as string[], logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], spawned: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, seq: 0, push: (env: any, attachmentUrl?: string) => {} };
+	const did = { files: new Map<string, string>(), asks: [] as string[], logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], spawned: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, unasked: false, userTurn: null as null | ((text: string) => Promise<void>), seq: 0, push: (env: any, attachmentUrl?: string) => {} };
 	const clock = mock.clock(on, { now: 1_000_000 });
 	on("session.start", () => ({ cwd: CWD }));
 	const env: Record<string, string | undefined> = { HOME: "/home/g", ...(opts.env ?? {}) };
@@ -94,13 +94,22 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 	on("prompt.submit", async ($: any, e: any) => {
 		did.submits.push(e.text);
 		if (e.text.startsWith("[duet] from ")) await new Promise<void>((r) => did.gates.push(r));
+		// The user's prompt, as in Claude Code: its turn starts before the submission resolves.
+		if (did.userTurn && e.origin?.kind === "composer") await did.userTurn(e.text);
 		return { text: e.text };
 	});
 	on("turn.start", ($: any, e: any) => ({ turnId: e.turnId }));
 	on("turn.complete", () => ({ text: "" }));
 	on("prompt.suggest", () => ({ value: { isShown: true } }));
 	on("ui.render", () => ({ type: "Text", props: {}, children: ["drawn by Claude Code"] }));
-	on("classic.SessionStart", () => ({}));
+	// A session started in a mode decides Claude Code's own permission check below, as in Claude Code.
+	on("classic.SessionStart", ($: any, e: any) => {
+		if (e?.permission_mode) did.unasked = e.permission_mode === "bypassPermissions";
+		return {};
+	});
+	// Claude Code's own permission decision: "ask" for a command nobody allowed, unless the test
+	// switches the session to bypassPermissions (did.unasked = true), as Shift+Tab would.
+	on("tool.check", () => (did.unasked ? { decision: "allow" } : { decision: "ask", reason: "This command requires approval" }));
 	const start = () => ({ surface: opts.interactive === false ? null : "terminal", isInteractive: opts.interactive !== false, cwd: CWD });
 	return { did, clock, start };
 }
@@ -732,5 +741,170 @@ test("an attachment without a size, or on another path of the relay, is never fe
 	const band = await $.ui.mount(BAND as any);
 	expect(await band.find({ key: "take" })).toBeUndefined();
 	await band.unmount();
+	did.feeding = false;
+});
+
+test("F15: any turn after a peer turn, before the user's own prompt, stays fenced (not only empty ones)", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-40 gaioz");
+	did.push(msg("work"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "w1");
+	await $.turn.complete(done("w1"));
+	// A hook woke Claude with its own text (an async rewake, a task notification): still the peer's.
+	await $.turn.start({ turnId: "w2", text: "Stop hook feedback: keep going" } as any);
+	const cont: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(String(cont.deny ?? cont.result)).toMatch(/outside/);
+	await $.turn.complete(done("w2"));
+	await $.turn.start({ turnId: "w3", text: "<task-notification>done</task-notification>" } as any);
+	const again: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(String(again.deny ?? again.result)).toMatch(/outside/);
+	await $.turn.complete(done("w3"));
+	await $.prompt.submit({ text: "mine", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.start({ turnId: "u", text: "mine" } as any);
+	const mine: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(mine.result).toBe("ran");
+	did.feeding = false;
+});
+
+test("F15: Esc on a peer turn, or the user typing during it, ends the fence at its end", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-41 gaioz");
+	did.push(msg("one"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "w1");
+	await $.prompt.submit({ text: "also this", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.complete(done("w1"));
+	await $.turn.start({ turnId: "u", text: "also this" } as any);
+	const mine: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(mine.result).toBe("ran");
+	did.feeding = false;
+});
+
+test("F16: switching to bypass in the middle of a peer request stops its next tool call; switching back lets it go on", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-42 gaioz");
+	did.push(msg("work"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "w1");
+	const before: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(before.result).toBe("ran");
+	did.unasked = true; // Shift+Tab to bypassPermissions: no hook fires
+	const after: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(String(after.deny ?? after.result)).toMatch(/permission mode changed/);
+	expect(did.toasts.join("\n")).toMatch(/commands now run without asking you/);
+	did.unasked = false; // back to asking
+	const back: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(back.result).toBe("ran");
+	await $.turn.complete(done("w1"));
+	// The user's own calls are never stopped for this.
+	did.unasked = true;
+	await $.prompt.submit({ text: "mine", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.start({ turnId: "u", text: "mine" } as any);
+	const mine: any = await $.tool.call({ tool: "Read", file_path: "/etc/hostname" });
+	expect(mine.result).toBe("ran");
+	did.feeding = false;
+});
+
+test("F16: a request taken while the session already ran unasked (the user's choice) isn't stopped", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	did.unasked = true;
+	await $.session.start(start());
+	await join($, clock, "test-room-43 gaioz");
+	did.push(msg("work"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "w1");
+	const call: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(call.result).toBe("ran");
+	did.feeding = false;
+});
+
+test("F16: in auto, a switch to bypass stops the running request and goes back to cards", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true, answer: (q) => (/Who is in duet room/.test(q) ? "Someone I trust completely" : undefined) });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("default"));
+	await join($, clock, "test-room-44 gaioz");
+	did.push(msg("a"));
+	await settle(clock, 20);
+	expect(duetSubmits(did).length).toBe(1);
+	await duetTurn($, did, clock, "a1");
+	did.unasked = true;
+	const call: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(String(call.deny ?? call.result)).toMatch(/permission mode changed/);
+	expect(did.logs.join("\n")).toMatch(/back in ask mode/);
+	await $.turn.complete(done("a1"));
+	// The next message waits as a card instead of starting by itself.
+	did.push(msg("b"));
+	await settle(clock, 20);
+	expect(duetSubmits(did).length).toBe(1);
+	did.feeding = false;
+});
+
+test("F16: auto doesn't start a request while commands run unasked (switched while idle)", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true, answer: (q) => (/Who is in duet room/.test(q) ? "Someone I trust completely" : undefined) });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("default"));
+	await join($, clock, "test-room-45 gaioz");
+	did.unasked = true;
+	did.push(msg("a"));
+	await settle(clock, 20);
+	expect(duetSubmits(did).length).toBe(0);
+	expect(did.logs.join("\n")).toMatch(/back in ask mode/);
+	did.feeding = false;
+});
+
+test("F16: /branch (a fork) forgets the peer turn", async ($, on) => {
+	const { did, start } = world(on, { env: { DUET_PROCESS: "p1" } });
+	did.store.set("turn:sess-1", { peerTurn: { froms: ["karlo"], roomKey: "k", turnId: "live", waitNoted: false }, expected: [], peerAgents: [], at: Date.now(), runningTurn: "live" });
+	await $.session.start(start());
+	const fenced: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(String(fenced.deny ?? fenced.result)).toMatch(/outside/);
+	await $.classic.SessionStart({ hook_event_name: "SessionStart", source: "fork", session_id: "s2", transcript_path: "/t", cwd: CWD } as any);
+	const mine: any = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	expect(mine.result).toBe("ran");
+});
+
+test("F16: WebFetch is off in a peer turn, on for the user", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-46 gaioz");
+	did.push(msg("fetch"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "w1");
+	const peer: any = await $.tool.call({ tool: "WebFetch", url: "https://example.com/?d=secret", prompt: "x" } as any);
+	expect(String(peer.deny ?? peer.result)).toMatch(/WebFetch is off/);
+	await $.turn.complete(done("w1"));
+	await $.prompt.submit({ text: "mine", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.start({ turnId: "u", text: "mine" } as any);
+	const mine: any = await $.tool.call({ tool: "WebFetch", url: "https://example.com/", prompt: "x" } as any);
+	expect(mine.result).toBe("ran");
+	did.feeding = false;
+});
+
+test("F15: the user's own prompt right after a peer turn isn't fenced, though its turn starts before the submission resolves", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-47 gaioz");
+	did.push(msg("work"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "w1");
+	await $.turn.complete(done("w1"));
+	let inside: any = null;
+	did.userTurn = async (text) => {
+		await $.turn.start({ turnId: "u1", text: "<local-command-stdout>Goal set: " + text } as any);
+		inside = await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" });
+	};
+	await $.prompt.submit({ text: "/goal x", origin: { kind: "composer" }, wait: false } as any);
+	expect(inside?.result).toBe("ran");
+	did.userTurn = null;
 	did.feeding = false;
 });

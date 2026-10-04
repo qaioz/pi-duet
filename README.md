@@ -167,15 +167,24 @@ plugin refuses:
   `CLAUDE.local.md`, `AGENTS.md`, `.vscode`, `.envrc`, `.husky`, `.pi` or `.codex` (they decide what
   runs on your computer later);
 - tools that outlive the request: scheduled tasks, background commands, remote agents;
-- skills, custom subagent types, and every tool beyond file, search, shell, web, plan and to-do
-  tools, including your other MCP servers.
+- WebFetch, since a URL can carry your files to any server (WebSearch stays on);
+- skills, custom subagent types, and every tool beyond file, search, shell, web search, plan and
+  to-do tools, including your other MCP servers;
+- every tool call once the session starts running commands **without asking you** (Shift+Tab to
+  `bypassPermissions`) in the middle of a request that started while it still asked, or that auto
+  mode started: duet goes back to ask mode, and Claude is told to stop. Switch back, or confirm with
+  `/duet auto`. No hook fires when the mode changes, so duet asks Claude Code's own permission check
+  on each tool call of the request. A request you took while already in `bypassPermissions` isn't
+  stopped: you chose that.
 
 duet hands a request to Claude only while Claude is idle, and a turn counts as the other side's when
-Claude Code starts it with that request's text (or continues it without new text). Your own prompts,
-task notifications and other sessions' messages start turns of their own, which aren't fenced. If a
-turn starts while a request is with Claude Code and no prompt of yours explains it, duet fences it
-too, rather than risk missing the request. A request already handed over stays fenced if the plugin
-reloads; a new Claude Code process starts with nothing fenced.
+Claude Code starts it with that request's text. Every turn after it, until your own next prompt,
+counts as the other side's too (a hook that wakes Claude, a task notification, a continuation): duet
+fails closed. Stop hooks and `/goal` continue inside the same turn, so they stay fenced. Pressing Esc
+on the request, or typing your own prompt, ends this. If a turn starts while a request is with Claude
+Code and no prompt of yours explains it, duet fences it too, rather than risk missing the request. A
+request already handed over stays fenced if the plugin reloads; `/resume`, `/branch` and a new
+Claude Code process start with nothing fenced.
 
 Claude reads the reason and can tell the other side to ask you. These are rules about tool names and
 paths, **not a sandbox**. A shell command can still do anything your permission mode allows: in

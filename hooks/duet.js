@@ -58,7 +58,8 @@ let cwd = "";
 let home = "";
 let server = DEFAULT_SERVER;
 let defaultName = "";
-let permissionMode = ""; // "" until Claude Code reports it (classic.* events)
+let permissionMode = ""; // "" until Claude Code reports it (classic.* events; not at startup, not to tool.call)
+let lastUnasked; // runsUnasked's latest answer, fresher than permissionMode after a Shift+Tab
 let oldMcp = false; // the old MCP-server setup of duet is active in this session too
 
 let room = null; // { code, name, key, fromId, topic, lockKey, mode, cursor, server }
@@ -79,9 +80,11 @@ const lastToast = new Map(); // sender -> time of the last "message from" toast
 let pendingPeer = null; // { envs, text, roomKey, submitted }: taken, waiting for Claude to be idle
 let expected = []; // [{ text, froms, roomKey, at }]: submitted frames whose turn hasn't started yet
 let peerTurn = null; // { froms, roomKey, turnId, waitNoted }
-let lastPeer = null; // { froms, roomKey }: the peer turn that just ended (an empty-text continuation is still its)
+let lastPeer = null; // { froms, roomKey, guard }: the peer turn that just ended; any turn before the user's own prompt is still its
+let lastGuard = null; // { auto, unaskedAtStart }: how the latest peer turn started (its subagents may outlive it)
 let runningTurn = ""; // the main loop's turn in progress, "" while Claude is idle
 let userPromptSince = false; // the user's own prompt entered since duet's last submission
+let userPromptsOpen = 0; // the user's own prompts submitted whose submission hasn't resolved yet
 let peerAgents = []; // subagents started from a peer turn (they may outlive it)
 let autoTurns = 0;
 let paused = false;
@@ -94,12 +97,13 @@ const warnedAbout = new Set(); // warnings already given: "crowd", "place:<name>
 
 const viaLabel = (via) => VIA[via] ?? "";
 const peerNames = () => (peerTurn ? peerTurn.froms.join(", ") : "the other person");
-const riskyMode = () => !ASKING_MODES.includes(permissionMode);
+const riskyMode = () => lastUnasked ?? !ASKING_MODES.includes(permissionMode);
 // Auto runs only where the session asks before tools, or where the user said yes for this room.
 const autoActive = () => !!room && room.mode === "auto" && !paused && (!riskyMode() || !!room.riskOk);
 const livePeers = () => [...peers.entries()].filter(([, p]) => !p.left);
 const fromPeerCall = (e) => (e.agentId ? peerAgents.includes(e.agentId) : !!peerTurn);
 const busyWithPeer = () => !!(pendingPeer || peerTurn || expected.length);
+const peerTurnFrom = (x, turnId) => ({ froms: x.froms, roomKey: x.roomKey, turnId, waitNoted: false, answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })), guard: x.guard ?? null });
 
 function remember(entry) {
 	history.push({ at: new Date().toISOString(), ...entry });
@@ -177,6 +181,7 @@ async function saveTurn($) {
 		expected,
 		peerTurn,
 		lastPeer,
+		lastGuard,
 		runningTurn,
 		peerAgents,
 		at: Date.now(),
@@ -385,7 +390,7 @@ function onEnvelope($, r, env) {
 	const now = Date.now();
 	if (now - (lastToast.get(env.from) ?? 0) > TOAST_GAP_MS) $.ui.toast(`message from ${env.from}${env.by === "person" ? "" : "'s agent"}`);
 	lastToast.set(env.from, now);
-	void deliver($);
+	void deliver($).catch(() => {});
 	redraw($);
 }
 
@@ -399,12 +404,44 @@ async function deliver($) {
 		redraw($);
 		return;
 	}
+	// Shift+Tab fires no hook: ask Claude Code itself whether commands now run without asking.
+	const unasked = await runsUnasked($);
+	if (!room || !queue.length || busyWithPeer()) return;
+	if (unasked && !room.riskOk) return backToAsk($, "");
+	if (!autoActive()) return;
 	autoTurns++;
-	await startPeerTurn($, queue.splice(0, BATCH_MAX));
+	await startPeerTurn($, queue.splice(0, BATCH_MAX), { auto: true, unaskedAtStart: unasked });
 }
 
-async function startPeerTurn($, envs) {
-	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false };
+// Would a shell command nobody allowed run without asking the user right now? Claude Code tells a
+// tool.call hook nothing about the permission mode, and switching it (Shift+Tab) fires no hook, but
+// its own decision for a made-up command answers it: "allow" with no rule behind it is the mode
+// (bypassPermissions). It runs nothing. undefined when Claude Code can't say.
+async function runsUnasked($) {
+	try {
+		const r = await $.tool.check({ tool: "Bash", input: { command: "duet-permission-check" } });
+		lastUnasked = r?.decision === "allow" && !r.rule;
+		return lastUnasked;
+	} catch {
+		return undefined;
+	}
+}
+
+// Commands run unasked now, and the user hasn't said yes to that for this room: back to cards.
+async function backToAsk($, peer) {
+	if (!room || room.mode !== "auto") return;
+	room.mode = "ask";
+	const active = await $.store.get("active:" + sessionId);
+	if (active) await $.store.set("active:" + sessionId, { ...active, mode: "ask" });
+	const text = `this session now runs commands without asking you${peer ? `, so ${peer}'s request was stopped there` : ""}: duet is back in ask mode. /duet auto turns auto on again (it asks you first)`;
+	$.ui.log(text);
+	$.ui.toast("duet: " + text);
+	redraw($);
+}
+
+// guard: { auto, unaskedAtStart } — how it started, for checkPermissionMode.
+async function startPeerTurn($, envs, guard) {
+	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false, guard };
 	await saveTurn($);
 	redraw($);
 	await submitWhenIdle($);
@@ -416,7 +453,7 @@ async function submitWhenIdle($) {
 	if (!p || p.submitted || runningTurn) return;
 	p.submitted = true;
 	const froms = [...new Set(p.envs.map((x) => x.from))];
-	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, at: Date.now() }];
+	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, guard: p.guard, at: Date.now() }];
 	userPromptSince = false;
 	pendingPeer = null;
 	await saveTurn($);
@@ -653,10 +690,11 @@ async function setMode($, mode, quiet) {
 		$.ui.log("not in a room: /duet new, or /duet <room code>");
 		return;
 	}
+	if (mode === "auto") await runsUnasked($); // the mode may have changed since Claude Code last said
 	if (mode === "auto" && riskyMode() && !room.riskOk) {
 		const why =
-			permissionMode === "bypassPermissions"
-				? "This session runs with bypassPermissions"
+			lastUnasked || permissionMode === "bypassPermissions"
+				? "This session runs commands without asking you (bypassPermissions)"
 				: permissionMode
 					? `This session runs in ${permissionMode} mode`
 					: "duet can't tell yet whether this session asks before running commands";
@@ -690,7 +728,7 @@ async function setMode($, mode, quiet) {
 	if (active) await $.store.set("active:" + sessionId, { ...active, mode });
 	if (!quiet) $.ui.log(mode === "auto" ? `auto: messages start a turn by themselves, up to ${MAX_AUTO} in a row without you` : "ask: each message waits above the prompt for you");
 	redraw($);
-	void deliver($);
+	void deliver($).catch(() => {});
 }
 
 // ---------- what the user does with a card ----------
@@ -710,7 +748,7 @@ function choose($, action) {
 		$.ui.toast("Claude is still on the last duet request — this one can start after it");
 		return;
 	}
-	const timer = $.clock.after(UNDO_MS, () => void settle($));
+	const timer = $.clock.after(UNDO_MS, () => void settle($).catch(() => {}));
 	countdown = { action, envs, timer };
 	redraw($);
 }
@@ -725,6 +763,9 @@ async function settle($) {
 	const c = countdown;
 	countdown = null;
 	if (!c || !room) return redraw($);
+	// Whether commands ask first right now, for the request's guard (asked before anything changes).
+	const unasked = c.action === "take" ? await runsUnasked($) : undefined;
+	if (!room) return redraw($);
 	const envs = c.envs.filter((e) => queue.includes(e));
 	if (!envs.length) return redraw($);
 	if (c.action === "take" && busyWithPeer()) {
@@ -733,7 +774,7 @@ async function settle($) {
 	}
 	queue = queue.filter((e) => !envs.includes(e));
 	if (c.action === "take") {
-		await startPeerTurn($, envs);
+		await startPeerTurn($, envs, { auto: false, unaskedAtStart: unasked });
 	} else {
 		sendNote($, "declined", c.envs[0].from);
 		redraw($);
@@ -904,6 +945,23 @@ function modeLabel() {
 	return `duet ${room.code} · ${who} · ${room.mode}${paused ? " (paused)" : ""}${waiting}${link}`;
 }
 
+// A peer's request that started where commands asked first (or started by auto mode) may not go on
+// once they run unasked (Shift+Tab to bypass mid-request), unless the user said yes to that for this
+// room. Checked on each of its tool calls, since no hook fires when the mode changes.
+async function checkPermissionMode($) {
+	const g = peerTurn?.guard ?? lastGuard;
+	if (!g || (!g.auto && g.unaskedAtStart !== false)) return null;
+	if (room?.riskOk || (await runsUnasked($)) !== true) return null;
+	const peer = peerNames();
+	if (peerTurn && !peerTurn.modeNoted) {
+		peerTurn.modeNoted = true;
+		if (room?.mode !== "auto") $.ui.toast(`duet: commands now run without asking you, so ${peer}'s request was stopped there`);
+	}
+	await backToAsk($, peer);
+	const how = g.auto ? "switch the mode back (Shift+Tab), or say yes to it with /duet auto" : "switch the mode back (Shift+Tab) and ask you to go on";
+	return `duet: this session's permission mode changed while you worked on ${peer}'s request, and commands would now run without your user being asked, so this call was not run. Stop working on this request and tell your user; they can ${how}.`;
+}
+
 // No turn of this process or conversation is running: forget what a crashed or other one left.
 async function clearTurn($) {
 	if (!sessionId) sessionId = await $.session.id();
@@ -911,6 +969,7 @@ async function clearTurn($) {
 	expected = [];
 	peerTurn = null;
 	lastPeer = null;
+	lastGuard = null;
 	runningTurn = "";
 	peerAgents = [];
 	await $.store.delete("turn:" + sessionId);
@@ -918,7 +977,9 @@ async function clearTurn($) {
 }
 
 function notePermissionMode(e) {
-	if (typeof e.permission_mode === "string" && e.permission_mode) permissionMode = e.permission_mode;
+	if (typeof e.permission_mode !== "string" || !e.permission_mode) return;
+	if (e.permission_mode !== permissionMode) lastUnasked = undefined; // the mode says more until the next check
+	permissionMode = e.permission_mode;
 }
 
 // ---------- hooks ----------
@@ -963,6 +1024,7 @@ export function register(on) {
 			expected = Array.isArray(turn.expected) ? turn.expected : [];
 			peerTurn = turn.peerTurn ?? null;
 			lastPeer = turn.lastPeer ?? null;
+			lastGuard = turn.lastGuard ?? null;
 			runningTurn = turn.runningTurn ?? "";
 			peerAgents = Array.isArray(turn.peerAgents) ? turn.peerAgents : [];
 		}
@@ -1016,7 +1078,8 @@ export function register(on) {
 
 	on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
 		notePermissionMode(e);
-		if (e.source === "resume") await clearTurn($);
+		// /resume and /branch (a fork) continue another conversation: no turn of this one runs there.
+		if (e.source === "resume" || e.source === "fork") await clearTurn($);
 		// /clear and friends may give the session a new id; the room stays with this window.
 		const old = sessionId;
 		sessionId = await $.session.id();
@@ -1084,6 +1147,8 @@ export function register(on) {
 		if (fromPeerCall(e)) {
 			const reason = checkPeerTool(e, { cwd, home, peer: peerNames(), sendTool: SEND_TOOL });
 			if (reason) return { deny: reason };
+			const modeReason = await checkPermissionMode($);
+			if (modeReason) return { deny: modeReason };
 		}
 		return next(e);
 	}).catch(async ($, e) => ({ deny: `duet's check on this call failed, so it was not run. Try again.` }));
@@ -1099,10 +1164,18 @@ export function register(on) {
 	});
 
 	on("prompt.submit", async ($, e, next) => {
-		const result = await next(e);
-		// Claude Code's own stamp: Enter at the prompt, or Remote Control; a prompt that entered.
+		// Claude Code's own stamp: Enter at the prompt, or Remote Control. Its turn starts before the
+		// submission resolves here (observed in 2.1.289), so turn.start must know of it already.
 		const kind = e.origin?.kind;
-		if (!result?.drop && (kind === "composer" || kind === "bridge")) {
+		const mine = kind === "composer" || kind === "bridge";
+		if (mine) userPromptsOpen++;
+		let result;
+		try {
+			result = await next(e);
+		} finally {
+			if (mine) userPromptsOpen--;
+		}
+		if (!result?.drop && mine) {
 			lastPeer = null;
 			userPromptSince = true;
 			autoTurns = 0;
@@ -1122,21 +1195,25 @@ export function register(on) {
 		if (i >= 0) {
 			const x = expected[i];
 			expected = expected.filter((_, j) => j !== i);
-			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, waitNoted: false, answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })) };
+			peerTurn = peerTurnFrom(x, e.turnId);
 			lastPeer = null;
 		} else if (expected.length && !userPromptSince) {
 			// duet's request is pending and no prompt of the user's explains this turn: its text may
 			// have been changed on the way. Fence it rather than risk running the request unfenced.
 			const x = expected[0];
-			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, waitNoted: false, answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })) };
+			peerTurn = peerTurnFrom(x, e.turnId);
 			lastPeer = null;
 			$.ui.log("a turn started while duet's request was pending and its text didn't match: treating it as the other side's", { to: "debug" });
-		} else if (!e.text && lastPeer) {
-			// A continuation of the peer's turn (a Stop hook asked for more): still the peer's request.
-			peerTurn = { ...lastPeer, turnId: e.turnId, waitNoted: false };
-		} else {
+		} else if (userPromptsOpen) {
+			// The user's own prompt, on its way in: theirs, and the end of any fence after a peer turn.
 			lastPeer = null;
+		} else if (lastPeer) {
+			// Any turn after the peer's, before the user's own prompt, is still the peer's: a hook that
+			// woke Claude, a continuation, a task notification. Fail closed; the user's prompt ends it.
+			peerTurn = { ...lastPeer, turnId: e.turnId, waitNoted: false };
+			$.ui.log("a turn started after the other side's request, before your own prompt: still fenced as theirs", { to: "debug" });
 		}
+		if (peerTurn?.turnId === e.turnId && peerTurn.guard) lastGuard = peerTurn.guard;
 		await saveTurn($);
 		await saveCursor($);
 		redraw($);
@@ -1148,7 +1225,8 @@ export function register(on) {
 		if (!e.agentId && peerTurn && peerTurn.turnId === e.turnId) {
 			const t = peerTurn;
 			peerTurn = null;
-			lastPeer = e.isAborted ? null : { froms: t.froms, roomKey: t.roomKey };
+			// Stopped (Esc), or the user typed during it: what comes next is the user's.
+			lastPeer = e.isAborted || userPromptSince ? null : { froms: t.froms, roomKey: t.roomKey, guard: t.guard ?? null };
 			if (e.isAborted) for (const p of t.froms) sendNote($, "stopped", p);
 			else if (e.reason === "error" || e.reason === "refusal") for (const p of t.froms) sendNote($, "failed", p);
 			redraw($);
@@ -1156,7 +1234,7 @@ export function register(on) {
 		if (!e.agentId) await saveTurn($);
 		const result = await next(e);
 		void submitWhenIdle($);
-		void deliver($);
+		void deliver($).catch(() => {});
 		return result;
 	});
 
@@ -1169,7 +1247,8 @@ export function register(on) {
 		return next(e);
 	});
 
-	on("classic.PreToolUse", async ($, e, next) => {
+	// classic.PreToolUse carries no permission_mode (2.1.289); PostToolUse does.
+	on("classic.PostToolUse", async ($, e, next) => {
 		notePermissionMode(e);
 		return next(e);
 	});

@@ -6,11 +6,12 @@
 // and say why.
 
 // Tools a peer turn may use. Everything else (MCP tools of the user's own servers, skills,
-// scheduling, artifacts, messages to other sessions, worktrees, …) is refused.
+// scheduling, artifacts, messages to other sessions, worktrees, …) is refused. WebFetch too: a URL
+// can carry this folder's contents to any server.
 const ALLOWED = new Set([
 	"Read", "Edit", "Write", "NotebookEdit", "Bash", "Glob", "Grep", "LS", "LSP",
 	"TodoWrite", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
-	"Agent", "WebFetch", "WebSearch", "ToolSearch", "AskUserQuestion",
+	"Agent", "WebSearch", "ToolSearch", "AskUserQuestion",
 	"EnterPlanMode", "ExitPlanMode",
 ]);
 const WRITES = new Set(["Edit", "Write", "NotebookEdit"]);
@@ -76,6 +77,7 @@ function pathsOf(e) {
 export function checkPeerTool(e, { cwd, home, peer, sendTool }) {
 	const ask = `If it's needed, tell ${peer} that your own user has to do it or ask you for it.`;
 	if (e.tool === sendTool) return null;
+	if (e.tool === "WebFetch") return `duet: while working on ${peer}'s request, WebFetch is off (a URL can carry this folder's files to any server). ${ask}`;
 	if (!ALLOWED.has(e.tool)) return `duet: while working on ${peer}'s request, the ${e.tool} tool is off. ${ask}`;
 	if (e.tool === "Bash" && e.run_in_background) return `duet: background commands are off while working on ${peer}'s request; run it in the foreground. ${ask}`;
 	if (e.tool === "Agent") {
