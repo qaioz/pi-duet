@@ -36,6 +36,7 @@
 	#convo .ev { margin: 10px 0; }
 	#convo .ev pre { white-space: pre-wrap; word-break: break-word; margin: 3px 0 0; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 13.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
 	#convo .ev.note { font-size: 13.5px; margin: 4px 0; }
+	#convo .ev, #convo .ev b { overflow-wrap: anywhere; }
 	.hidden { display: none !important; }
 	a { color: var(--accent); }
 </style>
@@ -55,7 +56,7 @@
 		<h2>Invite link</h2>
 		<div class="cmd"><code id="invite"></code><button data-copy="invite">Copy</button></div>
 		<p id="relay" class="muted"></p>
-		<div class="warn"><b>Whoever has this link can make your agent run commands on your machine</b>, and read the room's conversation. Share it only with someone you trust. duet adds no permission prompts of its own: your agent's own permission mode decides what the other agent's requests can do.</div>
+		<div class="warn"><b>Whoever has this link can make your agent run commands on your machine</b>, and read the room's conversation. Share it only with someone you trust. Your agent's own permission mode decides what the other agent's requests can do; the Claude Code plugin also asks you about each request unless you said you trust the room.</div>
 
 		<h2>2. Your name</h2>
 		<div class="row"><input id="name" placeholder="e.g. nika" maxlength="24" autocomplete="off" spellcheck="false"><span class="muted">letters, digits, - and _</span></div>
@@ -145,7 +146,7 @@ const AGENTS = {
 				["in Claude Code", "/plugin install duet@pi-duet"],
 				["in Claude Code", "/duet {room} {name}{pi-srv}"],
 			],
-			note: "Needs Claude Code 2.1.287 or newer. The plugin is active as soon as it is installed: no restart. Install once; after that, /duet with the room code is enough, and a restart in the same folder offers to rejoin.",
+			note: "Needs Claude Code 2.1.287 or newer. The plugin is active as soon as it is installed: no restart. Install once; after that, /duet with the room code is enough, and a restart in the same folder rejoins by itself (in ask mode).",
 		},
 		fresh: {
 			title: "Starting fresh",
@@ -269,17 +270,25 @@ async function copy(text, btn) {
 
 // Who's in the room: the page listens to the relay (read-only) for join announcements.
 let source;
+let listening = 0;
 async function listen() {
 	source?.close();
+	source = null;
+	const mine = ++listening;
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("pi-duet:" + room()));
 	const topic = "duet_" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+	if (mine !== listening) return; // a newer room took over while the hash was being computed
 	const people = new Map();
+	const seenIds = new Set(); // a reconnect asks for the last 12 h again: show each message once
 	convo.length = 0;
 	drawConvo();
 	source = new EventSource(`${RELAY}/${topic}/sse?since=12h`);
 	source.onmessage = (e) => {
 		try {
-			const env = JSON.parse(JSON.parse(e.data).message);
+			const evt = JSON.parse(e.data);
+			if (seenIds.has(evt.id)) return;
+			seenIds.add(evt.id);
+			const env = JSON.parse(evt.message);
 			if (env?.v !== 1 || typeof env.from !== "string") return;
 			people.set(env.from, { at: new Date(env.ts), joined: env.kind === "join" || people.get(env.from)?.joined });
 			addEvent(env);
@@ -319,8 +328,14 @@ function addEvent(env) {
 }
 function drawConvo() {
 	const box = $("convo");
-	if (!convo.length) return;
 	box.textContent = "";
+	if (!convo.length) {
+		const p = document.createElement("p");
+		p.className = "muted";
+		p.textContent = "Nothing said yet. What the agents say to each other shows up here, live.";
+		box.append(p);
+		return;
+	}
 	for (const ev of convo) {
 		const div = document.createElement("div");
 		div.className = ev.note ? "ev note muted" : "ev";

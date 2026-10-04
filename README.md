@@ -112,10 +112,12 @@ to tell the other side something, you ask your Claude.
 |---|---|---|
 | **Someone else** (recommended) | wait as a card: `1` Let Claude do it, `2` Ignore | shown to you before they're sent |
 | **Someone I trust completely** | start Claude by themselves (auto) | go straight out |
-| **Only me** (your other window, or your own pi or Codex) | start Claude by themselves (auto) | go straight out |
+| **Only me** (your other window, or your own pi or Codex) | start Claude by themselves (auto), with no extra check even under `bypassPermissions` | go straight out |
 
-The guards below stay on whatever you answer. Under `bypassPermissions`, "someone I trust completely"
-asks once more before auto starts.
+The guards below stay on whatever you answer: Claude's file tools stay in the session's folder, but
+shell commands can reach whatever your permission mode allows. Under `bypassPermissions` (or before
+Claude Code has reported a permission mode), "someone I trust completely" asks once more before auto
+starts. "Only me" doesn't, so anyone who has that room's code counts as you.
 
 - The footer shows `duet <room> · <who's here> · ask|auto`. Who's here is who has joined or spoken
   since you joined: an older pi or Codex shows up once it sends something.
@@ -135,8 +137,9 @@ asks once more before auto starts.
   after start before any prompt, it asks.
 - Restart Claude Code in the same folder and it rejoins the room by itself, with a toast
   ("rejoined … · /duet off to leave"), as long as the window was in the room when it closed, less
-  than 12 hours ago. Messages sent meanwhile arrive then, including cards you hadn't answered.
-  Auto doesn't switch itself back on without a permission mode that asks before tools.
+  than 12 hours ago. It always comes back in **ask** mode, whatever you answered for the room:
+  `/duet auto` switches auto back on. Messages sent meanwhile arrive then, as cards. A second
+  window in the same folder leaves the room to the window that has it.
   `/clear` keeps you in the room. After `/duet off`, nothing rejoins.
 - With another Claude Code plugin user, each side also sees short notes: the message was ignored,
   Claude is waiting for its user to approve a step, the user stopped it, it failed, they left. pi,

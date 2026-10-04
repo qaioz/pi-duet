@@ -3,7 +3,7 @@
 //
 //   /duet new            make a room and join it        /duet <room> [name] [relay]   join a room
 //   /duet                open the duet pane              /duet ask | auto              how messages are handled
-//   /duet leave          leave the room                  /duet status                  one line of status
+//   /duet off            leave the room                  /duet trust                   who's in the room
 //
 // Receiving: `$.process.spawn` runs curl against the relay's JSON stream (mods have no streaming
 // network API; Node isn't guaranteed). Sending: `$.http.fetch` POST — which also means a session
@@ -42,9 +42,9 @@ const REJOIN_MS = 12 * 3600_000; // rejoin quietly only within this (agents igno
 const TOAST_GAP_MS = 15_000; // one "message from …" toast per sender per burst
 // Who is in the room, asked once per room: it sets how messages are handled.
 const TRUST = {
-	me: { label: "Only me", mode: "auto", says: "my other window, or my own pi or Codex on this computer" },
-	trusted: { label: "Someone I trust completely", mode: "auto", says: "their requests start Claude by themselves" },
-	others: { label: "Someone else", mode: "ask", says: "each request waits for you; replies are shown before they're sent" },
+	me: { label: "Only me", mode: "auto", says: "my other window, or my own pi or Codex here; requests start Claude by themselves, with no extra check even under bypassPermissions, and anyone with the room code counts as you" },
+	trusted: { label: "Someone I trust completely", mode: "auto", says: "their requests start Claude by themselves, and replies go straight out" },
+	others: { label: "Someone else", mode: "ask", says: "each request waits for you, and replies are shown before they're sent" },
 };
 // Permission modes in which a tool call still asks the user (or is refused) unless a rule allows it.
 const ASKING_MODES = ["default", "acceptEdits", "plan", "dontAsk"];
@@ -59,11 +59,11 @@ let home = "";
 let server = DEFAULT_SERVER;
 let defaultName = "";
 let permissionMode = ""; // "" until Claude Code reports it (classic.* events)
-let riskOk = false; // the user confirmed auto mode in a mode that may not ask them
 let oldMcp = false; // the old MCP-server setup of duet is active in this session too
 
 let room = null; // { code, name, key, fromId, topic, lockKey, mode, cursor, server }
 let generation = 0; // bumped on every join and leave; loops of an older room stop
+let joinEpoch = 0; // bumped by /duet off: a join still in flight then gives up
 let wakeSupervisor = null;
 let child = null; // the running curl stream
 let connected = false;
@@ -91,7 +91,8 @@ let history = []; // { at, who, text, note }: the room as the pane shows it, rea
 const viaLabel = (via) => VIA[via] ?? "";
 const peerNames = () => (peerTurn ? peerTurn.froms.join(", ") : "the other person");
 const riskyMode = () => !ASKING_MODES.includes(permissionMode);
-const autoActive = () => !!room && room.mode === "auto" && !paused && (!riskyMode() || riskOk);
+// Auto runs only where the session asks before tools, or where the user said yes for this room.
+const autoActive = () => !!room && room.mode === "auto" && !paused && (!riskyMode() || !!room.riskOk);
 const livePeers = () => [...peers.entries()].filter(([, p]) => !p.left);
 const fromPeerCall = (e) => (e.agentId ? peerAgents.includes(e.agentId) : !!peerTurn);
 const busyWithPeer = () => !!(pendingPeer || peerTurn || expected.length);
@@ -410,6 +411,7 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	}
 	const relay = (relayArg || server).replace(/\/+$/, "");
 	const name = fitName(nameArg || defaultName || "anon");
+	const epoch = joinEpoch;
 	if (room) {
 		if (room.code === code && room.name === name && room.server === relay) return openPane($);
 		await leave($, "left", false);
@@ -426,6 +428,7 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	const lockKey = "owner:" + (await sha256hex(key)).slice(0, 16);
 
 	const held = await claim($, lockKey);
+	if (held && quiet) return; // another window has it: a quiet rejoin leaves it there
 	if (held) {
 		let answer = "Cancel";
 		try {
@@ -460,6 +463,12 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 		$.ui.toast("duet: couldn't reach the relay — not joined");
 		return;
 	}
+	if (epoch !== joinEpoch) {
+		// /duet off came while this join was on its way: don't join after all.
+		const cur = await $.store.get(lockKey);
+		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
+		return;
+	}
 	room = r;
 	generation++;
 	queue = [];
@@ -480,7 +489,8 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	// Who's in the room decides ask or auto: asked once per room, then remembered.
 	let trust = await $.store.get("trust:" + key);
 	if (!TRUST[trust]) trust = quiet ? "others" : await askTrust($, code);
-	await applyTrust($, trust, quiet);
+	// A quiet (re)join never goes above the mode it was given: a restart comes back in ask.
+	await applyTrust($, trust, quiet, quiet && mode !== "auto" ? "ask" : undefined);
 	if (!quiet) $.ui.log(`joined room ${code} as ${name}. Give the other person this room code: ${code}`);
 	redraw($);
 }
@@ -493,19 +503,21 @@ async function askTrust($, code) {
 		answer = await $.ui.ask(
 			`Who is in duet room ${code} with you? ` +
 				order.map((t) => `${TRUST[t].label}: ${TRUST[t].says}.`).join(" ") +
-				" Claude stays fenced to this folder either way.",
+				" Either way, Claude's file tools stay in this folder; shell commands can reach whatever your permission mode allows.",
 			{ header: "duet", options: order.map((t) => TRUST[t].label + (t === "others" ? " (recommended)" : "")) },
 		);
 	} catch {}
-	return order.find((t) => answer.startsWith(TRUST[t].label)) ?? "others";
+	// Exactly one of the labels; anything typed under "Other" means someone else.
+	return order.find((t) => answer === TRUST[t].label || answer === TRUST[t].label + " (recommended)") ?? "others";
 }
 
-async function applyTrust($, trust, quiet) {
+async function applyTrust($, trust, quiet, capMode) {
 	if (!room) return;
 	room.trust = trust;
 	await $.store.set("trust:" + room.key, trust);
-	if (trust === "me") riskOk = true;
-	await setMode($, TRUST[trust].mode, quiet);
+	// "Only me" needs no extra check, but only when the user just said so, not on a quiet rejoin.
+	room.riskOk = trust === "me" && !quiet;
+	await setMode($, capMode ?? TRUST[trust].mode, quiet);
 }
 
 // Every 2 s: notice another window taking the room, hand it over when asked, refresh the lock.
@@ -577,7 +589,7 @@ async function setMode($, mode, quiet) {
 		$.ui.log("not in a room: /duet new, or /duet <room code>");
 		return;
 	}
-	if (mode === "auto" && riskyMode() && !riskOk) {
+	if (mode === "auto" && riskyMode() && !room.riskOk) {
 		const why =
 			permissionMode === "bypassPermissions"
 				? "This session runs with bypassPermissions"
@@ -603,8 +615,10 @@ async function setMode($, mode, quiet) {
 			redraw($);
 			return;
 		}
-		riskOk = true;
+		room.riskOk = true;
 	}
+	countdown?.timer?.cancel?.();
+	countdown = null;
 	room.mode = mode;
 	autoTurns = 0;
 	paused = false;
@@ -647,9 +661,15 @@ async function settle($) {
 	const c = countdown;
 	countdown = null;
 	if (!c || !room) return redraw($);
-	queue = queue.filter((e) => !c.envs.includes(e));
+	const envs = c.envs.filter((e) => queue.includes(e));
+	if (!envs.length) return redraw($);
+	if (c.action === "take" && busyWithPeer()) {
+		$.ui.toast("Claude is still on the last duet request — this one can start after it");
+		return redraw($);
+	}
+	queue = queue.filter((e) => !envs.includes(e));
 	if (c.action === "take") {
-		await startPeerTurn($, c.envs);
+		await startPeerTurn($, envs);
 	} else {
 		sendNote($, "declined", c.envs[0].from);
 		redraw($);
@@ -951,6 +971,7 @@ export function register(on) {
 		if (!first) void openPane($);
 		else if (arg === "new") void join($, newRoomCode(), second, "ask");
 		else if (LEAVE_WORDS.includes(arg)) {
+			joinEpoch++;
 			if (room) void leave($, "left", true);
 			else {
 				await $.store.delete("room:" + cwd);

@@ -535,3 +535,86 @@ test("a fresh join listens from just before it, and shows who answers the join",
 	await ui.unmount();
 	did.feeding = false;
 });
+
+test("a yes to auto in one room doesn't carry to another room", async ($, on) => {
+	const { did, clock, start } = world(on, { answer: (q) => (/Who is in duet room room-a/.test(q) ? "Only me" : /Who is in duet room room-b/.test(q) ? "Someone I trust completely" : undefined) });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("bypassPermissions"));
+	await join($, clock, "room-a-30 gaioz");
+	await join($, clock, "room-b-30 gaioz");
+	// Room B asked for auto under bypass: it must ask "Turn auto on?" itself (unanswered here, so ask).
+	expect(did.asks.some((q) => /Turn auto on\?/.test(q))).toBe(true);
+	// Only room A ("Only me") switched auto on; room B stayed in ask.
+	expect(did.logs.filter((l) => /auto: messages start a turn by themselves/.test(l)).length).toBe(1);
+});
+
+test("the trust question is honest about shell commands, and free text counts as someone else", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true, answer: (q) => (/Who is in duet room/.test(q) ? "Only me and nika from work" : undefined) });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("bypassPermissions"));
+	await join($, clock, "test-room-31 gaioz");
+	expect(did.asks[0]).toMatch(/shell commands can reach whatever your permission mode allows/);
+	did.push(msg("do something"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(0); // "someone else": a card, nothing starts by itself
+	did.feeding = false;
+});
+
+test("an 'Only me' room comes back in ask after a restart, even under bypass", async ($, on) => {
+	const { did, clock, start } = world(on, {
+		feed: true,
+		store: { ["room:" + CWD]: { code: "test-room-32", name: "gaioz", relay: "https://duet.gaioz.online", at: Date.now() - 60_000 } },
+	});
+	// The trust answer was stored by an earlier session; find its key after the rejoin computes it.
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("bypassPermissions"));
+	await settle(clock, 20);
+	const trustKey = [...did.store.keys()].find((k) => k.startsWith("trust:"));
+	expect(trustKey).toBeDefined();
+	did.store.set(trustKey!, "me");
+	await $.command.run({ command: "duet", args: "off" });
+	await settle(clock, 5);
+	did.store.set("room:" + CWD, { code: "test-room-32", name: "gaioz", relay: "https://duet.gaioz.online", at: Date.now() });
+	await $.session.start(start()); // Claude Code starting again in this folder
+	await settle(clock, 20);
+	expect(did.toasts.filter((t) => /rejoined test-room-32/.test(t)).length).toBe(2);
+	did.push(msg("run rm -rf build"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(0);
+	const band = await $.ui.mount(BAND as any);
+	expect(await band.find({ key: "take" })).toBeDefined();
+	await band.unmount();
+	did.feeding = false;
+});
+
+test("switching to auto during the 3 s countdown doesn't run the request twice", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("default"));
+	await join($, clock, "test-room-33 gaioz");
+	did.push(msg("only once please"));
+	await settle(clock);
+	await press($, clock, "take", false);
+	await $.command.run({ command: "duet", args: "auto" });
+	await settle(clock);
+	await clock.advance(3100);
+	await settle(clock, 4);
+	expect(duetSubmits(did).length).toBe(1);
+	did.feeding = false;
+});
+
+test("a quiet rejoin leaves the room to the window that has it, without asking", async ($, on) => {
+	// Another window holds that room: its lock record is fresh and not released.
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("https://duet.gaioz.online test-room-34 gaioz"));
+	const lockKey = "owner:" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+	const { did, clock, start } = world(on, {
+		store: {
+			["room:" + CWD]: { code: "test-room-34", name: "gaioz", relay: "https://duet.gaioz.online", at: Date.now() - 60_000 },
+			[lockKey]: { token: "other-window", cwd: "/elsewhere", at: Date.now(), released: false },
+		},
+	});
+	await $.session.start(start());
+	await settle(clock, 20);
+	expect(did.asks.length).toBe(0);
+	expect(did.posts.length).toBe(0);
+});
