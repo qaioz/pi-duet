@@ -1,10 +1,17 @@
 {
   "name": "duet",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Pair your Claude Code with another developer's coding agent (pi, Claude Code or Codex) through a shared room.",
-  "author": { "name": "qaioz" },
+  "author": {
+    "name": "qaioz"
+  },
   "homepage": "https://qaioz.github.io/pi-duet/",
   "repository": "https://github.com/qaioz/pi-duet",
   "license": "MIT",
-  "keywords": ["pairing", "collaboration", "agents"]
+  "keywords": [
+    "pairing",
+    "collaboration",
+    "agents"
+  ],
+  "displayName": "Duet"
 }
