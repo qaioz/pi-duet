@@ -270,6 +270,22 @@ async function copy(text, btn) {
 
 // Who's in the room: the page listens to the relay (read-only) for join announcements.
 let source;
+// Same rules as transport.js attachmentUrl: same origin, path exactly <relay path>/file/<id>[.ext],
+// no query, and a size (an attachment link someone posted has none).
+function attachmentUrl(a) {
+	if (!a || typeof a.url !== "string" || typeof a.size !== "number" || a.size > 260_000) return null;
+	let u, base;
+	try {
+		u = new URL(a.url);
+		base = new URL(RELAY);
+	} catch {
+		return null;
+	}
+	const path = base.pathname.replace(/\/+$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	if (u.origin !== base.origin || u.search || u.hash || u.username || u.password || /\/\.\.?\//.test(a.url)) return null;
+	return new RegExp(`^${path}/file/[A-Za-z0-9]+(\\.[A-Za-z0-9]+)?$`).test(u.pathname) ? u.href : null;
+}
+
 let listening = 0;
 async function listen() {
 	source?.close();
@@ -281,14 +297,28 @@ async function listen() {
 	const people = new Map();
 	const seenIds = new Set(); // a reconnect asks for the last 12 h again: show each message once
 	convo.length = 0;
+	firstLines.clear();
 	drawConvo();
 	source = new EventSource(`${RELAY}/${topic}/sse?since=12h`);
-	source.onmessage = (e) => {
+	// In arrival order, even while a long message (an attachment on the relay) is fetched.
+	let chain = Promise.resolve();
+	source.onmessage = (e) => (chain = chain.then(() => onEvent(e)).catch(() => {}));
+	const onEvent = async (e) => {
+		if (mine !== listening) return;
 		try {
 			const evt = JSON.parse(e.data);
 			if (seenIds.has(evt.id)) return;
 			seenIds.add(evt.id);
-			const env = JSON.parse(evt.message);
+			let body = evt.message;
+			// A real upload on this very relay only: anyone can post an attachment that points anywhere.
+			if (evt.attachment) {
+				const url = attachmentUrl(evt.attachment);
+				if (!url) return;
+				const r = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+				if (!r.ok) return;
+				body = await r.text();
+			}
+			const env = JSON.parse(body);
 			if (env?.v !== 1 || typeof env.from !== "string") return;
 			people.set(env.from, { at: new Date(env.ts), joined: env.kind === "join" || people.get(env.from)?.joined });
 			addEvent(env);
@@ -307,6 +337,7 @@ async function listen() {
 
 // The room's conversation, read-only: people don't type here, their agents do the talking.
 const convo = [];
+const firstLines = new Map(); // message id -> first line, to show what a reply answers
 const NOTES = {
 	declined: (f) => `${f} didn't take the last message`,
 	stopped: (f) => `${f} stopped their Claude working on a request`,
@@ -321,7 +352,10 @@ function addEvent(env) {
 	else if (env.kind === "note" && NOTES[env.note]) convo.push({ at, note: NOTES[env.note](env.from) });
 	else if (env.kind === "msg" && typeof env.text === "string") {
 		const who = env.by === "person" ? env.from : `${env.from}'s agent`;
-		convo.push({ at, who: who + (typeof env.to === "string" ? ` → ${env.to}` : ""), text: env.text.length > 4000 ? env.text.slice(0, 4000) + ` … (${env.text.length - 4000} more characters)` : env.text });
+		const first = env.text.split("\n").find((l) => l.trim()) ?? "";
+		if (typeof env.id === "string") firstLines.set(env.id, first.length > 80 ? first.slice(0, 79) + "…" : first);
+		const re = typeof env.re === "string" && firstLines.has(env.re) ? `  ↳ reply to “${firstLines.get(env.re)}”` : "";
+		convo.push({ at, who: who + (typeof env.to === "string" ? ` → ${env.to}` : "") + re, text: env.text.length > 4000 ? env.text.slice(0, 4000) + ` … (${env.text.length - 4000} more characters)` : env.text });
 	} else return;
 	if (convo.length > 200) convo.shift();
 	drawConvo();

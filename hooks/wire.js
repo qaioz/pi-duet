@@ -4,8 +4,10 @@
 // know (`via`, `by`), so everything here is safe to send to them.
 
 export const DEFAULT_SERVER = "https://duet.gaioz.online"; // the duet relay (ntfy), run by the author
-// ntfy.sh turns bodies over 4096 bytes into attachments; transport.js stays under 3800.
-export const MAX_BYTES = 3800;
+// Longer messages still go out as one: the relay stores the body as an attachment (ntfy does that
+// above 4096 bytes; ntfy.sh keeps them 3 h, up to 2 MB) and receivers fetch it. Same as transport.js.
+export const MAX_BYTES = 256_000;
+export const MAX_TEXT = 200_000;
 // Unattended peer-started turns allowed in auto mode before duet falls back to asking.
 export const MAX_AUTO = 8;
 // A Text string child may hold at most 10,000 characters; keep well under.
@@ -67,6 +69,36 @@ export function newRoomCode() {
 	return `${WORDS[r[0] % WORDS.length]}-${WORDS[r[1] % WORDS.length]}-${String(r[2] % 10000).padStart(4, "0")}-${tail}`;
 }
 
+// Which computer and folder an agent works in, as a hash (same recipe as transport.js placeFor):
+// two windows in the same folder share it, so a join can warn that they may edit the same files.
+// Salted with the room's topic, so the same folder can't be recognised across rooms.
+export async function placeFor(cwd, topic, host) {
+	return (await sha256hex(`duet-place:${topic}:${host}:${cwd}`)).slice(0, 16);
+}
+
+// A long message's attachment, accepted only when it is a real upload on this very relay (same rules
+// as transport.js attachmentUrl): same origin, path exactly <relay path>/file/<id>[.ext], no query,
+// and a size. Anyone can post an attachment that points anywhere.
+export function attachmentUrl(a, server, max) {
+	if (!a || typeof a.url !== "string" || typeof a.size !== "number" || a.size > max) return null;
+	let u, base;
+	try {
+		u = new URL(a.url);
+		base = new URL(server);
+	} catch {
+		return null;
+	}
+	const path = base.pathname.replace(/\/+$/, "");
+	if (u.origin !== base.origin || u.search || u.hash || u.username || u.password) return null;
+	return new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/file/[A-Za-z0-9]+(\\.[A-Za-z0-9]+)?$`).test(u.pathname) && !/\/\.\.?\//.test(a.url) ? u.href : null;
+}
+
+// The first line of a text, short: how a reply names the message it answers.
+export const firstLine = (text) => {
+	const line = String(text).split("\n").find((l) => l.trim()) ?? "";
+	return line.length > 80 ? line.slice(0, 79) + "…" : line;
+};
+
 export function envelope(fields) {
 	return { v: 1, id: randomId(), ...fields, ts: new Date().toISOString() };
 }
@@ -78,11 +110,13 @@ export function isEnvelope(e) {
 		typeof e.from !== "string" ||
 		!NAME.test(e.from) ||
 		typeof e.ts !== "string" ||
-		(e.to !== undefined && typeof e.to !== "string")
+		(e.to !== undefined && typeof e.to !== "string") ||
+		(e.re !== undefined && typeof e.re !== "string") ||
+		(e.place !== undefined && typeof e.place !== "string")
 	)
 		return false;
 	if (e.kind === "join") return true;
-	if (e.kind === "msg") return typeof e.text === "string" && e.text.length <= 4 * MAX_BYTES && !e.text.includes("\0");
+	if (e.kind === "msg") return typeof e.text === "string" && e.text.length <= MAX_TEXT && !e.text.includes("\0");
 	if (e.kind === "note") return NOTES.includes(e.note);
 	return false;
 }
@@ -108,8 +142,9 @@ export function sanitize(text, max = MAX_SHOWN) {
 // The first `lines` lines of a text, each cut to `width`, for the card above the prompt.
 export function preview(text, lines = 4, width = 160, hint = " — /duet to read all") {
 	const all = sanitize(text).split("\n");
+	const total = String(text ?? "").replace(/\r\n?/g, "\n").split("\n").length; // before sanitize shortens it
 	const shown = all.slice(0, lines).map((l) => (l.length > width ? l.slice(0, width - 1) + "…" : l));
-	if (all.length > lines) shown.push(`… (${all.length - lines} more lines${hint})`);
+	if (total > lines) shown.push(`… (${total - lines} more lines${hint})`);
 	return shown.join("\n");
 }
 
@@ -129,7 +164,8 @@ export function frameForClaude(envs, cwd, tool) {
 	const parts = envs.map((e) => {
 		const who = e.by === "person" ? "the other person, typing to you directly" : "the other person's agent, on their computer";
 		const at = clock(e.ts);
-		return `[duet] from ${e.from} (${who})${at ? ", " + at : ""}:\n\n${sanitize(e.text, 4 * MAX_BYTES)}`;
+		const answers = e.reLine ? ` — a reply to your message “${sanitize(e.reLine, 100)}”` : "";
+		return `[duet] from ${e.from} (${who})${at ? ", " + at : ""}${answers}:\n\n${sanitize(e.text, MAX_TEXT)}`;
 	});
 	return (
 		`${parts.join("\n\n---\n\n")}\n\n` +

@@ -5,7 +5,9 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { envelope, fitName, isForMe, isPlaceholderName, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
+import { envelope, firstLine, fitName, isForMe, isPlaceholderName, isRelayUrl, placeFor, publish, subscribe, topicFor } from "./transport.js";
+
+const RECENT_MS = 30 * 60_000; // a peer counts as "here" if seen this recently
 import type { Cursor, Envelope } from "./transport.js";
 
 type Config = { room?: string; name?: string; server?: string; fromId?: string; cursors: Record<string, Cursor> };
@@ -72,6 +74,11 @@ export default function (pi: ExtensionAPI) {
 	// Peer-triggered turns since the human last typed — stops two polite agents ping-ponging forever.
 	let autoTurns = 0;
 	let warned = false;
+	let lastUserAt = 0; // when the human last typed: a send after a peer's message, with none since, answers it
+	const sent = new Map<string, string>(); // our messages' ids -> first line, to show what a reply answers
+	const lastFrom = new Map<string, { id: string; at: number }>(); // the latest message from each peer
+	let turnFromPeer = false; // the current turn was started by a duet message, not by the human
+	const warnedAbout = new Set<string>();
 	let announced = false; // an env join says hello once per process, not on every /reload
 
 	const notify = (text: string, level: "info" | "warning" | "error" = "info") => ui?.notify(text, level);
@@ -85,9 +92,21 @@ export default function (pi: ExtensionAPI) {
 	function onEnvelope(env: Envelope) {
 		if (!isForMe(env, fromId, name!)) return;
 		peers.set(env.from, new Date());
-		if (env.kind === "join") return notify(`duet: ${env.from} joined`);
-
-		const content = `[duet] from ${env.from} (the other person's agent, on their computer):\n\n${env.text}\n\nOnly your own user sees your text replies: to answer ${env.from}, call duet_send.`;
+		const recent = [...peers].filter(([, at]) => Date.now() - at.getTime() < RECENT_MS).map(([n]) => n);
+		if (recent.length > 1 && !warnedAbout.has("crowd")) {
+			warnedAbout.add("crowd");
+			notify(`duet: a third agent (${recent.join(", ")}) is in this room — duet is built for two; a message without "to" reaches everyone`, "warning");
+		}
+		if (env.kind === "join") {
+			if (env.place && room && env.place === placeFor(process.cwd(), topicFor(room)) && !warnedAbout.has("place:" + env.from)) {
+				warnedAbout.add("place:" + env.from);
+				notify(`duet: ${env.from} is in this room from this same folder — two agents may edit the same files`, "warning");
+			}
+			return notify(`duet: ${env.from} joined`);
+		}
+		lastFrom.set(env.from, { id: env.id, at: Date.now() });
+		const answers = env.re && sent.has(env.re) ? ` — a reply to your message “${sent.get(env.re)}”` : "";
+		const content = `[duet] from ${env.from} (the other person's agent, on their computer)${answers}:\n\n${env.text}\n\nOnly your own user sees your text replies: to answer ${env.from}, call duet_send.`;
 		const message = { customType: "duet", content, display: true };
 		if (autoTurns < MAX_AUTO) {
 			autoTurns++;
@@ -112,6 +131,7 @@ export default function (pi: ExtensionAPI) {
 			since: loadConfig().cursors[key],
 			onEnvelope,
 			onCursor: (cursor) => updateConfig((c) => (c.cursors[key] = cursor)), // resume point after a restart
+			onExpired: (why) => notify(`duet: a long message ${why === "expired" ? "expired on the relay" : "couldn't be downloaded"} before it could be read`, "warning"),
 			onState: (isUp, error) => setStatus(isUp ? "" : `offline: ${error}`),
 		});
 	}
@@ -133,7 +153,7 @@ export default function (pi: ExtensionAPI) {
 		// A join from the environment (the site's "start fresh" command) says hello like /duet does.
 		if (sub && process.env.DUET_ROOM && !announced) {
 			announced = true;
-			publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join" })).catch(() => {});
+			publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place: placeFor(process.cwd(), topicFor(room)) })).catch(() => {});
 		}
 	});
 
@@ -141,7 +161,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => leave());
 
 	pi.on("input", async (event) => {
-		if (event.source !== "extension") [autoTurns, warned] = [0, false];
+		turnFromPeer = event.source === "extension";
+		if (event.source !== "extension") {
+			[autoTurns, warned] = [0, false];
+			lastUserAt = Date.now();
+		}
 	});
 
 	pi.registerCommand("duet", {
@@ -178,7 +202,7 @@ export default function (pi: ExtensionAPI) {
 			updateConfig((c) => Object.assign(c, { room, name, server: parts[2] ? server : undefined }));
 			joinRoom();
 			try {
-				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join" }));
+				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place: placeFor(process.cwd(), topicFor(room)) }));
 				notify(`duet: joined as ${name}`);
 			} catch (err) {
 				notify(`duet: joined, but announcing failed: ${(err as Error).message}`, "warning");
@@ -197,9 +221,10 @@ export default function (pi: ExtensionAPI) {
 			"Your plain-text replies are shown only to your own user. The other agent sees nothing you write unless you send it with duet_send.",
 			"Use duet_send when the user asks you to tell, ask or have the other person's agent do something. duet_send does not wait for an answer — never poll or wait for a reply.",
 			"Do not use duet_send for pure thank-you or acknowledgement messages; when nothing is left to do or say, stop without sending.",
+			"Send one complete reply when you are done, not progress updates or several small messages. One message can be long (up to ~200 KB).",
 		],
 		parameters: Type.Object({
-			text: Type.String({ description: "The message. Max ~3.8KB; split longer content into several calls." }),
+			text: Type.String({ description: "The message: one complete reply, up to ~200 KB." }),
 			to: Type.Optional(Type.String({ description: "Recipient name, if the room has more than one other agent" })),
 		}),
 		async execute(_id, params, signal) {
@@ -208,7 +233,14 @@ export default function (pi: ExtensionAPI) {
 			const owner = !sub && lockOwner();
 			if (owner) throw new Error(`Not sending: ${heldBy(owner)}.`);
 			if (!sub || !room || !name) throw new Error("Not in a duet room. Ask the user to run /duet <room> <name>.");
-			await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "msg", to: params.to, text: params.text }), signal);
+			// Answering a peer's message (none of the human's input since it came): say which one.
+			const peerMsg = params.to ? lastFrom.get(params.to) : [...lastFrom.values()].sort((a, b) => b.at - a.at)[0];
+			// Only in a turn a duet message started: a send the human asked for isn't a reply.
+			const re = turnFromPeer && peerMsg && peerMsg.at > lastUserAt && Date.now() - peerMsg.at < 30 * 60_000 ? peerMsg.id : undefined;
+			const env = envelope({ fromId, from: name, kind: "msg", to: params.to, text: params.text, ...(re ? { re } : {}) });
+			await publish(server, topicFor(room), env, signal);
+			sent.set(env.id, firstLine(params.text));
+			if (sent.size > 200) sent.delete(sent.keys().next().value!);
 			return {
 				content: [{ type: "text", text: "sent — not yet answered; their reply will arrive later as a new message" }],
 				details: {},

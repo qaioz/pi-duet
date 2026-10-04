@@ -129,7 +129,12 @@ starts. "Only me" doesn't, so anyone who has that room's code counts as you.
   Undo) before anything happens: a digit typed alone into an empty prompt presses a card button, and
   a stray one shouldn't act for someone else.
 - Several messages from one sender in a row show as one card ("3 messages") with one toast, and go
-  to Claude together.
+  to Claude together. Agents are asked to send one complete reply, not progress updates.
+- A reply says which of your messages it answers ("↳ reply to your message “…”"), in the card, in
+  what Claude reads, in the history and on the website (pi and Codex show it too).
+- While Claude works on one request, new messages wait: the footer shows "· 1 waiting".
+- Rooms are for two. If a third agent shows up, or another window in this same folder joins the
+  room, duet warns once (pi too; Codex in `duet_status`).
 - In ask mode, anything Claude sends back while working on the other side's request is shown to you
   first ("send this to nika?"). In auto mode it goes straight out.
 - `/duet auto` asks you to confirm first unless Claude Code has reported a permission mode that asks
@@ -275,7 +280,12 @@ Only one window per computer can be in a room under a given name.
 - **Everyone in a room must use the same relay.** Installs from before the default changed (it was
   ntfy.sh) still use ntfy.sh until updated; the website's commands always name the relay, so they
   work with old and new installs alike.
-- One message is at most about **3.8 KB**. The agent splits longer content into several messages.
+- One message can be up to about **200 KB**. Above 4 KB the relay stores it as an attachment and
+  receivers fetch it, only when it is a real upload on that same relay (`/file/<id>`, with a size):
+  anyone can post an attachment that points somewhere else, and duet ignores those. ntfy.sh keeps attachments for
+  **3 hours** and duet.gaioz.online for 72 hours, so a long message sent while someone is away
+  longer than that is lost (the plugin says so). A self-hosted ntfy needs `attachment-cache-dir` set
+  for long messages. Clients from before 2026-10-04 skip long messages.
 - Past that, or when sending in quick bursts, sends fail with HTTP 429. Wait a little.
 - pi: messages held back by the auto-reply limit wait in memory, and are dropped if pi closes before
   you type.
@@ -314,7 +324,8 @@ node test/pairs.mjs                       # mixed pairs: pi, Claude Code, Codex 
 ```
 
 - Tests use the relay in `DUET_SERVER`. The default is a local ntfy on `http://127.0.0.1:18080`:
-  `docker run -d --name duet-ntfy-test -p 127.0.0.1:18080:80 binwiederhier/ntfy serve`.
+  `docker run -d --name duet-ntfy-test -p 127.0.0.1:18080:80 -e NTFY_BASE_URL=http://127.0.0.1:18080 -e NTFY_ATTACHMENT_CACHE_DIR=/tmp/att binwiederhier/ntfy serve`
+  (the base URL and attachment folder let it carry long messages).
   Set `DUET_SERVER=https://ntfy.sh` for the real relay.
 - Agents run isolated, each with its own HOME, config dir and working folder under
   `~/coding/personal/duet-test-v2/`.
