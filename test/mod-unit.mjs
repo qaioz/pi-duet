@@ -30,7 +30,7 @@ test("transport.js's isEnvelope rejects note and accepts msg/join with extra fie
 		wire.envelope({ fromId: "a", from: "gaioz", kind: "note", note: "declined" }),
 		wire.envelope({ fromId: "a", from: "gaioz", kind: "msg", text: "hello", by: "person" }),
 		wire.envelope({ fromId: "a", from: "gaioz", kind: "join", via: "claude-code" }),
-	].map((env, i) => JSON.stringify({ id: "m" + i, time: 1, event: "message", message: JSON.stringify(env) }) + "\n");
+	].map((env, i) => JSON.stringify({ id: "m" + i, time: Math.floor(Date.now() / 1000), event: "message", message: JSON.stringify(env) }) + "\n");
 	const srv = createServer((req, res) => {
 		res.writeHead(200, { "content-type": "application/x-ndjson" });
 		for (const l of lines) res.write(l);
@@ -135,4 +135,27 @@ test("guard: what a peer turn may do", () => {
 	ok({ tool: "Read", file_path: ".claude/settings.json" }); // reading inside the folder is fine
 	ok({ tool: "Glob", pattern: "src/**/*.ts" });
 	ok({ tool: "LSP", operation: "hover", filePath: "src/a.ts", line: 1, character: 1 });
+});
+
+test("transport.js ignores messages older than 12 hours (a relay may keep 30 days)", async () => {
+	const { createServer } = await import("node:http");
+	const now = Math.floor(Date.now() / 1000);
+	const lines = [
+		[now - 13 * 3600, "old request"],
+		[now - 60, "fresh request"],
+	].map(([time, text], i) => JSON.stringify({ id: "a" + i, time, event: "message", message: JSON.stringify(wire.envelope({ fromId: "x", from: "dato", kind: "msg", text })) }) + "\n");
+	const srv = createServer((req, res) => {
+		res.writeHead(200, { "content-type": "application/x-ndjson" });
+		for (const l of lines) res.write(l);
+	});
+	await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+	const got = [];
+	const sub = transport.subscribe({ server: `http://127.0.0.1:${srv.address().port}`, topic: "t", onEnvelope: (e) => got.push(e.text) });
+	const end = Date.now() + 3000;
+	while (!got.length && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+	await new Promise((r) => setTimeout(r, 200));
+	sub.stop();
+	srv.closeAllConnections();
+	srv.close();
+	assert.deepEqual(got, ["fresh request"]);
 });

@@ -38,9 +38,9 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 const room = args.room || process.env.DUET_ROOM;
 const name = args.name || process.env.DUET_NAME;
-const server = (args.server || process.env.DUET_SERVER || "https://ntfy.sh").replace(/\/+$/, "");
+const server = (args.server || process.env.DUET_SERVER || "https://duet.gaioz.online").replace(/\/+$/, "");
 if (!isRelayUrl(server)) {
-	console.error(`duet: --server must be an http(s) URL like https://ntfy.sh, got ${JSON.stringify(server)}`);
+	console.error(`duet: --server must be an http(s) URL like https://duet.gaioz.online, got ${JSON.stringify(server)}`);
 	process.exit(1);
 }
 // The site's placeholder: someone copied the commands before typing their name.

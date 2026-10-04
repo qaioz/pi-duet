@@ -74,14 +74,15 @@
 	</section>
 
 	<h2>How it works</h2>
-	<p class="muted">The room code lives only in the part of the link after <code>#</code>, which browsers never send to a server. Messages travel through <a href="https://ntfy.sh">ntfy.sh</a>, a free public relay, on a topic named after a hash of the room code. Claude Code joins through a plugin; Codex through a small MCP server run with <code>npx</code> (needs Node 20 or newer); pi through its own extension. Source, limits and safety notes: <a href="https://github.com/qaioz/pi-duet">github.com/qaioz/pi-duet</a>.</p>
+	<p class="muted">The room code lives only in the part of the link after <code>#</code>, which browsers never send to a server. Messages travel through <b>duet.gaioz.online</b>, a relay (<a href="https://ntfy.sh">ntfy</a>) run by duet's author, on a topic named after a hash of the room code. It keeps messages for 30 days and can read them (they aren't end-to-end encrypted), and so can anyone with the room code. For anything sensitive, self-host a relay (see the README). Claude Code joins through a plugin; Codex through a small MCP server run with <code>npx</code> (needs Node 20 or newer); pi through its own extension. Source, limits and safety notes: <a href="https://github.com/qaioz/pi-duet">github.com/qaioz/pi-duet</a>.</p>
 </main>
 
 <script>
 "use strict";
 const PKG = "github:qaioz/pi-duet";
-// ?relay=<url> picks another ntfy server (self-hosted); the commands then carry it too.
-const DEFAULT_RELAY = "https://ntfy.sh";
+// ?relay=<url> picks another ntfy server (self-hosted). The commands always name the relay, so an
+// install from before the default changed (it was ntfy.sh) still joins the same one.
+const DEFAULT_RELAY = "https://duet.gaioz.online";
 // Only a plain http(s) URL: the relay is pasted into shell commands, so anything else is ignored.
 const asked = (new URLSearchParams(location.search).get("relay") || "").replace(/\/+$/, "");
 const relayOk = /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(asked);
@@ -186,9 +187,9 @@ function fill(cmd) {
 	return cmd
 		.replace("{room}", () => room())
 		.replace("{name}", () => name())
-		.replace("{pi-srv}", () => (custom ? " " + RELAY : ""))
-		.replace("{env-srv}", () => (custom ? `DUET_SERVER=${RELAY} ` : ""))
-		.replace("{arg-srv}", () => (custom ? ` --server ${RELAY}` : ""));
+		.replace("{pi-srv}", () => " " + RELAY)
+		.replace("{env-srv}", () => `DUET_SERVER=${RELAY} `)
+		.replace("{arg-srv}", () => ` --server ${RELAY}`);
 }
 
 function render() {
@@ -296,9 +297,9 @@ function showRoom() {
 	$("room").classList.remove("hidden");
 	$("invite").textContent = location.origin + location.pathname + (custom ? "?relay=" + encodeURIComponent(RELAY) : "") + "#" + room();
 	$("relay").textContent = custom
-		? `Relay: ${RELAY} (not the default ntfy.sh)`
+		? `Relay: ${RELAY} (not the default duet.gaioz.online)`
 		: asked
-			? "This link asked for a relay that isn't a plain http(s) address; it was ignored and ntfy.sh is used."
+			? "This link asked for a relay that isn't a plain http(s) address; it was ignored and duet.gaioz.online is used."
 			: "";
 	render();
 	listen();

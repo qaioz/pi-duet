@@ -26,6 +26,9 @@ const MAX_BACKOFF_MS = 30_000;
 // ntfy.sh writes its message cache in batches (observed 0.5–4s lag), so a `since=` reconnect can miss
 // a message published just before it. Re-poll the same range once the cache has caught up.
 const REPAIR_POLL_MS = 10_000;
+// A relay may keep messages much longer than ntfy.sh's 12 h (duet.gaioz.online keeps 30 days, for
+// its logs). Never act on anything older than this, so a catch-up can't replay days-old requests.
+export const MAX_AGE_S = 12 * 3600;
 
 // The room name is the shared secret; only its hash ever reaches the server.
 /** @param {string} room */
@@ -137,7 +140,7 @@ export function subscribe(opts) {
 		if (seen.size > 1000) seen.delete(seen.values().next().value);
 		// Hand the message over before reporting the cursor past it, so a caller can hold the cursor
 		// back until the message is really consumed. A failing handler must not end the stream.
-		if (isEnvelope(env)) {
+		if (isEnvelope(env) && !(evt.time < Date.now() / 1000 - MAX_AGE_S)) {
 			try {
 				opts.onEnvelope(env);
 			} catch {}

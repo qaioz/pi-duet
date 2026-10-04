@@ -116,7 +116,8 @@ The plugin is active as soon as it's installed: no restart. From the shell, the 
   before tools (`default`, `acceptEdits`, `plan`, `dontAsk`): so under `bypassPermissions`, and right
   after start before any prompt, it asks.
 - Restart Claude Code in the same folder and a card offers to rejoin, always in ask mode; messages
-  sent meanwhile arrive then (the relay keeps them 12 hours), including cards you hadn't answered.
+  sent meanwhile arrive then (messages older than 12 hours are skipped), including cards you hadn't
+  answered.
   `/clear` keeps you in the room.
 - With another Claude Code plugin user, each side also sees short notes: the message was ignored,
   Claude is waiting for its user to approve a step, the user stopped it, it failed, they left. pi,
@@ -220,8 +221,9 @@ Only one window per computer can be in a room under a given name.
 
 ## How it works
 
-- Messages go through [ntfy.sh](https://ntfy.sh), a free public pub/sub relay. There is no account
-  and nothing to host.
+- Messages go through **duet.gaioz.online**, an [ntfy](https://ntfy.sh) relay (a pub/sub server)
+  run by duet's author. There is no account and nothing to host. Any other ntfy server works too,
+  including the public ntfy.sh (see [Self-hosting the relay](#self-hosting-the-relay)).
 - The topic is a hash of the room code, so the code itself never leaves your computer.
 - On the website, the code lives after the `#` in the link. Browsers never send that part to a
   server, and the page has no backend.
@@ -237,12 +239,19 @@ Only one window per computer can be in a room under a given name.
 
 ### Limits
 
-- **Messages are not end-to-end encrypted.** The relay (ntfy.sh) sees their content, though not the
-  room code. Don't send secrets through duet. Self-host the relay if that matters.
-- **Anyone who knows the room code can join** and have their messages handled by your agent.
-- ntfy.sh keeps messages for **12 hours**. If you are offline longer, you miss them.
-- ntfy.sh allows **250 messages per day per IP address** without an account; joins count too. A long
-  agent-to-agent session can hit that. Self-host the relay (below) if it does.
+- **Messages are not end-to-end encrypted.** The relay sees their content, though not the room code.
+  duet.gaioz.online keeps every message for **30 days** (to debug duet) and its operator can read them.
+  Don't send secrets through duet. Self-host the relay if that matters.
+- **Anyone who knows the room code can join** and have their messages handled by your agent, and
+  can read what the room's relay still keeps: on duet.gaioz.online, the last 30 days. Treat an
+  invite link like a password.
+- Agents act only on messages from the last 12 hours, whatever the relay keeps.
+- duet.gaioz.online keeps messages for 30 days and allows 5,000 messages per day per IP address
+  (bursts of 300, then one per second). On the public ntfy.sh it is 12 hours and 250 per day; a
+  long agent-to-agent session can hit that.
+- **Everyone in a room must use the same relay.** Installs from before the default changed (it was
+  ntfy.sh) still use ntfy.sh until updated; the website's commands always name the relay, so they
+  work with old and new installs alike.
 - One message is at most about **3.8 KB**. The agent splits longer content into several messages.
 - Past that, or when sending in quick bursts, sends fail with HTTP 429. Wait a little.
 - pi: messages held back by the auto-reply limit wait in memory, and are dropped if pi closes before
@@ -261,7 +270,8 @@ Only one window per computer can be in a room under a given name.
 
 ### Self-hosting the relay
 
-Run your own ntfy, for example with one container: `docker run -p 80:80 binwiederhier/ntfy serve`.
+The default relay is duet.gaioz.online. To use another one, such as your own or the public
+`https://ntfy.sh`, run ntfy, for example with one container: `docker run -p 80:80 binwiederhier/ntfy serve`.
 Then point everyone at it:
 
 - **website:** add `?relay=https://ntfy.example.com` to the page URL; the commands then carry it. On
