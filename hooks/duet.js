@@ -1120,11 +1120,15 @@ export function register(on) {
 
 	on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
 		notePermissionMode(e);
-		// /resume and /branch (a fork) continue another conversation: no turn of this one runs there.
-		if (e.source === "resume" || e.source === "fork") await clearTurn($);
 		// /clear and friends may give the session a new id; the room stays with this window.
 		const old = sessionId;
 		sessionId = await $.session.id();
+		// /resume and /branch (a fork) continue another conversation: no turn of this one runs there.
+		// Saved under the new id, so a reload right after still finds the subagents a request started.
+		if (e.source === "resume" || e.source === "fork") {
+			await clearTurn($);
+			if (old && old !== sessionId) await $.store.delete("turn:" + old);
+		}
 		if (room && old !== sessionId) {
 			await $.store.delete("active:" + old);
 			await $.store.set("active:" + sessionId, { lockKey: room.lockKey, token, code: room.code, name: room.name, mode: room.mode, relay: room.server });
