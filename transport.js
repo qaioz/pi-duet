@@ -46,8 +46,28 @@ export function topicFor(room) {
 // Which computer and folder an agent works in, as a hash: two windows in the same folder share it,
 // so a join can warn that two agents may edit the same files. Same recipe in hooks/wire.js.
 /** @param {string} cwd */
-export function placeFor(cwd, host = hostname()) {
-	return createHash("sha256").update(`duet-place:${host}:${cwd}`).digest("hex").slice(0, 16);
+// Salted with the room's topic, so the same folder can't be recognised across rooms.
+/** @param {string} cwd @param {string} topic */
+export function placeFor(cwd, topic, host = hostname()) {
+	return createHash("sha256").update(`duet-place:${topic}:${host}:${cwd}`).digest("hex").slice(0, 16);
+}
+
+// A long message's attachment, accepted only when it is a real upload on this very relay: same
+// origin, a path of exactly <relay path>/file/<id>[.ext], no query, and a size (an X-Attach link that
+// someone posted has none). Anything else is ignored: anyone can post an attachment that points anywhere.
+/** @param {any} a @param {string} server @param {number} max */
+export function attachmentUrl(a, server, max) {
+	if (!a || typeof a.url !== "string" || typeof a.size !== "number" || a.size > max) return null;
+	let u, base;
+	try {
+		u = new URL(a.url);
+		base = new URL(server);
+	} catch {
+		return null;
+	}
+	const path = base.pathname.replace(/\/+$/, "");
+	if (u.origin !== base.origin || u.search || u.hash || u.username || u.password) return null;
+	return new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/file/[A-Za-z0-9]+(\\.[A-Za-z0-9]+)?$`).test(u.pathname) && !/\/\.\.?\//.test(a.url) ? u.href : null;
 }
 
 // The first line of a text, short: how a reply names the message it answers.
@@ -114,6 +134,9 @@ export async function publish(server, topic, env, signal) {
 	if (env.text?.includes("\0")) throw new Error("message contains a NUL character; remove it and send again.");
 	const body = JSON.stringify(env);
 	const bytes = Buffer.byteLength(body);
+	if (typeof env.text === "string" && env.text.length > MAX_TEXT) {
+		throw new Error(`message is ${env.text.length} characters, the limit is ${MAX_TEXT}. Send the most important part, or split it.`);
+	}
 	if (bytes > MAX_LONG_BYTES) {
 		throw new Error(`message is ${Math.round(bytes / 1000)} KB, the limit is ${MAX_LONG_BYTES / 1000} KB. Send the most important part, or split it.`);
 	}
@@ -138,7 +161,7 @@ export async function publish(server, topic, env, signal) {
  *   server: string, topic: string, since?: Cursor,
  *   onEnvelope(env: Envelope): void,
  *   onCursor?(cursor: Cursor): void,
- *   onExpired?(): void,
+ *   onExpired?(why: "expired" | "failed"): void,
  *   onState?(connected: boolean, error?: string): void,
  * }} opts
  * @returns {{ stop(): void }}
@@ -151,11 +174,7 @@ export function subscribe(opts) {
 	// A long message's body is an attachment on the relay. Fetch it only from this relay's own
 	// /file/ path: anyone can post an attachment that points anywhere.
 	/** @param {any} evt */
-	const longUrl = (evt) => {
-		const a = evt.attachment;
-		if (!a || typeof a.url !== "string" || !a.url.startsWith(`${opts.server}/file/`)) return null;
-		return typeof a.size === "number" && a.size > MAX_LONG_BYTES + 4096 ? null : a.url;
-	};
+	const longUrl = (evt) => attachmentUrl(evt.attachment, opts.server, MAX_LONG_BYTES + 4096);
 
 	// `live` lines come from the stream in order; repair-poll lines may be older, so they don't move the cursor.
 	/** @param {string} line @param {boolean} live @param {Cursor} [floor] */
@@ -182,9 +201,10 @@ export function subscribe(opts) {
 				try {
 					const r = await fetch(url, { signal: AbortSignal.any([life.signal, AbortSignal.timeout(20_000)]) });
 					body = r.ok ? await r.text() : null;
-					if (!r.ok) opts.onExpired?.();
+					if (!r.ok) opts.onExpired?.("expired");
 				} catch {
 					body = null;
+					opts.onExpired?.("failed");
 				}
 			}
 			try {

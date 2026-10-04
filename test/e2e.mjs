@@ -211,7 +211,7 @@ async function plumbing() {
 	} catch (err) {
 		oversize = err.message;
 	}
-	check("oversize rejected before sending", /limit is 256 KB/i.test(oversize ?? ""), oversize);
+	check("oversize rejected before sending", /limit is (256 KB|200000)/i.test(oversize ?? ""), oversize);
 
 	// Reconnect + catch-up: stop, publish while "offline", resubscribe from the last id.
 	sub.stop();

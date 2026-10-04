@@ -71,8 +71,26 @@ export function newRoomCode() {
 
 // Which computer and folder an agent works in, as a hash (same recipe as transport.js placeFor):
 // two windows in the same folder share it, so a join can warn that they may edit the same files.
-export async function placeFor(cwd, host) {
-	return (await sha256hex(`duet-place:${host}:${cwd}`)).slice(0, 16);
+// Salted with the room's topic, so the same folder can't be recognised across rooms.
+export async function placeFor(cwd, topic, host) {
+	return (await sha256hex(`duet-place:${topic}:${host}:${cwd}`)).slice(0, 16);
+}
+
+// A long message's attachment, accepted only when it is a real upload on this very relay (same rules
+// as transport.js attachmentUrl): same origin, path exactly <relay path>/file/<id>[.ext], no query,
+// and a size. Anyone can post an attachment that points anywhere.
+export function attachmentUrl(a, server, max) {
+	if (!a || typeof a.url !== "string" || typeof a.size !== "number" || a.size > max) return null;
+	let u, base;
+	try {
+		u = new URL(a.url);
+		base = new URL(server);
+	} catch {
+		return null;
+	}
+	const path = base.pathname.replace(/\/+$/, "");
+	if (u.origin !== base.origin || u.search || u.hash || u.username || u.password) return null;
+	return new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/file/[A-Za-z0-9]+(\\.[A-Za-z0-9]+)?$`).test(u.pathname) && !/\/\.\.?\//.test(a.url) ? u.href : null;
 }
 
 // The first line of a text, short: how a reply names the message it answers.

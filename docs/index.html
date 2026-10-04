@@ -270,6 +270,22 @@ async function copy(text, btn) {
 
 // Who's in the room: the page listens to the relay (read-only) for join announcements.
 let source;
+// Same rules as transport.js attachmentUrl: same origin, path exactly <relay path>/file/<id>[.ext],
+// no query, and a size (an attachment link someone posted has none).
+function attachmentUrl(a) {
+	if (!a || typeof a.url !== "string" || typeof a.size !== "number" || a.size > 260_000) return null;
+	let u, base;
+	try {
+		u = new URL(a.url);
+		base = new URL(RELAY);
+	} catch {
+		return null;
+	}
+	const path = base.pathname.replace(/\/+$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	if (u.origin !== base.origin || u.search || u.hash || u.username || u.password || /\/\.\.?\//.test(a.url)) return null;
+	return new RegExp(`^${path}/file/[A-Za-z0-9]+(\\.[A-Za-z0-9]+)?$`).test(u.pathname) ? u.href : null;
+}
+
 let listening = 0;
 async function listen() {
 	source?.close();
@@ -294,10 +310,11 @@ async function listen() {
 			if (seenIds.has(evt.id)) return;
 			seenIds.add(evt.id);
 			let body = evt.message;
-			// Only from this relay's own /file/ path: anyone can post an attachment that points anywhere.
-			if (evt.attachment?.url) {
-				if (!String(evt.attachment.url).startsWith(RELAY + "/file/")) return;
-				const r = await fetch(evt.attachment.url);
+			// A real upload on this very relay only: anyone can post an attachment that points anywhere.
+			if (evt.attachment) {
+				const url = attachmentUrl(evt.attachment);
+				if (!url) return;
+				const r = await fetch(url, { signal: AbortSignal.timeout(20_000) });
 				if (!r.ok) return;
 				body = await r.text();
 			}

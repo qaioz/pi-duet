@@ -24,7 +24,7 @@
 // validator refuses `$` passed to an imported function. wire.js and guard.js are pure.
 import { checkPeerTool } from "./guard.js";
 import {
-	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
+	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
 	isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, preview, randomId, sanitize, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
@@ -88,7 +88,8 @@ let paused = false;
 
 let history = []; // { at, who, text, note }: the room as the pane shows it, read-only
 const sent = new Map(); // our messages' ids -> first line, to show what a reply answers
-let place = ""; // a hash of this computer and folder (see wire.js placeFor)
+let host = ""; // this computer's name, for the folder hash a join carries (see wire.js placeFor)
+let lineChain = Promise.resolve(); // received lines, one at a time in arrival order (stream and repair poll)
 const warnedAbout = new Set(); // warnings already given: "crowd", "place:<name>"
 
 const viaLabel = (via) => VIA[via] ?? "";
@@ -129,6 +130,7 @@ async function canDraw($) {
 async function publish($, relay, topic, env) {
 	const body = JSON.stringify(env);
 	const bytes = byteLength(body);
+	if (typeof env.text === "string" && env.text.length > MAX_TEXT) throw new Error(`the message is ${env.text.length} characters and the limit is ${MAX_TEXT}: send the most important part, or split it`);
 	if (bytes > MAX_BYTES) throw new Error(`the message is ${Math.round(bytes / 1000)} KB and the limit is ${MAX_BYTES / 1000} KB: send the most important part, or split it`);
 	const res = await Promise.race([
 		$.http.fetch(`${relay}/${topic}`, { method: "POST", body }),
@@ -231,7 +233,7 @@ async function streamOnce($, r, gen) {
 			buf += piece.text;
 			let nl;
 			while ((nl = buf.indexOf("\n")) >= 0) {
-				await handleLine($, r, gen, buf.slice(0, nl), true, floor);
+				await queueLine($, r, gen, buf.slice(0, nl), true, floor);
 				buf = buf.slice(nl + 1);
 			}
 		}
@@ -251,8 +253,15 @@ async function repairPoll($, r, gen, floor) {
 	if (gen !== generation) return;
 	try {
 		const res = await $.http.fetch(`${r.server}/${r.topic}/json?poll=1&since=${encodeURIComponent(floor.id || String(floor.time))}`);
-		for (const line of res.text.split("\n")) await handleLine($, r, gen, line, false, floor);
+		for (const line of res.text.split("\n")) await queueLine($, r, gen, line, false, floor);
 	} catch {}
+}
+
+// One line at a time, in arrival order: a long message's download mustn't let a later line (or a
+// repair-poll line) overtake it.
+function queueLine($, r, gen, line, live, floor) {
+	lineChain = lineChain.then(() => handleLine($, r, gen, line, live, floor)).catch(() => {});
+	return lineChain;
 }
 
 async function handleLine($, r, gen, line, live, floor) {
@@ -281,15 +290,26 @@ async function handleLine($, r, gen, line, live, floor) {
 	const a = evt.attachment;
 	if (fresh && a && typeof a.url === "string") {
 		body = null;
-		if (a.url.startsWith(`${r.server}/file/`) && !(a.size > MAX_BYTES + 4096)) {
+		const url = attachmentUrl(a, r.server, MAX_BYTES + 4096);
+		if (url) {
+			let why = "";
 			try {
-				const res = await $.http.fetch(a.url);
+				// Never wait on a download for long: a stuck one would stop everything after it.
+				const res = await Promise.race([
+					$.http.fetch(url),
+					new Promise((_, reject) => {
+						$.clock.after(20_000, () => reject(new Error("timeout")));
+					}),
+				]);
 				if (res.ok) body = res.text;
-				else {
-					remember({ who: "", text: "a long message expired on the relay before it could be read", note: true });
-					$.ui.toast("duet: a long message expired before it could be read");
-				}
-			} catch {}
+				else why = "expired on the relay";
+			} catch {
+				why = "couldn't be downloaded";
+			}
+			if (why) {
+				remember({ who: "", text: `a long message ${why} before it could be read`, note: true });
+				$.ui.toast(`duet: a long message ${why} before it could be read`);
+			}
 		}
 	}
 	let env = null;
@@ -322,7 +342,7 @@ function onEnvelope($, r, env) {
 		$.ui.toast("duet: " + text);
 	}
 	if (env.kind === "join") {
-		if (env.place && env.place === place && !warnedAbout.has("place:" + env.from)) {
+		if (env.place && env.place === r.place && !warnedAbout.has("place:" + env.from)) {
 			warnedAbout.add("place:" + env.from);
 			const text = `${env.from} is in this room from this same folder (another window): two agents may edit the same files`;
 			$.ui.log(text);
@@ -333,7 +353,7 @@ function onEnvelope($, r, env) {
 			$.ui.toast(`${env.from} joined${via ? " (" + via + ")" : ""}`);
 			remember({ who: "", text: `${env.from} joined${via ? " (" + via + ")" : ""}`, note: true });
 			// Answer once, so a newcomer learns who is here (older clients don't answer joins).
-			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code", place })).catch(() => {});
+			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code", place: r.place })).catch(() => {});
 		}
 		redraw($);
 		return;
@@ -355,7 +375,7 @@ function onEnvelope($, r, env) {
 		return;
 	}
 	// A reply to one of ours: say which one (the card, the history, and what Claude reads).
-	if (env.re && sent.has(env.re)) env.reLine = sent.get(env.re);
+	env.reLine = env.re && sent.has(env.re) ? sent.get(env.re) : undefined; // ours only: a peer can't set it
 	remember({ who: env.from + (env.by === "person" ? "" : "'s agent") + (env.reLine ? ` ↳ reply to “${env.reLine}”` : ""), text: env.text });
 	if (queue.length >= QUEUE_MAX) {
 		queue.shift();
@@ -498,7 +518,8 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	try {
 		// The first network request: if the relay can't be reached, or this session's policy refuses
 		// network requests from mods, duet doesn't join.
-		await publish($, relay, topic, envelope({ fromId, from: name, kind: "join", via: "claude-code", place }));
+		r.place = await placeFor(cwd, topic, host);
+		await publish($, relay, topic, envelope({ fromId, from: name, kind: "join", via: "claude-code", place: r.place }));
 	} catch (err) {
 		const cur = await $.store.get(lockKey);
 		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
@@ -741,6 +762,8 @@ async function sendTool($, e) {
 	if (!room) return { result: "Not sent: this session isn't in a duet room. Your user can join one with /duet." };
 	const text = String(e.text ?? "").trim();
 	if (!text) return { result: "Not sent: the message is empty." };
+	// Too long to send: say so before asking the user about it.
+	if (text.length > MAX_TEXT) return { result: `Not sent: the message is ${text.length} characters and the limit is ${MAX_TEXT}. Send the most important part, or split it.` };
 	const to = typeof e.to === "string" && e.to.trim() ? e.to.trim() : undefined;
 	const fromPeer = fromPeerCall(e);
 	if (fromPeer && (!peerTurn || peerTurn.roomKey !== room.key)) {
@@ -914,13 +937,13 @@ export function register(on) {
 		sessionId = await $.session.id();
 		// This computer and folder, hashed: a join carries it, so two windows in one folder notice.
 		// `hostname` prints what Node's os.hostname() returns (pi and the MCP server use that).
-		let host = "";
+		host = "";
 		try {
 			const h = await $.process.run(["hostname"], { timeoutMs: 3000 });
 			if (h.exitCode === 0) host = h.stdout.trim();
 		} catch {}
 		if (!host) host = (await $.env.get("HOSTNAME")) || "";
-		place = await placeFor(cwd, host);
+
 		defaultName = (await $.store.get("name")) || "";
 		if (!defaultName) {
 			try {

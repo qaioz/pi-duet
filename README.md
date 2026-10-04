@@ -281,7 +281,8 @@ Only one window per computer can be in a room under a given name.
   ntfy.sh) still use ntfy.sh until updated; the website's commands always name the relay, so they
   work with old and new installs alike.
 - One message can be up to about **200 KB**. Above 4 KB the relay stores it as an attachment and
-  receivers fetch it (only from that relay's own `/file/` address). ntfy.sh keeps attachments for
+  receivers fetch it, only when it is a real upload on that same relay (`/file/<id>`, with a size):
+  anyone can post an attachment that points somewhere else, and duet ignores those. ntfy.sh keeps attachments for
   **3 hours** and duet.gaioz.online for 72 hours, so a long message sent while someone is away
   longer than that is lost (the plugin says so). A self-hosted ntfy needs `attachment-cache-dir` set
   for long messages. Clients from before 2026-10-04 skip long messages.

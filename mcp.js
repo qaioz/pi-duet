@@ -162,8 +162,8 @@ let unconfirmed = false; // pushed into Claude Code, no tool call since: the res
 let exchanges = 0; // replies sent on the agent's own since its user last asked for a send
 const sent = new Map(); // our messages' ids -> first line, to show what a reply answers
 const lastFrom = new Map(); // peer name -> { id, at } of its latest message
-const place = placeFor(process.cwd());
-const warnings = new Set(); // a same-folder window, a third agent: shown in duet_status
+const warnings = new Set(); // a same-folder window, a long message lost: shown in duet_status
+const RECENT_MS = 30 * 60_000; // a peer counts as "here" if seen this recently
 let receivedSinceSend = false;
 let codexThread; // learned from Codex's tool-call metadata; lets us push with `codex queue`
 let pushing; // the messages handed to `codex queue`, until it confirms
@@ -209,7 +209,7 @@ function onEnvelope(env) {
 	if (!isForMe(env, fromId, name)) return;
 	peers.set(env.from, new Date());
 	if (env.kind === "join") {
-		if (env.place === place) warnings.add(`${env.from} is in this room from this same folder: two agents may edit the same files`);
+		if (env.place && env.place === placeFor(process.cwd(), topicFor(room))) warnings.add(`${env.from} is in this room from this same folder: two agents may edit the same files`);
 		return;
 	}
 	lastFrom.set(env.from, { id: env.id, at: Date.now() });
@@ -402,9 +402,10 @@ function joinRoom() {
 		since: loadCursor(),
 		onEnvelope,
 		onCursor,
+		onExpired: (why) => warnings.add(`a long message ${why === "expired" ? "expired on the relay" : "couldn't be downloaded"} before it could be read (${new Date().toLocaleTimeString()})`),
 		onState: (up, error) => (status = up ? "connected" : `offline: ${error}`),
 	});
-	publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place })).catch(() => {});
+	publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place: placeFor(process.cwd(), topicFor(room)) })).catch(() => {});
 	return true;
 }
 
@@ -528,7 +529,8 @@ async function callTool(tool, a = {}, ctx) {
 						: channelFlag === true
 							? "; messages are pushed into this session through a Claude Code channel"
 							: "; messages are pushed through a Claude Code channel (duet couldn't check Claude Code's command line: if none appear, start it with --dangerously-load-development-channels server:duet, and say 'check duet' to read them)";
-			const crowd = peers.size > 1 ? [`more than one other agent is in this room (${[...peers.keys()].join(", ")}): duet is built for two`] : [];
+			const recentPeers = [...peers].filter(([, at]) => Date.now() - at.getTime() < RECENT_MS).map(([n]) => n);
+			const crowd = recentPeers.length > 1 ? [`more than one other agent is in this room (${recentPeers.join(", ")}): duet is built for two`] : [];
 			const warn = [...crowd, ...warnings].map((w) => `; warning: ${w}`).join("");
 			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}${note}${how}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}${warn}`;
 		}

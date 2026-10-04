@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { envelope, firstLine, fitName, isForMe, isPlaceholderName, isRelayUrl, placeFor, publish, subscribe, topicFor } from "./transport.js";
+
+const RECENT_MS = 30 * 60_000; // a peer counts as "here" if seen this recently
 import type { Cursor, Envelope } from "./transport.js";
 
 type Config = { room?: string; name?: string; server?: string; fromId?: string; cursors: Record<string, Cursor> };
@@ -75,7 +77,7 @@ export default function (pi: ExtensionAPI) {
 	let lastUserAt = 0; // when the human last typed: a send after a peer's message, with none since, answers it
 	const sent = new Map<string, string>(); // our messages' ids -> first line, to show what a reply answers
 	const lastFrom = new Map<string, { id: string; at: number }>(); // the latest message from each peer
-	const place = placeFor(process.cwd());
+	let turnFromPeer = false; // the current turn was started by a duet message, not by the human
 	const warnedAbout = new Set<string>();
 	let announced = false; // an env join says hello once per process, not on every /reload
 
@@ -90,12 +92,13 @@ export default function (pi: ExtensionAPI) {
 	function onEnvelope(env: Envelope) {
 		if (!isForMe(env, fromId, name!)) return;
 		peers.set(env.from, new Date());
-		if (peers.size > 1 && !warnedAbout.has("crowd")) {
+		const recent = [...peers].filter(([, at]) => Date.now() - at.getTime() < RECENT_MS).map(([n]) => n);
+		if (recent.length > 1 && !warnedAbout.has("crowd")) {
 			warnedAbout.add("crowd");
-			notify(`duet: a third agent (${[...peers.keys()].join(", ")}) is in this room — duet is built for two; a message without "to" reaches everyone`, "warning");
+			notify(`duet: a third agent (${recent.join(", ")}) is in this room — duet is built for two; a message without "to" reaches everyone`, "warning");
 		}
 		if (env.kind === "join") {
-			if (env.place === place && !warnedAbout.has("place:" + env.from)) {
+			if (env.place && room && env.place === placeFor(process.cwd(), topicFor(room)) && !warnedAbout.has("place:" + env.from)) {
 				warnedAbout.add("place:" + env.from);
 				notify(`duet: ${env.from} is in this room from this same folder — two agents may edit the same files`, "warning");
 			}
@@ -128,6 +131,7 @@ export default function (pi: ExtensionAPI) {
 			since: loadConfig().cursors[key],
 			onEnvelope,
 			onCursor: (cursor) => updateConfig((c) => (c.cursors[key] = cursor)), // resume point after a restart
+			onExpired: (why) => notify(`duet: a long message ${why === "expired" ? "expired on the relay" : "couldn't be downloaded"} before it could be read`, "warning"),
 			onState: (isUp, error) => setStatus(isUp ? "" : `offline: ${error}`),
 		});
 	}
@@ -149,7 +153,7 @@ export default function (pi: ExtensionAPI) {
 		// A join from the environment (the site's "start fresh" command) says hello like /duet does.
 		if (sub && process.env.DUET_ROOM && !announced) {
 			announced = true;
-			publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place })).catch(() => {});
+			publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place: placeFor(process.cwd(), topicFor(room)) })).catch(() => {});
 		}
 	});
 
@@ -157,6 +161,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => leave());
 
 	pi.on("input", async (event) => {
+		turnFromPeer = event.source === "extension";
 		if (event.source !== "extension") {
 			[autoTurns, warned] = [0, false];
 			lastUserAt = Date.now();
@@ -197,7 +202,7 @@ export default function (pi: ExtensionAPI) {
 			updateConfig((c) => Object.assign(c, { room, name, server: parts[2] ? server : undefined }));
 			joinRoom();
 			try {
-				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place }));
+				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place: placeFor(process.cwd(), topicFor(room)) }));
 				notify(`duet: joined as ${name}`);
 			} catch (err) {
 				notify(`duet: joined, but announcing failed: ${(err as Error).message}`, "warning");
@@ -230,7 +235,8 @@ export default function (pi: ExtensionAPI) {
 			if (!sub || !room || !name) throw new Error("Not in a duet room. Ask the user to run /duet <room> <name>.");
 			// Answering a peer's message (none of the human's input since it came): say which one.
 			const peerMsg = params.to ? lastFrom.get(params.to) : [...lastFrom.values()].sort((a, b) => b.at - a.at)[0];
-			const re = peerMsg && peerMsg.at > lastUserAt && Date.now() - peerMsg.at < 30 * 60_000 ? peerMsg.id : undefined;
+			// Only in a turn a duet message started: a send the human asked for isn't a reply.
+			const re = turnFromPeer && peerMsg && peerMsg.at > lastUserAt && Date.now() - peerMsg.at < 30 * 60_000 ? peerMsg.id : undefined;
 			const env = envelope({ fromId, from: name, kind: "msg", to: params.to, text: params.text, ...(re ? { re } : {}) });
 			await publish(server, topicFor(room), env, signal);
 			sent.set(env.id, firstLine(params.text));
