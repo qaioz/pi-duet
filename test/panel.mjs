@@ -141,7 +141,8 @@ async function localTests() {
 		await s.init(client, caps);
 		const names = (await s.request("tools/list")).result.tools.map((t) => t.name);
 		const r = (await s.request("resources/list")).result.resources;
-		check(`stdio: ${client} without the MCP Apps capability gets no panel tools`, !names.some((n) => n.startsWith("duet_room") || n === "duet_take" || n === "duet_ignore") && !r.length, names.join(" "));
+		const sneak = await s.call("duet_take", { id: "1" }); // not listed, so not callable either
+		check(`stdio: ${client} without the MCP Apps capability gets no panel tools`, !names.some((n) => n.startsWith("duet_room") || ["duet_take", "duet_ignore", "duet_read"].includes(n)) && !r.length && sneak.isError, `${names.join(" ")}; duet_take: ${sneak.content[0].text}`);
 		s.stop();
 	}
 	// Claude Desktop's chat names itself claude-ai: it gets the panel even if it doesn't say it draws one.
@@ -416,6 +417,23 @@ async function hostedTests() {
 		`3rd panel: ${data(r3).error}; long #1: ${longOk.content[0].text.slice(0, 30)}; long #2: ${longNo.content[0].text.slice(0, 60)}; after 6 s of sends only: ${gone.content[0].text.slice(0, 40)}`,
 	);
 	u.proc.kill();
+
+	// What the relay stores is the envelope as JSON: control characters cost 6 bytes each there, so a
+	// 3000-character text of them is a long message (an attachment). And 3 rooms per address.
+	const v = await hosted({ DUET_LONG_BYTES_PER_DAY: "20000", DUET_ROOMS_PER_IP: "2" });
+	const [q1, q2, q3] = [client(v.url), client(v.url), client(v.url)];
+	const v1 = data(await q1.call("duet_room_join", { room: `t-${randomUUID()}`, name: "v1" }));
+	await q2.call("duet_room_join", { room: `t-${randomUUID()}`, name: "v2" });
+	const v3 = await q3.call("duet_room_join", { room: `t-${randomUUID()}`, name: "v3" });
+	const vh = v1.modelNote.match(/seat "([^"]+)"/)[1];
+	const ctl1 = await q1.model("duet_send", { seat: vh, text: "\u0001".repeat(3000), user_asked: true });
+	const ctl2 = await q1.model("duet_send", { seat: vh, text: "\u0002".repeat(3000), user_asked: true });
+	check(
+		"hosted: long messages are counted as the relay stores them; rooms per address are limited",
+		!ctl1.isError && ctl2.isError && /allowance/.test(ctl2.content[0].text) && v3.isError && /Too many duet rooms/.test(data(v3).error),
+		`3000 control characters: #1 ${ctl1.isError ? "refused" : "sent"}, #2 ${ctl2.content[0].text.slice(0, 50)}; 3rd room: ${data(v3).error}`,
+	);
+	v.proc.kill();
 }
 
 // ---------- the panel in a real browser ----------

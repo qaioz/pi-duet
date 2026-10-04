@@ -878,6 +878,8 @@ const FULL_MAX = 20_000; // a waiting request up to this long is in the panel wh
 const handed = new Map(); // pid -> request, the last few handed over: "Put it back" when the chat app took nothing
 
 async function callTool(tool, a = {}, ctx) {
+	// The panel's tools only for hosts that were shown them (a host that draws MCP Apps).
+	if ((tool === roomTool.name || appTools.some((t) => t.name === tool)) && !drawsPanels(clientCaps, host)) throw new Error(`unknown tool ${tool}`);
 	switch (tool) {
 		case "duet_send": {
 			await needRoom();

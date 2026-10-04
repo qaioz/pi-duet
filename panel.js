@@ -23,7 +23,7 @@ export const drawsPanels = (capabilities, host) => !!capabilities?.extensions?.[
 // the other characters that draw as nothing (variation selectors, the combining grapheme joiner,
 // Hangul fillers, the blank Braille cell): what you see is what was sent.
 export const cleanText = (text) =>
-	String(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u034f\u115f\u1160\u3164\uffa0\u2800\ufe00-\ufe0f\u{e0100}-\u{e01ef}]|\p{Cf}/gu, "");
+	String(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u034f\u115f\u1160\u3164\uffa0\u2800\u17b4\u17b5\u180b-\u180f\ufe00-\ufe0f\u{e0100}-\u{e01ef}]|\p{Cf}/gu, "");
 
 // How a room is named to anyone but its members: the first 4 characters of a long code; nothing of a
 // short one (its first 4 characters could be all of it).
@@ -418,6 +418,7 @@ textarea { width: 100%; min-height: 120px; font: 12px/1.4 var(--mono); backgroun
 		try {
 			text = (await call("duet_take", { id })).text;
 		} catch (e) { showError(e.message); busy = false; card.classList.remove("disabled-all"); return refresh(true); }
+		busy = false; // the chat app may take minutes to answer: the other cards stay usable meanwhile
 		$("handed").classList.remove("hidden");
 		$("fallback").classList.add("hidden");
 		$("handed-note").textContent = "Handing it to your agent…";
@@ -439,7 +440,6 @@ textarea { width: 100%; min-height: 120px; font: 12px/1.4 var(--mono); backgroun
 			$("handed-note").textContent = late ? "Your chat app didn't answer. If the message shows up in the chat after all, don't paste it again." : "";
 			$("fallback").classList.remove("hidden");
 		}
-		busy = false;
 		refresh(true);
 	}
 	async function ignore(id, card) {
