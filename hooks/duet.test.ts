@@ -1000,7 +1000,7 @@ test("review: switching to auto mode during a request stops it once Claude Code 
 	did.feeding = false;
 });
 
-test("review: if Claude Code's permission check fails, the mode it last reported decides (fail closed)", async ($, on) => {
+test("review: if Claude Code's permission check fails during a request, its calls are refused (fail closed)", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
 	await $.classic.SessionStart(startup("default"));
@@ -1010,13 +1010,57 @@ test("review: if Claude Code's permission check fails, the mode it last reported
 	await press($, clock, "take");
 	await duetTurn($, did, clock, "w1");
 	did.checkThrows = true;
-	const asking: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
-	expect(asking.result).toBe("ran");
-	await $.classic.PostToolUse({ hook_event_name: "PostToolUse", tool_name: "Read", tool_input: {}, tool_response: {}, tool_use_id: "t", permission_mode: "bypassPermissions", session_id: "s", transcript_path: "/t", cwd: CWD } as any);
-	const bypass: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
-	expect(String(bypass.deny ?? bypass.result)).toMatch(/permission mode changed/);
+	const failed: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(String(failed.deny ?? failed.result)).toMatch(/couldn't check it/);
+	did.checkThrows = false;
+	const back: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(back.result).toBe("ran");
 	did.feeding = false;
 });
+
+test("review: a request taken while the check failed isn't exempt: a later switch to bypass stops it", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-55 gaioz");
+	did.push(msg("work"));
+	await settle(clock);
+	did.checkThrows = true;
+	await press($, clock, "take");
+	did.checkThrows = false;
+	await duetTurn($, did, clock, "w1");
+	const first: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(first.result).toBe("ran");
+	did.unasked = true;
+	const after: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
+	expect(String(after.deny ?? after.result)).toMatch(/permission mode changed/);
+	did.feeding = false;
+});
+
+test("review: a short prompt of the user's, or a slash command, doesn't explain an unrelated turn", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-56 gaioz");
+	const results: any[] = [];
+	did.userTurn = async (text) => {
+		await $.turn.start({ turnId: "n" + results.length, text: "<task-notification>look at this, ok?</task-notification>" } as any);
+		results.push(await $.tool.call({ tool: "Write", file_path: "/home/g/x", content: "x" }));
+		await $.turn.complete(done("n" + (results.length - 1)));
+	};
+	for (const [i, prompt] of ["ok", "/compact"].entries()) {
+		did.push(msg("work " + i));
+		await settle(clock);
+		await press($, clock, "take");
+		await duetTurn($, did, clock, "w" + i);
+		await $.turn.complete(done("w" + i));
+		// The user's prompt is still on its way when a notification starts a turn.
+		await $.prompt.submit({ text: prompt, origin: { kind: "composer" }, wait: false } as any);
+	}
+	expect(results.length).toBe(2);
+	for (const r of results) expect(String(r.deny ?? r.result)).toMatch(/outside/);
+	did.userTurn = null;
+	did.feeding = false;
+});
+
 
 test("review: a subagent keeps the guard of the request that started it, not a later one's", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });

@@ -104,13 +104,26 @@ const autoActive = () => !!room && room.mode === "auto" && !paused && (!riskyMod
 const livePeers = () => [...peers.entries()].filter(([, p]) => !p.left);
 const fromPeerCall = (e) => (e.agentId ? peerAgents.includes(e.agentId) : !!peerTurn);
 const busyWithPeer = () => !!(pendingPeer || peerTurn || expected.length);
-// The user's own prompt that explains a turn starting now: one whose text the turn carries, or else
-// a slash command submitted in the last few seconds (its turn carries the command's output, not its
-// text). Each explains one turn only.
+// The user's own prompt that explains a turn starting now. A typed prompt's turn carries its text
+// (observed in 2.1.289): the same text, or containing it when it is long enough not to match by
+// chance. A slash command's turn carries the command's output instead ("<local-command-stdout>Goal
+// set: …"): it must name the command or carry its arguments, within 15 s. Each prompt explains one
+// turn only, and none older than 5 minutes.
 function userPromptFor(text) {
 	const now = Date.now();
-	const open = userPrompts.filter((x) => !x.used);
-	const hit = open.find((x) => x.text.trim() && String(text).includes(x.text.trim())) ?? open.find((x) => x.text.trimStart().startsWith("/") && now - x.at < 15_000);
+	const t = String(text ?? "");
+	const open = userPrompts.filter((x) => !x.used && now - x.at < 5 * 60_000);
+	const typed = (x) => {
+		const p = x.text.trim();
+		return !!p && !p.startsWith("/") && (t.trim() === p || (p.length >= 20 && t.includes(p)));
+	};
+	const command = (x) => {
+		const m = x.text.trim().match(/^\/([\w:.-]+)\s*([\s\S]*)$/);
+		if (!m || now - x.at > 15_000) return false;
+		const args = m[2].trim();
+		return t.includes("/" + m[1]) || (args.length >= 8 && t.includes(args));
+	};
+	const hit = open.find(typed) ?? open.find(command);
 	if (hit) hit.used = true;
 	return !!hit;
 }
@@ -433,6 +446,12 @@ async function deliver($) {
 // later, not the user), so a reported auto always counts as unasked. If the check fails, the mode
 // Claude Code last reported decides ("" counts as unasked: fail closed).
 async function runsUnasked($) {
+	return (await checkUnasked($)) ?? !ASKING_MODES.includes(permissionMode);
+}
+
+// The same answer, but undefined when Claude Code's check failed: a request's own guard treats that
+// as "can't tell" and fails closed.
+async function checkUnasked($) {
 	if (permissionMode === "auto") return (lastUnasked = true);
 	try {
 		const r = await $.tool.check({ tool: "Bash", input: { command: "duet-permission-check" } });
@@ -440,7 +459,7 @@ async function runsUnasked($) {
 		return lastUnasked;
 	} catch {
 		lastUnasked = undefined;
-		return !ASKING_MODES.includes(permissionMode);
+		return undefined;
 	}
 }
 
@@ -784,7 +803,7 @@ async function settle($) {
 	countdown = null;
 	if (!c || !room) return redraw($);
 	// Whether commands ask first right now, for the request's guard (asked before anything changes).
-	const unasked = c.action === "take" ? await runsUnasked($) : undefined;
+	const unasked = c.action === "take" ? await checkUnasked($) : undefined;
 	if (!room) return redraw($);
 	const envs = c.envs.filter((e) => queue.includes(e));
 	if (!envs.length) return redraw($);
@@ -973,7 +992,7 @@ async function checkPermissionMode($, e) {
 	// A request the user took while commands already ran unasked was their choice; anything else
 	// (auto, taken while asking, or not known) is checked.
 	if (!g || (!g.auto && g.unaskedAtStart === true)) return null;
-	if (room?.riskOk || (await runsUnasked($)) !== true) return null;
+	if (room?.riskOk || (await checkUnasked($)) === false) return null;
 	const peer = peerNames();
 	if (peerTurn && !peerTurn.modeNoted) {
 		peerTurn.modeNoted = true;
@@ -981,7 +1000,7 @@ async function checkPermissionMode($, e) {
 	}
 	await backToAsk($, peer);
 	const how = g.auto ? "switch the mode back (Shift+Tab), or say yes to it with /duet auto" : "switch the mode back (Shift+Tab) and ask you to go on";
-	return `duet: this session's permission mode changed while you worked on ${peer}'s request, and commands would now run without your user being asked, so this call was not run. Stop working on this request and tell your user; they can ${how}.`;
+	return `duet: this session's permission mode changed while you worked on ${peer}'s request (or duet couldn't check it), and commands may now run without your user being asked, so this call was not run. Stop working on this request and tell your user; they can ${how}.`;
 }
 
 // No turn of this process or conversation is running: forget what a crashed or other one left.
@@ -994,7 +1013,7 @@ async function clearTurn($) {
 	lastGuard = null;
 	runningTurn = "";
 	// Subagents belong to this process, not the conversation: one a request started keeps its fence.
-	await $.store.delete("turn:" + sessionId);
+	await saveTurn($);
 	redraw($);
 }
 
