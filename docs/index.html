@@ -63,9 +63,9 @@
 
 		<h2>3. Your agent</h2>
 		<div class="tabs" role="tablist">
-			<button role="tab" data-agent="pi" aria-selected="true">pi</button>
-			<button role="tab" data-agent="claude" aria-selected="false">Claude Code</button>
+			<button role="tab" data-agent="claude" aria-selected="true">Claude Code</button>
 			<button role="tab" data-agent="codex" aria-selected="false">Codex</button>
+			<button role="tab" data-agent="pi" aria-selected="false">pi</button>
 		</div>
 		<div id="commands"></div>
 
@@ -81,14 +81,13 @@
 	</section>
 
 	<h2>How it works</h2>
-	<p class="muted">The room code lives only in the part of the link after <code>#</code>, which browsers never send to a server. Messages travel through <b>duet.gaioz.online</b>, a relay (<a href="https://ntfy.sh">ntfy</a>) run by duet's author, on a topic named after a hash of the room code. It keeps messages for 30 days and can read them (they aren't end-to-end encrypted), and so can anyone with the room code. For anything sensitive, self-host a relay (see the README). Claude Code joins through a plugin; Codex through a small MCP server run with <code>npx</code> (needs Node 20 or newer); pi through its own extension. Source, limits and safety notes: <a href="https://github.com/qaioz/pi-duet">github.com/qaioz/pi-duet</a>.</p>
+	<p class="muted">The room code lives only in the part of the link after <code>#</code>, which browsers never send to a server. Messages travel through <b>duet.gaioz.online</b>, a relay (<a href="https://ntfy.sh">ntfy</a>) run by duet's author, on a topic named after a hash of the room code. It keeps messages for 30 days and can read them (they aren't end-to-end encrypted), and so can anyone with the room code. For anything sensitive, self-host a relay (see the README). Claude Code and Codex join through plugins (Codex's runs a small MCP server with Node 20 or newer); pi through its own extension. Source, limits and safety notes: <a href="https://github.com/qaioz/pi-duet">github.com/qaioz/pi-duet</a>.</p>
 </main>
 
 <script>
 "use strict";
 const PKG = "github:qaioz/pi-duet";
-// ?relay=<url> picks another ntfy server (self-hosted). The commands always name the relay, so an
-// install from before the default changed (it was ntfy.sh) still joins the same one.
+// ?relay=<url> picks another ntfy server (self-hosted). The commands always name the relay.
 const DEFAULT_RELAY = "https://duet.gaioz.online";
 // Only a plain http(s) URL: the relay is pasted into shell commands, so anything else is ignored.
 const asked = (new URLSearchParams(location.search).get("relay") || "").replace(/\/+$/, "");
@@ -116,11 +115,48 @@ function newRoom() {
 const roomFromHash = () => (/^#([a-z2-7]{20,64})$/.exec(location.hash) || [])[1];
 const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").replace(/^[_-]+/, "").slice(0, 24); // starts with a letter or digit
 
-// Each case: [where it is typed, the command]. {room}, {name} and the relay are filled in.
+// Each case: [where it is typed, the command]. {room}, {name} and the relay are filled in. "fresh"
+// comes first: one line for a terminal in the project folder, with every step joined by && (each
+// install step is safe to run again), ending with the agent started on its first prompt.
 const AGENTS = {
-	pi: {
+	claude: {
+		fresh: {
+			title: "Paste into a terminal, in your project folder",
+			steps: [["terminal", `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude "/duet {room} {name}{pi-srv}"`]],
+			note: "Installs the duet plugin (once), then starts Claude Code already joining the room. Needs Claude Code 2.1.287 or newer, in the terminal or the Desktop app's Code tab. Anthropic can switch mods off remotely and organisations can block them: if `claude plugin test` in an empty folder says hooks modules are turned off, duet can't run in Claude Code until they're back on.",
+		},
 		open: {
-			title: "pi already open (keeps your conversation)",
+			title: "Claude Code already open",
+			steps: [
+				["in Claude Code", "/plugin marketplace add qaioz/pi-duet"],
+				["in Claude Code", "/plugin install duet@pi-duet"],
+				["in Claude Code", "/duet {room} {name}{pi-srv}"],
+			],
+			note: "Paste one line at a time: pasting them together sends them as one message. The plugin is active as soon as it is installed. Next time, /duet with the room code is enough, and a restart in the same folder rejoins by itself (in ask mode).",
+		},
+		receive: "The first time, duet asks who is in the room. With someone else (the default), each message waits as a card above your prompt: 1 lets Claude do it, 2 ignores it, each with 3 seconds to undo. With only you, or someone you trust completely, messages start Claude by themselves (up to 8 in a row without you). While Claude works on the other side's request, the plugin keeps it to your project folder and refuses scheduling, background work and your other tools; your usual permission prompts still apply. /duet shows the room's history; /duet off leaves.",
+	},
+	codex: {
+		fresh: {
+			title: "Paste into a terminal, in your project folder",
+			steps: [["terminal", `codex plugin marketplace add qaioz/pi-duet && codex plugin add duet@pi-duet && codex "join duet room {room} as {name}{codex-srv}"`]],
+			note: "Installs the duet plugin (once), then starts Codex already joining the room. The first time, Codex asks you to review duet's hooks: choose “Trust all”. Codex CLI or desktop app. Already in Codex? Install from /plugins, start a new session, and say: join duet room {room} as {name}. Each folder remembers its room, so a new session there rejoins by itself (in ask mode).",
+		},
+		open: {
+			title: "Codex in your IDE (no plugins there)",
+			steps: [["terminal", `npx -y ${PKG} setup codex --room {room} --name {name}{arg-srv}`]],
+			note: "Adds duet and its hooks to ~/.codex/config.toml (startup and tool timeouts of 120 s; it approves duet's own tools only, your sandbox and approval settings stay as they are), so every Codex window joins this room. Then open Codex and trust the hooks when it asks. Needs Node 20 or newer. Remove it with: npx -y github:qaioz/pi-duet setup codex --off",
+		},
+		receive: "Each request shows a short form in Codex (“nika's agent asks: … Let Codex do it?”) before Codex sees it; Ignore drops it and tells the other side. Say “duet auto” to let requests start by themselves (up to 8 in a row without you). While Codex works, a request waits for the turn to end. After Esc, or under Full Access, requests wait until you type or say “check duet”. While Codex works on a request, duet keeps its patches in your folder and refuses obvious background commands and your other tools; what shell commands do is up to Codex's sandbox and approvals.",
+	},
+	pi: {
+		fresh: {
+			title: "Paste into a terminal, in your project folder",
+			steps: [["terminal", "pi install git:github.com/qaioz/pi-duet && {env-srv}DUET_ROOM={room} DUET_NAME={name} pi"]],
+			note: "Installs pi-duet (once), then starts pi in the room. Needs pi (npm i -g @mariozechner/pi-coding-agent) and a model login. On Windows, start pi and use the in-pi lines below instead.",
+		},
+		open: {
+			title: "pi already open",
 			steps: [
 				["in pi (skip if pi-duet is installed)", "!!pi install git:github.com/qaioz/pi-duet"],
 				["in pi", "/reload"],
@@ -128,62 +164,11 @@ const AGENTS = {
 			],
 			note: "Paste one line at a time: pasting them together sends them as one message.",
 		},
-		fresh: {
-			title: "Starting fresh",
-			steps: [
-				["terminal", "pi install git:github.com/qaioz/pi-duet"],
-				["terminal, in your project folder", "{env-srv}DUET_ROOM={room} DUET_NAME={name} pi"],
-			],
-			note: "Needs pi (npm i -g @mariozechner/pi-coding-agent) and a model login. On Windows, start pi and use the three in-pi lines above instead.",
-		},
 		receive: "Messages from the other agent arrive in pi as new turns by themselves.",
-	},
-	claude: {
-		open: {
-			title: "Claude Code already open (keeps your conversation)",
-			steps: [
-				["in Claude Code", "/plugin marketplace add qaioz/pi-duet"],
-				["in Claude Code", "/plugin install duet@pi-duet"],
-				["in Claude Code", "/duet {room} {name}{pi-srv}"],
-			],
-			note: "Needs Claude Code 2.1.287 or newer. The plugin is active as soon as it is installed: no restart. Install once; after that, /duet with the room code is enough, and a restart in the same folder rejoins by itself (in ask mode).",
-		},
-		fresh: {
-			title: "Starting fresh",
-			steps: [
-				["terminal", "claude plugin marketplace add qaioz/pi-duet"],
-				["terminal", "claude plugin install duet@pi-duet"],
-				["terminal, in your project folder", "claude"],
-				["in Claude Code", "/duet {room} {name}{pi-srv}"],
-			],
-			note: "duet for Claude Code is a plugin with a mod (Claude Code 2.1.287 or newer, terminal or the Desktop app's Code tab) and uses curl to receive. Anthropic can switch mods off remotely and organisations can block them: if `claude plugin test` in an empty folder says hooks modules are turned off, duet can't run in Claude Code until they're back on. While Claude works on the other side's request, the plugin keeps it to your project folder and refuses scheduling, background work and your other tools; your usual permission prompts still apply.",
-		},
-		receive: "The first time, duet asks who is in the room. With someone else (the default), each message waits as a card above your prompt: 1 lets Claude do it, 2 ignores it, each with 3 seconds to undo. With only you, or someone you trust completely, messages start Claude by themselves (up to 8 in a row without you). /duet shows the room's history; /duet off leaves.",
-	},
-	codex: {
-		open: {
-			title: "Codex CLI or desktop app (the plugin)",
-			steps: [
-				["terminal", "codex plugin marketplace add qaioz/pi-duet"],
-				["terminal", "codex plugin add duet@pi-duet"],
-				["terminal, in your project folder", "codex"],
-				["in Codex", "join duet room {room} as {name}{codex-srv}"],
-			],
-			note: "The first time, Codex asks you to review duet's hooks: choose “Trust all”. Already in Codex? Install from /plugins, then start a new session. Each folder remembers its room, so a new session there rejoins by itself (in ask mode).",
-		},
-		fresh: {
-			title: "Codex in your IDE (no plugins there)",
-			steps: [
-				["terminal", `npx -y ${PKG} setup codex --room {room} --name {name}{arg-srv}`],
-				["terminal, in your project folder", "codex"],
-			],
-			note: "setup adds duet and its hooks to ~/.codex/config.toml (startup and tool timeouts of 120 s; it approves duet's own tools only, your sandbox and approval settings stay as they are), so every Codex window joins this room. Trust the hooks when Codex asks. Remove it with: npx -y github:qaioz/pi-duet setup codex --off",
-		},
-		receive: "Each request shows a short form in Codex (“nika's agent asks: … Let Codex do it?”) before Codex sees it; Ignore drops it and tells the other side. Say “duet auto” to let requests start by themselves (up to 8 in a row without you). While Codex works, a request waits for the turn to end. After Esc, or under Full Access, requests wait until you type or say “check duet”. While Codex works on a request, duet keeps its patches in your folder and refuses obvious background commands and your other tools; what shell commands do is up to Codex's sandbox and approvals.",
 	},
 };
 
-let agent = "pi";
+let agent = "claude";
 const room = () => roomFromHash();
 const typedName = () => cleanName($("name").value);
 const name = () => typedName() || "YOUR_NAME";
@@ -210,7 +195,7 @@ function render() {
 		hint.textContent = "Type your name above first: every command below uses it.";
 		box.append(hint);
 	}
-	for (const key of ["open", "fresh"]) {
+	for (const key of ["fresh", "open"]) {
 		const c = a[key];
 		const section = document.createElement("div");
 		section.className = "case";
@@ -223,7 +208,7 @@ function render() {
 			row.className = "cmd";
 			const n = document.createElement("span");
 			n.className = "n";
-			n.textContent = i + 1;
+			n.textContent = c.steps.length > 1 ? i + 1 : "";
 			const wrap = document.createElement("div");
 			wrap.style.flex = "1";
 			const w = document.createElement("span");
@@ -242,7 +227,7 @@ function render() {
 		});
 		const note = document.createElement("p");
 		note.className = "muted";
-		note.textContent = c.note;
+		note.textContent = fill(c.note);
 		section.append(note);
 		box.append(section);
 	}
