@@ -3,7 +3,8 @@
 // MCP server (claude.ai on the web and mobile, Cowork, ChatGPT). MCP over Streamable HTTP, answered
 // as plain JSON (no server-to-client stream: a panel polls). No dependencies, like mcp.js.
 //
-//   node hosted.js            PORT (8092), HOST (127.0.0.1), DUET_SERVER (relay, https://duet.gaioz.online)
+//   node hosted.js            PORT (8092), HOST (127.0.0.1), DUET_SERVER (relay, https://duet.gaioz.online),
+//                             PUBLIC_URL, DUET_ORIGINS / DUET_SHARED_RANGES (comma-separated, see below)
 //
 // Each open panel has a seat: its own room, name, inbox and history, found by a random token the
 // panel makes for itself (hosts don't reliably keep one MCP session per conversation). What the server
@@ -13,11 +14,17 @@
 //   - nothing on disk, and no log line with a room, a token, a name or a message.
 // The relay sees every message in plain text (as for every duet client: F12); this server sees the
 // messages of the rooms its panels are in, while they are open.
+//
+// It is a public endpoint without accounts, so everything is bounded: requests and joins per address,
+// open panels per address, rooms (the relay allows this box 60 subscriptions), memory per panel and in
+// all, the size of a request and how many are in flight, messages per panel, and long messages per day
+// (they become attachments on the relay, whose quota this box shares across all its users).
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
+import { BlockList, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
-import { appTools, handOver, PANEL_URI, panelResult, preview, resourceContents, resourceEntry, roomTool } from "./panel.js";
-import { envelope, firstLine, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_TEXT, publish, subscribe, topicFor } from "./transport.js";
+import { appTools, cleanText, handOver, PANEL_URI, panelError, panelResult, preview, resourceContents, resourceEntry, roomTool, shortRoom } from "./panel.js";
+import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, subscribe, topicFor } from "./transport.js";
 
 export const VERSION = "0.7.0"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
@@ -25,26 +32,81 @@ const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
 const RELAY = (process.env.DUET_SERVER || "https://duet.gaioz.online").replace(/\/+$/, "");
 if (!isRelayUrl(RELAY)) throw new Error(`DUET_SERVER must be an http(s) URL, got ${JSON.stringify(RELAY)}`);
-const num = (k, d) => Number(process.env[k]) || d;
-// Limits. Tool calls from claude.ai and ChatGPT come from their own servers, so one IP can carry
-// many users: the per-IP limits are wide, and the seat and room caps bound the rest.
+const num = (k, d) => (process.env[k] === undefined ? d : Number(process.env[k]));
+const list = (k) => (process.env[k] || "").split(",").map((x) => x.trim()).filter(Boolean);
+
 const LIMIT = {
-	seats: num("DUET_MAX_SEATS", 300), // open panels in rooms
-	rooms: num("DUET_MAX_ROOMS", 50), // distinct rooms: one relay subscription each (the relay allows 60 per IP)
+	seats: num("DUET_MAX_SEATS", 300), // open panels in rooms, in all
+	rooms: num("DUET_MAX_ROOMS", 50), // distinct rooms: one relay subscription each (the relay allows 60 per address)
 	seatIdleMs: num("DUET_SEAT_IDLE_MS", 30 * 60_000), // a panel that stops polling leaves after this
-	ipPerMin: num("DUET_IP_PER_MIN", 1200), // requests per IP per minute
-	joinsPerIp: num("DUET_JOINS_PER_IP", 30), // joins per IP per 10 minutes
 	sendsPerSeat: num("DUET_SENDS_PER_SEAT", 30), // messages a seat sends per 10 minutes
+	seatSendBytes: num("DUET_SEAT_SEND_BYTES", 2_000_000), // ... and their size, per 10 minutes
+	longPerDay: num("DUET_LONG_BYTES_PER_DAY", 60_000_000), // long messages (relay attachments), all seats
+	seatChars: num("DUET_SEAT_CHARS", 600_000), // waiting text a seat keeps
+	allChars: num("DUET_ALL_CHARS", 30_000_000), // ... all seats together (~60 MB at most)
 	bodyBytes: 1_100_000, // one request: a 200 000-character message fits
+	inflightBytes: num("DUET_INFLIGHT_BYTES", 48_000_000), // request bodies being read, in all
+	batch: 10, // JSON-RPC messages in one request (batches left MCP in 2025-06-18; old clients may send them)
+	// Per address. Chat apps call from their own servers, so their published ranges carry many users each.
+	normal: { perMin: num("DUET_IP_PER_MIN", 600), joins: num("DUET_JOINS_PER_IP", 20), seats: num("DUET_SEATS_PER_IP", 10), inflight: 8 },
+	shared: { perMin: 30_000, joins: 2000, seats: Infinity, inflight: 400 },
 };
+// claude.ai's outbound ranges (published by Anthropic: tool calls to connectors come from these).
+// Others (OpenAI's) can be added with DUET_SHARED_RANGES=cidr,cidr.
+const shared = new BlockList();
+for (const cidr of ["160.79.104.0/21", "2607:6bc0::/48", ...list("DUET_SHARED_RANGES")]) {
+	const [addr, bits] = cidr.split("/");
+	shared.addSubnet(addr, Number(bits), isIPv6(addr) ? "ipv6" : "ipv4");
+}
+// Browsers may call this server only from the chat apps' own pages and local development; a server
+// (how claude.ai and ChatGPT call it) sends no Origin. Stops any web page from using its visitors'
+// browsers against it, and DNS rebinding.
+const ORIGINS = [
+	/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/,
+	/^https:\/\/([a-z0-9-]+\.)*(claude\.ai|claude\.com|claudemcpcontent\.com|chatgpt\.com|openai\.com|oaiusercontent\.com)$/,
+];
+const originOk = (o) => !o || ORIGINS.some((r) => r.test(o)) || list("DUET_ORIGINS").includes(o);
+
 const MAX_AUTO = 8; // replies without a click before the agent must check with its user (as in mcp.js)
 const INBOX_MAX = 50;
+const PEERS_MAX = 20;
+const FULL_MAX = 20_000; // a waiting request up to this long goes to the panel whole; longer ones on "Show all"
 const RECENT_MS = 30 * 60_000;
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex" };
 const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(r);
 const isToken = (t) => typeof t === "string" && /^[A-Za-z0-9_-]{20,100}$/.test(t);
 const sha = (s) => createHash("sha256").update(s).digest("hex");
+
+// ---------- addresses ----------
+
+// One client address as a key: IPv4 whole, IPv6 by its /64 (one host usually has a whole /64).
+function addressKey(ip) {
+	const v4 = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+	if (v4 || !isIPv6(ip)) return v4 ? v4[1] : ip;
+	const [head, tail = ""] = ip.split("::");
+	const h = head ? head.split(":") : [];
+	const t = tail ? tail.split(":") : [];
+	const full = [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
+	return full.slice(0, 4).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":") + "::/64";
+}
+function classOf(ip) {
+	const a = ip.replace(/^::ffff:(?=\d+\.)/i, "");
+	try {
+		return shared.check(a, isIPv6(a) ? "ipv6" : "ipv4") ? LIMIT.shared : LIMIT.normal;
+	} catch {
+		return LIMIT.normal; // not an address at all
+	}
+}
+
+const buckets = new Map(); // key -> { n, reset }
+function allow(key, max, windowMs, n = 1) {
+	const now = Date.now();
+	let b = buckets.get(key);
+	if (!b || now >= b.reset) buckets.set(key, (b = { n: 0, reset: now + windowMs }));
+	b.n += n;
+	return b.n <= max;
+}
 
 // ---------- rooms: one relay subscription per topic, shared by the seats in it ----------
 
@@ -57,7 +119,10 @@ function openRoom(topic) {
 		server: RELAY,
 		topic,
 		onEnvelope: (env) => r.seats.forEach((s) => s.onEnvelope(env)),
-		onState: (up, error) => ([r.up, r.error] = [up, up ? "" : `offline: ${error}`]),
+		onState: (up, error) => {
+			[r.up, r.error] = [up, up ? "" : `offline: ${error}`];
+			r.seats.forEach((s) => s.rev++);
+		},
 	});
 	rooms.set(topic, r);
 	return r;
@@ -66,6 +131,7 @@ function closeSeat(seat, why = "left") {
 	const r = rooms.get(seat.topic);
 	seats.delete(seat.key);
 	handles.delete(seat.handle);
+	allChars -= seat.chars;
 	if (!r) return;
 	publish(RELAY, seat.topic, envelope({ fromId: seat.fromId, from: seat.name, kind: "note", note: why })).catch(() => {});
 	r.seats.delete(seat);
@@ -79,44 +145,68 @@ function closeSeat(seat, why = "left") {
 
 const seats = new Map(); // sha256(token) -> Seat
 const handles = new Map(); // seat handle (for the agent's duet_send) -> Seat
+let allChars = 0; // waiting text held, all seats
+let longBytes = { n: 0, reset: Date.now() + 86_400_000 }; // long messages sent today, all seats
 
 class Seat {
-	constructor(key, topic, name) {
-		Object.assign(this, { key, topic, name });
+	constructor(key, topic, name, room, address) {
+		Object.assign(this, { key, topic, name, address });
+		this.label = shortRoom(room); // the only part of the code kept, and only for a long one
+		this.id = randomBytes(6).toString("hex"); // in the panel's rev: a new seat is never "unchanged"
 		this.fromId = randomBytes(16).toString("hex");
 		this.handle = randomBytes(9).toString("base64url"); // what the agent passes to duet_send
-		this.inbox = [];
-		this.history = [];
+		this.inbox = []; // { pid, id, from, ts, re, text (clean), size }
+		this.handed = new Map(); // pid -> request, the last few handed over ("Put it back")
+		this.history = []; // previews only
 		this.peers = new Map();
 		this.peerVia = new Map();
 		this.lastFrom = new Map();
-		this.sent = new Map();
-		this.sends = [];
+		this.sent = new Set(); // our messages' ids, to know a reply when one comes
+		this.sends = []; // { at, bytes }
 		this.exchanges = 0;
+		this.chars = 0;
 		this.seq = 0;
+		this.rev = 0;
 		this.seen = Date.now();
-		this.dropped = 0;
+		this.warnings = new Set();
 	}
 	remember(entry) {
-		this.history.push({ at: new Date().toISOString(), ...entry });
+		this.history.push({ at: new Date().toISOString(), ...entry, text: preview(entry.text, 1200) });
 		if (this.history.length > 60) this.history.shift();
+		this.rev++;
+	}
+	hold(e) {
+		this.inbox.push(e);
+		this.chars += e.text.length;
+		allChars += e.text.length;
+		while (this.inbox.length > INBOX_MAX || this.chars > LIMIT.seatChars) this.drop(this.inbox[0], "older requests were dropped: too many were waiting");
+	}
+	drop(e, why) {
+		this.inbox.splice(this.inbox.indexOf(e), 1);
+		this.chars -= e.text.length;
+		allChars -= e.text.length;
+		if (why) this.warnings.add(why);
 	}
 	onEnvelope(env) {
 		if (!isForMe(env, this.fromId, this.name)) return;
+		if (!this.peers.has(env.from) && this.peers.size >= PEERS_MAX) this.peers.delete(this.peers.keys().next().value);
 		this.peers.set(env.from, Date.now());
 		if (VIA[env.via]) this.peerVia.set(env.from, env.via);
 		if (env.kind === "join") return this.remember({ who: env.from, text: "joined", note: true });
 		this.remember({ who: env.from, text: env.text });
 		this.lastFrom.set(env.from, { id: env.id, at: Date.now() });
-		this.inbox.push({ ...env, pid: String(++this.seq) });
-		if (this.inbox.length > INBOX_MAX) {
-			this.inbox.shift();
-			this.dropped++;
-		}
+		if (this.lastFrom.size > PEERS_MAX) this.lastFrom.delete(this.lastFrom.keys().next().value);
+		const text = cleanText(env.text);
+		if (allChars + text.length > LIMIT.allChars) return this.warnings.add("a request was dropped: the hosted server is full right now (Claude Code, Codex or pi have no such limit)");
+		this.hold({ pid: String(++this.seq), id: env.id, from: env.from, ts: env.ts, re: env.re, text, size: text.length });
+	}
+	revNow() {
+		const here = [...this.peers.values()].filter((at) => Date.now() - at < RECENT_MS).length;
+		return `${this.id}.${this.rev}.${rooms.get(this.topic)?.up ? 1 : 0}.${here}`;
 	}
 	state() {
 		const r = rooms.get(this.topic);
-		const s = {
+		return {
 			hosted: true,
 			inRoom: true,
 			connected: !!r?.up,
@@ -124,36 +214,25 @@ class Seat {
 			room: this.label,
 			name: this.name,
 			peers: [...this.peers].map(([p, at]) => ({ name: p, via: VIA[this.peerVia.get(p)] ?? "", here: Date.now() - at < RECENT_MS })),
-			waiting: this.inbox.map((e) => ({ id: e.pid, from: e.from, at: e.ts, text: preview(e.text), size: e.text.length })),
-			history: this.history.slice(-40).map((h) => ({ who: h.who, mine: !!h.mine, text: preview(h.text, 1200), at: h.at, note: !!h.note })),
-			warnings: this.dropped ? [`${this.dropped} older request(s) dropped: more than ${INBOX_MAX} were waiting`] : [],
+			waiting: this.inbox.map((e) => ({ id: e.pid, from: e.from, at: e.ts, text: e.size <= FULL_MAX ? e.text : preview(e.text), full: e.size <= FULL_MAX, size: e.size })),
+			history: this.history.slice(-40).map((h) => ({ who: h.who, mine: !!h.mine, text: h.text, at: h.at, note: !!h.note })),
+			warnings: [...this.warnings],
 			modelNote:
 				`duet: your user is in a duet room as ${this.name} (the duet panel in this chat shows it). Requests from the other person's agent reach you only when your user hands one over from the panel. ` +
 				`When your user asks you to tell or ask the other agent something, call duet_send with seat "${this.handle}".`,
+			rev: this.revNow(),
 		};
-		const last = this.history.at(-1);
-		s.rev = sha(JSON.stringify([s.status, s.peers, s.waiting.map((w) => w.id), this.history.length, last?.at, last?.text?.length, s.warnings])).slice(0, 16);
-		return s;
 	}
 }
 const notInRoom = { hosted: true, inRoom: false, connected: false, status: "", room: "", name: "", peers: [], waiting: [], history: [], warnings: [], modelNote: "", rev: "out" };
 
-// ---------- limits ----------
-
-const buckets = new Map(); // key -> { n, reset }
-function allow(key, max, windowMs) {
-	const now = Date.now();
-	let b = buckets.get(key);
-	if (!b || now >= b.reset) buckets.set(key, (b = { n: 0, reset: now + windowMs }));
-	return ++b.n <= max;
-}
-
-// A panel that stopped polling (closed chat, scrolled away for long) gives its seat back.
+// A panel that stopped polling (closed chat, scrolled away for long) gives its seat back. Only the
+// panel keeps a seat alive: the agent's duet_send doesn't.
 setInterval(() => {
 	const now = Date.now();
 	for (const s of [...seats.values()]) if (now - s.seen > LIMIT.seatIdleMs) closeSeat(s, "left");
 	for (const [k, b] of buckets) if (now >= b.reset) buckets.delete(k);
-}, 60_000).unref();
+}, Math.min(60_000, LIMIT.seatIdleMs)).unref();
 
 // ---------- tools ----------
 
@@ -177,67 +256,86 @@ const sendTool = {
 	annotations: { openWorldHint: true },
 };
 
-const fail = (error) => ({ ...panelResult({ error }), isError: true });
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError } : {}) });
+
+async function send(a) {
+	const seat = handles.get(String(a.seat ?? ""));
+	if (!seat) return text("No duet room with that seat code: it may have closed (a panel nobody looked at for 30 minutes leaves its room). Ask your user to open the duet panel and join again.", true);
+	if (typeof a.text !== "string" || !a.text) return text("text is required", true);
+	if (a.text.length > MAX_TEXT) return text(`The message is ${a.text.length} characters; the limit is ${MAX_TEXT}.`, true);
+	const userAsked = a.user_asked === true;
+	if (!userAsked && seat.exchanges >= MAX_AUTO) {
+		return text(`Not sent: auto-reply limit. ${MAX_AUTO} replies have gone to the other agent since your user last handed one over. Ask your user whether to continue; only if they say so, send again with user_asked: true.`, true);
+	}
+	const now = Date.now();
+	const bytes = Buffer.byteLength(a.text);
+	seat.sends = seat.sends.filter((s) => now - s.at < 10 * 60_000);
+	if (seat.sends.length >= LIMIT.sendsPerSeat || seat.sends.reduce((n, s) => n + s.bytes, 0) + bytes > LIMIT.seatSendBytes) {
+		return text("Not sent: too many messages from this room in 10 minutes. Wait a little.", true);
+	}
+	const long = bytes > MAX_BYTES ? bytes : 0; // goes out as an attachment on the relay
+	if (now >= longBytes.reset) longBytes = { n: 0, reset: now + 86_400_000 };
+	if (long && longBytes.n + long > LIMIT.longPerDay) return text("Not sent: the hosted server's allowance for long messages is used up for today. Send it shorter (under ~3.8 KB), in parts.", true);
+	// Counted before the await, so parallel calls can't slip past the limits; given back if it fails.
+	const before = seat.exchanges;
+	const slot = { at: now, bytes };
+	seat.sends.push(slot);
+	seat.exchanges = userAsked ? 0 : before + 1;
+	longBytes.n += long;
+	const peer = a.to ? seat.lastFrom.get(String(a.to)) : [...seat.lastFrom.values()].sort((x, y) => y.at - x.at)[0];
+	const re = peer && now - peer.at < 30 * 60_000 ? peer.id : undefined;
+	const env = envelope({ fromId: seat.fromId, from: seat.name, kind: "msg", ...(a.to ? { to: fitName(String(a.to)) } : {}), text: a.text, ...(re ? { re } : {}) });
+	try {
+		await publish(RELAY, seat.topic, env);
+	} catch (err) {
+		seat.sends.splice(seat.sends.indexOf(slot), 1);
+		if (seat.exchanges === (userAsked ? 0 : before + 1)) seat.exchanges = before;
+		longBytes.n -= long;
+		return text(String(err.message), true);
+	}
+	seat.sent.add(env.id);
+	if (seat.sent.size > 100) seat.sent.delete(seat.sent.values().next().value);
+	seat.remember({ who: "you", mine: true, text: a.text });
+	return text("sent — the other agent has not answered yet; your user will see its reply in the duet panel");
+}
 
 async function callTool(name, a, ip) {
 	a = a && typeof a === "object" ? a : {};
 	if (name === "duet_room") {
-		return text("The duet panel is open in the chat. Your user joins a room there: they type the room code into the panel, not into this chat.");
+		return text(
+			"The duet panel is open in the chat. Your user joins a room there: they type the room code into the panel, not into this chat. " +
+				"(If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)",
+		);
 	}
-	if (name === "duet_send") {
-		const seat = handles.get(String(a.seat ?? ""));
-		if (!seat) return text("No duet room with that seat code: it may have closed (a panel nobody looked at for 30 minutes leaves its room). Ask your user to open the duet panel and join again.", true);
-		seat.seen = Date.now();
-		if (typeof a.text !== "string" || !a.text) return text("text is required", true);
-		if (a.text.length > MAX_TEXT) return text(`The message is ${a.text.length} characters; the limit is ${MAX_TEXT}.`, true);
-		const userAsked = a.user_asked === true;
-		if (!userAsked && seat.exchanges >= MAX_AUTO) {
-			return text(`Not sent: auto-reply limit. ${MAX_AUTO} replies have gone to the other agent since your user last handed one over. Ask your user whether to continue; only if they say so, send again with user_asked: true.`, true);
-		}
-		const now = Date.now();
-		seat.sends = seat.sends.filter((t) => now - t < 10 * 60_000);
-		if (seat.sends.length >= LIMIT.sendsPerSeat) return text("Not sent: too many messages from this room in 10 minutes. Wait a little.", true);
-		const peer = a.to ? seat.lastFrom.get(String(a.to)) : [...seat.lastFrom.values()].sort((x, y) => y.at - x.at)[0];
-		const re = peer && now - peer.at < 30 * 60_000 ? peer.id : undefined;
-		const env = envelope({ fromId: seat.fromId, from: seat.name, kind: "msg", ...(a.to ? { to: String(a.to) } : {}), text: a.text, ...(re ? { re } : {}) });
-		try {
-			await publish(RELAY, seat.topic, env);
-		} catch (err) {
-			return text(String(err.message), true);
-		}
-		seat.sends.push(now);
-		seat.exchanges = userAsked ? 0 : seat.exchanges + 1;
-		seat.sent.set(env.id, firstLine(a.text));
-		if (seat.sent.size > 100) seat.sent.delete(seat.sent.keys().next().value);
-		seat.remember({ who: "you", mine: true, text: a.text });
-		return text("sent — the other agent has not answered yet; your user will see its reply in the duet panel");
-	}
+	if (name === "duet_send") return send(a);
 	// The panel's own tools: each needs the panel's token.
 	if (!appTools.some((t) => t.name === name)) return text(`unknown tool ${name}`, true);
-	if (!isToken(a.token)) return fail("This panel has no id: reload it.");
+	if (!isToken(a.token)) return panelError("This panel has no id: reload it.");
 	const key = sha(a.token);
 	let seat = seats.get(key);
 	if (seat) seat.seen = Date.now();
 	switch (name) {
 		case "duet_room_state": {
 			if (!seat) return panelResult(notInRoom);
-			const s = seat.state();
-			return panelResult(a.rev && a.rev === s.rev ? { unchanged: true, rev: s.rev } : s);
+			const rev = seat.revNow();
+			return panelResult(a.rev && a.rev === rev ? { unchanged: true, rev } : seat.state());
 		}
 		case "duet_room_join": {
 			const room = String(a.room ?? "").trim();
 			const name = String(a.name ?? "").trim();
-			if (!isRoomCode(room)) return fail("A room code is 3-64 letters, digits, . _ -");
-			if (!isName(name) || isPlaceholderName(name)) return fail("Your name: letters, digits, . _ - (up to 40), starting with a letter or digit.");
-			if (!allow(`join ${ip}`, LIMIT.joinsPerIp, 10 * 60_000)) return fail("Too many joins from here: wait a few minutes.");
-			const topic = topicFor(room); // the code itself goes no further than this line
+			if (!isRoomCode(room)) return panelError("A room code is 3-64 letters, digits, . _ -");
+			if (!isName(name) || isPlaceholderName(name)) return panelError("Your name: letters, digits, . _ - (up to 40), starting with a letter or digit.");
+			const cls = classOf(ip);
+			const address = addressKey(ip);
+			if (!allow(`join ${address}`, cls.joins, 10 * 60_000)) return panelError("Too many joins from here: wait a few minutes.");
+			const topic = topicFor(room); // the code itself goes no further than this line and the label
 			if (seat && seat.topic === topic && seat.name === name) return panelResult(seat.state());
 			if (seat) closeSeat(seat);
-			if (seats.size >= LIMIT.seats) return fail("The hosted duet is full right now: try again later, or use duet from Claude Code, Codex or pi.");
-			if (!rooms.has(topic) && rooms.size >= LIMIT.rooms) return fail("The hosted duet has too many rooms open right now: try again later, or use duet from Claude Code, Codex or pi.");
-			seat = new Seat(key, topic, name);
-			seat.label = `${room.slice(0, 4)}…`;
+			const full = "The hosted duet is full right now: try again later, or use duet from Claude Desktop, Claude Code, Codex or pi.";
+			if (seats.size >= LIMIT.seats) return panelError(full);
+			if (!rooms.has(topic) && rooms.size >= LIMIT.rooms) return panelError(full.replace("is full", "has too many rooms open"));
+			if ([...seats.values()].filter((s) => s.address === address).length >= cls.seats) return panelError("Too many duet panels open from here: leave one first.");
+			seat = new Seat(key, topic, name, room, address);
 			seats.set(key, seat);
 			handles.set(seat.handle, seat);
 			openRoom(topic).seats.add(seat);
@@ -248,20 +346,35 @@ async function callTool(name, a, ip) {
 			if (seat) closeSeat(seat);
 			return panelResult(notInRoom);
 		}
+		case "duet_read": {
+			const e = seat?.inbox.find((m) => m.pid === String(a.id));
+			return e ? panelResult({ id: e.pid, text: e.text }) : panelError("That request isn't waiting any more.");
+		}
 		case "duet_take":
 		case "duet_ignore": {
-			if (!seat) return fail("Not in a room.");
-			const i = seat.inbox.findIndex((e) => e.pid === String(a.id));
-			if (i < 0) return fail("That request isn't waiting any more: it was handed over or ignored already.");
-			const [e] = seat.inbox.splice(i, 1);
+			if (!seat) return panelError("Not in a room.");
+			if (name === "duet_take" && a.undo === true) {
+				const back = seat.handed.get(String(a.id));
+				if (!back) return panelError("Nothing to put back.");
+				seat.handed.delete(back.pid);
+				seat.hold(back);
+				seat.inbox.unshift(seat.inbox.pop()); // back in front
+				seat.remember({ who: "", text: `${back.from}'s request is waiting again`, note: true });
+				return panelResult(seat.state());
+			}
+			const e = seat.inbox.find((m) => m.pid === String(a.id));
+			if (!e) return panelError("That request isn't waiting any more: it was handed over or ignored already.");
+			seat.drop(e);
 			if (name === "duet_ignore") {
 				publish(RELAY, seat.topic, envelope({ fromId: seat.fromId, from: seat.name, kind: "note", note: "declined", to: e.from })).catch(() => {});
 				seat.remember({ who: "", text: `you didn't take ${e.from}'s request`, note: true });
 				return panelResult(seat.state());
 			}
+			seat.handed.set(e.pid, e);
+			if (seat.handed.size > 5) seat.handed.delete(seat.handed.keys().next().value);
 			seat.exchanges = 0; // the user's click: they are here
 			seat.remember({ who: "", text: `you handed ${e.from}'s request to your agent`, note: true });
-			return panelResult({ text: handOver(e, { reply: e.re && seat.sent.has(e.re) ? seat.sent.get(e.re) : "", seat: seat.handle }) });
+			return panelResult({ text: handOver(e, { reply: !!(e.re && seat.sent.has(e.re)), seat: seat.handle, utc: true }) });
 		}
 	}
 	return text(`unknown tool ${name}`, true);
@@ -309,12 +422,13 @@ async function rpc(msg, ip) {
 }
 
 const CORS = {
-	"access-control-allow-origin": "*",
 	"access-control-allow-methods": "POST, GET, DELETE, OPTIONS",
 	"access-control-allow-headers": "content-type, accept, mcp-session-id, mcp-protocol-version, authorization",
 	"access-control-expose-headers": "mcp-session-id",
+	vary: "origin",
 };
-// Behind Caddy on the same box: the client is the last address Caddy put in X-Forwarded-For.
+// Behind Caddy on the same box: the client is the last address Caddy put in X-Forwarded-For (Caddy
+// replaces a client's own X-Forwarded-For unless it trusts that client).
 const clientIp = (req) => {
 	const peer = req.socket.remoteAddress ?? "";
 	const fwd = /^(::ffff:)?127\.|^::1$/.test(peer) ? String(req.headers["x-forwarded-for"] ?? "").split(",").pop().trim() : "";
@@ -325,24 +439,47 @@ const landing = `<!doctype html><meta charset="utf-8"><meta name="viewport" cont
 <h1>duet MCP server</h1><p>This is duet's hosted MCP server: the duet panel for claude.ai, the Claude apps and ChatGPT. Add <code>${PUBLIC_URL}/mcp</code> as a custom connector; steps on <a href="https://qaioz.github.io/pi-duet/">the duet website</a>.</p>
 <p>It keeps no accounts and stores nothing on disk. Room codes are hashed as soon as a panel joins; messages stay in memory only while the panel is open. A request reaches your agent only when you click <b>Hand to agent</b>, and nothing guards what the agent does with it.</p>`;
 
+const inflight = new Map(); // address -> requests being read
+let inflightBytes = 0;
+
 export function handler(req, res) {
 	const url = new URL(req.url ?? "/", "http://x");
 	const ip = clientIp(req);
-	if (!allow(`ip ${ip}`, LIMIT.ipPerMin, 60_000)) return res.writeHead(429, { ...CORS, "retry-after": "30", "content-type": "text/plain" }).end("too many requests\n");
-	if (req.method === "OPTIONS") return res.writeHead(204, CORS).end();
-	if (url.pathname === "/healthz") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, version: VERSION, seats: seats.size, rooms: rooms.size }));
+	const address = addressKey(ip);
+	const cls = classOf(ip);
+	const origin = req.headers.origin;
+	if (!originOk(origin)) return res.writeHead(403, { "content-type": "text/plain" }).end("origin not allowed\n");
+	const cors = origin ? { ...CORS, "access-control-allow-origin": origin } : CORS;
+	if (!allow(`ip ${address}`, cls.perMin, 60_000)) return res.writeHead(429, { ...cors, "retry-after": "30", "content-type": "text/plain" }).end("too many requests\n");
+	if (req.method === "OPTIONS") return res.writeHead(204, cors).end();
+	if (url.pathname === "/healthz") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, version: VERSION }));
 	if (url.pathname === "/" && req.method === "GET") return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(landing);
 	if (url.pathname !== "/mcp") return res.writeHead(404, { "content-type": "text/plain" }).end("not found\n");
 	// No server-to-client stream (GET) and no sessions to end (DELETE): the panel polls.
-	if (req.method === "GET") return res.writeHead(405, { ...CORS, allow: "POST, DELETE" }).end();
-	if (req.method === "DELETE") return res.writeHead(200, CORS).end();
-	if (req.method !== "POST") return res.writeHead(405, { ...CORS, allow: "POST, DELETE" }).end();
+	if (req.method === "GET") return res.writeHead(405, { ...cors, allow: "POST, DELETE" }).end();
+	if (req.method === "DELETE") return res.writeHead(200, cors).end();
+	if (req.method !== "POST") return res.writeHead(405, { ...cors, allow: "POST, DELETE" }).end();
+	if ((inflight.get(address) ?? 0) >= cls.inflight) return res.writeHead(429, { ...cors, "retry-after": "5" }).end();
+	inflight.set(address, (inflight.get(address) ?? 0) + 1);
 	let size = 0;
+	let done = false;
+	const finish = () => {
+		if (done) return;
+		done = true;
+		inflightBytes -= size;
+		const n = inflight.get(address) - 1;
+		if (n > 0) inflight.set(address, n);
+		else inflight.delete(address);
+	};
+	res.on("close", finish);
 	const chunks = [];
 	req.on("data", (c) => {
+		if (done) return;
 		size += c.length;
-		if (size > LIMIT.bodyBytes) {
-			res.writeHead(413, CORS).end();
+		inflightBytes += c.length;
+		if (size > LIMIT.bodyBytes || inflightBytes > LIMIT.inflightBytes) {
+			res.writeHead(size > LIMIT.bodyBytes ? 413 : 503, cors).end();
+			finish();
 			req.destroy();
 		} else chunks.push(c);
 	});
@@ -352,19 +489,29 @@ export function handler(req, res) {
 		try {
 			body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 		} catch {
-			return res.writeHead(400, { ...CORS, "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }));
+			return res.writeHead(400, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }));
+		} finally {
+			chunks.length = 0;
 		}
 		const batch = Array.isArray(body);
-		const out = (await Promise.all((batch ? body : [body]).slice(0, 20).map((m) => rpc(m, ip)))).filter(Boolean);
-		if (!out.length) return res.writeHead(202, CORS).end(); // only notifications or responses
-		res.writeHead(200, { ...CORS, "content-type": "application/json" }).end(JSON.stringify(batch ? out : out[0]));
+		const messages = batch ? body : [body];
+		if (messages.length > LIMIT.batch) return res.writeHead(400, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: `at most ${LIMIT.batch} messages per request` } }));
+		// Each message in a batch counts against the address's limit, like a request of its own.
+		if (messages.length > 1 && !allow(`ip ${address}`, cls.perMin, 60_000, messages.length - 1)) return res.writeHead(429, { ...cors, "retry-after": "30" }).end();
+		const out = [];
+		for (const m of messages) {
+			const r = await rpc(m, ip); // one at a time: a batch can't run its sends in parallel
+			if (r) out.push(r);
+		}
+		if (!out.length) return res.writeHead(202, cors).end(); // only notifications or responses
+		res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify(batch ? out : out[0]));
 	});
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const server = createServer(handler);
-	server.requestTimeout = 30_000;
-	server.headersTimeout = 15_000;
+	server.requestTimeout = 15_000;
+	server.headersTimeout = 10_000;
 	server.listen(PORT, HOST, () => console.log(`duet hosted MCP server ${VERSION} on http://${HOST}:${server.address().port}/mcp (relay ${RELAY})`));
 	for (const s of ["SIGINT", "SIGTERM"]) process.on(s, () => {
 		for (const seat of [...seats.values()]) closeSeat(seat);
