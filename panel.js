@@ -429,15 +429,15 @@ textarea { width: 100%; min-height: 120px; font: 12px/1.4 var(--mono); backgroun
 			ok = !(r && r.isError);
 		} catch (e) { late = /timed out/.test(e.message); }
 		$("fallback-text").value = text;
-		takenId = id;
 		if (ok) {
 			// A chat app can say yes and still drop it (claude.ai on the web has been reported to): keep a way back.
 			$("handed-note").textContent = "Handed to your agent. If it only appears in the message box, press Enter to send it. ";
 			const again = el("button", "link", "Didn't arrive?"); again.type = "button";
-			again.onclick = () => { again.remove(); $("fallback").classList.remove("hidden"); };
+			again.onclick = () => { again.remove(); taken.add(id); $("fallback").classList.remove("hidden"); };
 			$("handed-note").append(again);
 		} else {
 			$("handed-note").textContent = late ? "Your chat app didn't answer. If the message shows up in the chat after all, don't paste it again." : "";
+			taken.add(id);
 			$("fallback").classList.remove("hidden");
 		}
 		refresh(true);
@@ -457,11 +457,15 @@ textarea { width: 100%; min-height: 120px; font: 12px/1.4 var(--mono); backgroun
 		else byHand();
 	}
 	$("copy-fallback").onclick = (ev) => copy($("fallback-text").value, ev.target);
-	let takenId = "";
-	$("close-fallback").onclick = () => $("handed").classList.add("hidden");
-	// The chat app took nothing: the request goes back to the waiting list, as if never clicked.
+	const taken = new Set(); // hand-overs the chat app didn't take (or that didn't arrive): Put it back returns them all
+	$("close-fallback").onclick = () => { taken.clear(); $("handed").classList.add("hidden"); };
+	// The chat app took nothing: the requests go back to the waiting list, as if never clicked.
 	$("put-back").onclick = async () => {
-		try { await call("duet_take", { id: takenId, undo: true }); $("handed").classList.add("hidden"); refresh(true); } catch (e) { showError(e.message); }
+		for (const id of [...taken]) {
+			try { await call("duet_take", { id, undo: true }); taken.delete(id); } catch (e) { showError(e.message); }
+		}
+		if (!taken.size) $("handed").classList.add("hidden");
+		refresh(true);
 	};
 	$("copy-code").onclick = (ev) => copy($("new-code-text").textContent, ev.target);
 	$("new-room").onclick = () => {

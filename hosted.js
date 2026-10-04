@@ -71,7 +71,9 @@ async function loadOpenAiRanges() {
 	if (!OPENAI_RANGES) return;
 	try {
 		const r = await fetch(OPENAI_RANGES, { signal: AbortSignal.timeout(15_000) });
-		const prefixes = (await r.json()).prefixes?.map((p) => p.ipv4Prefix ?? p.ipv6Prefix).filter(Boolean) ?? [];
+		// Only narrow ranges: a broad one (a mistake, or a tampered list) would give everyone the wide limits.
+		const narrow = (c) => /^[\d.]+\/(1[6-9]|2\d|3[0-2])$/.test(c) || /^[\da-f:]+\/(3[2-9]|[4-9]\d|1[01]\d|12[0-8])$/i.test(c);
+		const prefixes = ((await r.json()).prefixes?.map((p) => p.ipv4Prefix ?? p.ipv6Prefix) ?? []).filter((c) => typeof c === "string" && narrow(c));
 		if (prefixes.length) shared = rangeList(prefixes.slice(0, 5000));
 		console.log(`duet hosted: ${prefixes.length} ChatGPT connector ranges`);
 	} catch (e) {
