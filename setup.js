@@ -139,7 +139,7 @@ function setupCodex() {
 	// Hooks the user defines inline (`[hooks]` with `Stop = [...]`, or `hooks = {…}`) can't take our
 	// `[[hooks.Stop]]` tables: Codex would refuse the whole file. Leave the hooks out and say how.
 	const events = Object.keys(JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "codex/hooks.json"), "utf8")).hooks);
-	const inline = new RegExp(`^\\s*(hooks\\s*=|(hooks\\.)?(${events.join("|")})\\s*=)`, "m");
+	const inline = new RegExp(`^\\s*(["']?hooks["']?\\s*=|(["']?hooks["']?\\.)?["']?(${events.join("|")})["']?\\s*=)`, "m");
 	const hooksClash = inline.test(text);
 	if (!off) {
 		const q = JSON.stringify; // a TOML basic string, for the characters allowed above

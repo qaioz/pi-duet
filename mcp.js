@@ -163,6 +163,7 @@ let pushPausedUntil = 0; // after a failed push, leave the messages to duet_inbo
 const PUSH_PAUSE_MS = Number(process.env.DUET_PUSH_PAUSE_MS) || 60_000;
 // Codex hooks (see the header).
 let hooksSeen = false; // a duet_hook call came: the hooks are installed and trusted
+let askingStop = 0; // turn-end forms open: their messages aren't consumed (the resume point waits)
 let promptHookSeen = false; // the UserPromptSubmit hook ran: the one that asks the user (ask mode needs it)
 let helloDone = false; // the session got its catch-up (SessionStart, or the first prompt's fallback)
 // Codex: "ask" (each request waits for the user's yes) or "auto". --mode auto (or DUET_MODE) only for
@@ -196,7 +197,7 @@ function take(count = inbox.length) {
 }
 // Once nothing received is still waiting or on its way into the session, a restart may skip it all.
 function consumed() {
-	if (!inbox.length && !pushing && !unconfirmed && heldCursor) {
+	if (!inbox.length && !pushing && !unconfirmed && !askingStop && heldCursor) {
 		saveCursor(heldCursor);
 		heldCursor = undefined;
 	}
@@ -471,6 +472,7 @@ async function joinRoom({ steal = false } = {}) {
 			if (cur && cur.token !== lockMe.token && lockHeld(cur)) {
 				leave(false);
 				status = `off: ${heldBy(cur)} took the room over`;
+				watchForFreeRoom();
 				return;
 			}
 			if (Date.now() - lastBeat >= LOCK_BEAT_MS) {
@@ -487,6 +489,22 @@ async function joinRoom({ steal = false } = {}) {
 	} finally {
 		joining = undefined;
 	}
+}
+// A session that lost the room (a newer session in its folder took it; perhaps a one-off `codex exec`
+// that is gone a moment later) takes it back as soon as nobody holds it.
+let freeTimer;
+function watchForFreeRoom() {
+	clearInterval(freeTimer);
+	const want = { room, name, server };
+	freeTimer = setInterval(() => {
+		if (sub || room !== want.room || name !== want.name || server !== want.server) return clearInterval(freeTimer);
+		const cur = readLock(lockPath(server, room, name));
+		if (!lockHeld(cur)) {
+			clearInterval(freeTimer);
+			void joinRoom();
+		}
+	}, LOCK_CHECK_MS);
+	freeTimer.unref();
 }
 const heldBy = (holder) => `${describeHolder(holder)} is in this room as ${name} on this computer — use that one, or another name`;
 
@@ -628,7 +646,7 @@ async function onHook(a = {}) {
 		// restarted with Codex's queue still holding it): either way the other side's, and asked about.
 		if (q) queued.delete(id);
 		const items = q?.items ?? [];
-		const from = items[0]?.from ?? prompt.match(/^\s*\[duet\] from ([^\s(]+)/)?.[1] ?? "the other person";
+		const from = items[0]?.from ?? prompt.match(/^\s*\[duet\] from ([^\s(:]+)/)?.[1] ?? "the other person";
 		markPeerTurn(turn);
 		if (mode === "auto") return hookContext("UserPromptSubmit", first);
 		const answer = await askToTake(items, prompt);
@@ -658,22 +676,33 @@ async function onHook(a = {}) {
 		if (inRoom() && inbox.length && !codexHold()) {
 			// Out of the inbox while the user decides (and the turn counts as running), so nothing pushes
 			// them again meanwhile; back in front if the user can't be asked.
+			askingStop++;
 			const items = take(Math.min(inbox.length, 8));
 			busy = { turn, at: Date.now() + ASK_TIMEOUT_MS };
 			if (mode === "ask") {
-				const answer = await askToTake(items);
+				let answer;
+				try {
+					answer = await askToTake(items);
+				} finally {
+					askingStop--;
+				}
+				// Esc while the form was open: the turn is over, so a yes can't continue it. Keep them.
+				if (answer === "take" && interrupted) answer = "cant";
 				if (answer !== "take") {
 					busy = null;
 					if (answer === "ignore") {
 						decline(items);
+						consumed();
 						setImmediate(deliver);
 						return "";
 					}
 					inbox.unshift(...items);
 					holdForUser = true;
+					if (interrupted) return "";
 					return JSON.stringify({ systemMessage: `duet: ${items[0].from}'s request is waiting: ${cantAsk(answer)}. Say "check duet" to read it.` });
 				}
-			}
+			} else askingStop--;
+			consumed();
 			markPeerTurn(turn);
 			busy = { turn, at: Date.now() };
 			return JSON.stringify({ decision: "block", reason: render(items) });

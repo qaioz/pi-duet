@@ -13,10 +13,10 @@ import { inside, protectedPart } from "./hooks/guard.js";
 // command position (start, after ; & | ( ` $( or a quote, or after sudo/env/exec/nohup-like words),
 // with or without a path; `&` at the end of a command (not && or 2>&1) is a background job.
 const BACKGROUND =
-	/(^|[;&|(`'"]|\$\(|\b(?:sudo|env|exec|command|time|xargs)\s)\s*(?:[\w.\/-]*\/)?(nohup|setsid|disown|crontab|at|batch|systemd-run|launchctl|schtasks|tmux|screen|daemonize|start-stop-daemon)(\s|$|['";)])|(^|[^&>])&\s*($|[;)\n'"])/;
+	/(^|[;&|({`'"]|\$\(|\b(?:sudo|env|exec|command|time|xargs)\s|\b[A-Za-z_]\w*=\S*\s)\s*(?:[\w.\/-]*\/)?(nohup|setsid|disown|crontab|at|batch|systemd-run|systemctl|launchctl|schtasks|tmux|screen|daemonize|start-stop-daemon)(\s|$|['";)])|(^|[^&>])&(?![&>])(\s|$|[;)'"])/;
 // Tools that reach past this session: other agents and messages to them, plugins, extra permissions,
 // other MCP servers' resources.
-const OFF = /agent|plugin|permission|mcp_resource|send_input|send_message|followup|spawn/i;
+const OFF = /agent|plugin|permission|mcp_resource|send_input|send_message(?!_to_user)|followup|spawn/i;
 
 /** Every file an apply_patch touches. */
 export function patchPaths(patch) {
@@ -45,9 +45,14 @@ export function checkCodexTool(call, { folder, home, peer, ownServer = "duet" })
 	if (tool === "Bash") {
 		const command = Array.isArray(input.command) ? input.command.join(" ") : String(input.command ?? input.cmd ?? "");
 		// Codex models often run apply_patch through the shell (`apply_patch <<'PATCH' …`): check its files.
+		// There Codex resolves relative paths against the command's own folder (a `cd …` in front, or the
+		// call's workdir, which hooks don't see): only a bare apply_patch with absolute paths is checkable.
 		if (/\*\*\*\s*Begin Patch/.test(command)) {
+			if (!/^\s*apply_patch\b/.test(command)) return `duet: while working on ${peer}'s request, run apply_patch on its own (nothing before it, such as cd). ${ask}`;
 			patching = true;
 			paths = patchPaths(command);
+			const relative = paths.find((p) => !/^(\/|~\/|[A-Za-z]:[\\/])/.test(p));
+			if (relative) return `duet: while working on ${peer}'s request, a patch run through the shell must name files by their full path under ${folder || "this session's folder"} (${relative} isn't). ${ask}`;
 		} else {
 			if (BACKGROUND.test(command)) return `duet: background and scheduled commands are off while working on ${peer}'s request; run it in the foreground. ${ask}`;
 			return null;

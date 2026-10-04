@@ -155,8 +155,8 @@ async function main() {
 		plan: checkCodexTool({ tool: "update_plan", input: {} }, ctx),
 		// Observed live (gpt-5.6-luna): apply_patch run through the shell, reported as Bash.
 		shellPatch: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: /tmp/x.txt\n+hi\n*** End Patch\nPATCH" } }, ctx),
-		shellPatchIn: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: src/x.txt\n+hi\n*** End Patch\nPATCH" } }, ctx),
-		shellPatchAgents: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: AGENTS.md\n+x\n*** End Patch\nPATCH" } }, ctx),
+		shellPatchIn: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: /w/r/src/x.txt\n+hi\n*** End Patch\nPATCH" } }, ctx),
+		shellPatchAgents: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: /w/r/AGENTS.md\n+x\n*** End Patch\nPATCH" } }, ctx),
 	};
 	const no = (v, re) => typeof v === "string" && re.test(v);
 	check(
@@ -177,13 +177,24 @@ async function main() {
 		bashCNohup: checkCodexTool({ tool: "Bash", input: { command: 'bash -c "nohup ./x"' } }, ctx),
 		mcpRes: checkCodexTool({ tool: "read_mcp_resource", input: {} }, ctx),
 		sendInput: checkCodexTool({ tool: "send_input", input: {} }, ctx),
+		// Round 2: a shell-run patch resolves relative paths against its own folder (cd, workdir).
+		cdPatch: checkCodexTool({ tool: "Bash", input: { command: "cd /etc && apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: evil\n+x\n*** End Patch\nEOF" } }, ctx),
+		relShellPatch: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: evil\n+x\n*** End Patch\nEOF" } }, ctx),
+		bgMid: checkCodexTool({ tool: "Bash", input: { command: "sleep 9 & echo hi" } }, ctx),
+		bgBrace: checkCodexTool({ tool: "Bash", input: { command: "{ sleep 9 & }" } }, ctx),
+		envNohup: checkCodexTool({ tool: "Bash", input: { command: "X=1 nohup ./x" } }, ctx),
+		systemctl: checkCodexTool({ tool: "Bash", input: { command: "systemctl --user start x" } }, ctx),
+		redirect: checkCodexTool({ tool: "Bash", input: { command: "npm test > out.txt 2>&1 && cat out.txt &> /dev/null" } }, ctx),
+		toUser: checkCodexTool({ tool: "send_message_to_user_async", input: {} }, ctx),
 		gitAt: checkCodexTool({ tool: "Bash", input: { command: 'git commit -m "look at this"' } }, ctx),
 		grepScreen: checkCodexTool({ tool: "Bash", input: { command: "grep screen notes.txt 2>&1" } }, ctx),
 	};
 	check(
 		"guard (review): indented headers, unreadable patches, drive-relative paths, wrapped background commands, other tools; no false alarms on words",
 		no(more.indented, /outside/) && no(more.unreadable, /couldn't read/) && no(more.driveRel, /plain path/) && no(more.shC, /background/) && no(more.pathNohup, /background/) && no(more.bashCNohup, /background/) &&
-			no(more.mcpRes, /off/) && no(more.sendInput, /off/) && more.gitAt === null && more.grepScreen === null,
+			no(more.mcpRes, /off/) && no(more.sendInput, /off/) && more.gitAt === null && more.grepScreen === null &&
+			no(more.cdPatch, /on its own/) && no(more.relShellPatch, /full path/) && no(more.bgMid, /background/) && no(more.bgBrace, /background/) && no(more.envNohup, /background/) && no(more.systemctl, /background/) &&
+			more.redirect === null && more.toUser === null,
 		JSON.stringify(Object.fromEntries(Object.entries(more).map(([k, v]) => [k, v === null ? "ok" : v.slice(0, 30)]))),
 	);
 	check("guard: every file a patch names", patchPaths("*** Add File: a\n*** Delete File: b\n*** Update File: c\n*** Move to: d").join() === "a,b,c,d", "a,b,c,d");
@@ -394,6 +405,12 @@ async function main() {
 		before.text.startsWith("duet: not in a room") && joined.text.startsWith("Joined") && hello2.includes("as gaioz") && hello2.includes("mode: ask") && s2.includes("— connected") && s1.includes("off: Codex"),
 		`before: ${before.text.slice(0, 30)}; ${joined.text.slice(0, 40)}; new session's catch-up: ${JSON.stringify(hello2.slice(0, 70))}; old session: ${s1.slice(s1.indexOf("—"), s1.indexOf("—") + 60)}`,
 	);
+	// The older session takes the room back once the newer one is gone (a one-off run that ended).
+	await pl2.call("duet_leave", {}, { id: "t3b", folder });
+	await sleep(2000);
+	const back1 = (await pl1.call("duet_status", {}, { id: "t3c", folder })).text;
+	check("a session that lost the room takes it back when nobody holds it", back1.includes("— connected"), back1.slice(0, 100));
+	await pl2.call("duet_join", { room: r2, name: "gaioz" }, { id: "t3d", folder }); // as before, for what follows
 	// One lock for every client: a Claude Code window (the plugin writes this file) holds the room.
 	const ccRoom = freshRoom();
 	const lp = lockPath(SERVER, ccRoom, "gaioz", join(home, ".duet"));
