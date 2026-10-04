@@ -128,6 +128,14 @@ try {
 	const withRoom = Object.values(commands).flatMap((a) => Object.values(a).flat()).filter((c) => c.cmd.includes(room)).length;
 	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 6, `name field cleaned to "${typed}"; ${total} commands on 3 tabs, ${withRoom} carry the room and name, unfilled: ${JSON.stringify(unfilled)}`);
 	check("copy buttons copy exactly what is shown", copyMismatch.length === 0 && total > 0, `${total} copy buttons checked; mismatches: ${JSON.stringify(copyMismatch)}`);
+	// Codex: the plugin, joined from inside Codex; `setup codex` (with its hooks) for the IDE extension.
+	const cx = Object.values(commands.codex).flat().map((c) => c.cmd);
+	check(
+		"Codex tab: plugin install, join from inside Codex; setup codex for the IDE",
+		cx.includes("codex plugin marketplace add qaioz/pi-duet") && cx.includes("codex plugin add duet@pi-duet") && cx.some((c) => c.startsWith(`join duet room ${room} as nika, relay `)) &&
+			cx.some((c) => c.includes("setup codex --room") && c.includes(room)) && !cx.includes("check duet"),
+		JSON.stringify(cx.map((c) => c.replace(room, "<room>"))),
+	);
 	await friend.click('[data-copy="invite"]');
 	await friend.fill("#name", "__-nika");
 	const lead = await friend.inputValue("#name");
@@ -153,7 +161,7 @@ try {
 	const kept = await allCommands(evil);
 	check(
 		"crafted ?relay= can't inject into the commands",
-		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 3 && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 4 && kept.includes("DUET_SERVER=https://ntfy.example.com "),
+		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 2 && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 4 && kept.includes("DUET_SERVER=https://ntfy.example.com "),
 		`${attempts.length} hostile relays ignored with a note (failures: ${JSON.stringify(leaks)}); a plain https relay is carried into the commands`,
 	);
 	await evilCtx.close();

@@ -11,9 +11,9 @@ other developer, and both copy the commands for your agent. It takes about a min
 > **Safety.** Whoever has the invite link (the room code) can make your agent run commands on your
 > machine. Share it only with someone you trust. Your agent's own permission mode decides what the
 > other agent's requests can do: if you run it in a "yolo" / skip-permissions mode, the other side can
-> do anything that mode allows. The Claude Code plugin adds a few guards of its own
-> ([what they do and don't cover](#claude-code-plugin-what-it-guards-and-what-it-doesnt)); pi and the
-> MCP route add none.
+> do anything that mode allows. The Claude Code plugin and duet for Codex add a few guards of their
+> own ([Claude Code](#claude-code-plugin-what-it-guards-and-what-it-doesnt),
+> [Codex](#codex-what-duet-guards-and-what-it-doesnt)); pi and the Claude Code channel route add none.
 
 ## Using it
 
@@ -34,7 +34,7 @@ session.
 | pi | A new turn starts by itself, at once. | Nothing. This is the reference. |
 | Claude Code (plugin, the default) | Depends on who you said is in the room. **Someone else** (the default): each message waits as a **card above your prompt**, `1` lets Claude do it, `2` ignores it (each with 3 seconds to undo). **Only me** or **someone I trust completely**: messages start a turn by themselves (up to 8 in a row without you). | Needs Claude Code **2.1.287 or newer** with **mods** on: Anthropic can switch mods off remotely, and organisations can block them (then use the channel route below). Draws in the terminal and the Desktop app's Code tab only, not in the VS Code panel or `claude -p`. Needs `curl` (macOS, Windows 10+ and most Linux have it). |
 | Claude Code (channel route, older) | Through a **channel**: duet pushes each message into the open session, where it shows as `← duet: …`. Claude starts a turn by itself; if it is busy, the message waits until the current turn ends. Nothing to type to listen. | Channels are a Claude Code **research preview**. They need a claude.ai login (Pro, Max) or an Anthropic Console API key; Team and Enterprise (and Console orgs with managed settings) need an admin to enable them; not on Bedrock, Vertex or other gateways. duet isn't an approved channel plugin, so Claude Code needs `--dangerously-load-development-channels server:duet` and shows a notice at each start. If Claude Code was started without that flag (duet checks its command line on Linux and macOS), messages wait until you say "check duet". If channels are blocked by an org policy, Claude Code drops pushed messages without telling duet; "check duet" shows the last 20 pushed ones until duet restarts. |
-| Codex | After the first **"check duet"**, the duet server knows your session and starts a turn there for each message (`codex queue`), as long as a Codex window is open in that folder. | It needs that first "check duet" (one tool call) before pushing works. Messages wait while a turn is running. After you quit Codex, or on Windows, messages wait until you say "check duet". If a push fails, duet pauses pushing for a minute (`duet_status` says so) and the messages wait in `duet_inbox`. |
+| Codex (plugin, or `setup codex`) | **Ask** (the default): each request shows a short form in Codex, "nika's agent asks: … Let Codex do it?", before Codex sees it; **Ignore** drops it and tells the other side. **Auto** (`duet auto`, after a yes): requests start a turn by themselves (up to 8 replies in a row without you). A request that arrives while Codex works waits for that turn to end and continues it. | Needs Codex's hooks, trusted once (`/hooks`), and a Codex window open in the folder. Requests start after your first prompt in a new session. After you press **Esc**, requests wait for your next prompt (Codex tells you so). Under **Full Access** Codex declines duet's form by itself, so requests wait until you say "check duet". On Windows, and after you quit Codex, they wait for "check duet" too. |
 
 Any agent can also read waiting messages with `duet_inbox` ("check duet").
 
@@ -50,7 +50,9 @@ Two polite agents could thank each other forever, on your bill.
   at your prompt box (or sent through Remote Control), not something the model claims.
 - **Claude Code (channel route) and Codex:** after 8 replies the agent sent on its own (not asked by you),
   `duet_send` refuses and tells the agent to ask you first.
-  - Codex also stops pushing new messages until your next duet request (e.g. "check duet").
+  - Codex also stops handing over new messages until you type a prompt. In a turn duet started, the
+    agent can't lift the cap by claiming you asked (`user_asked` is ignored there): duet's hooks
+    (or Codex's own turn metadata) say who started it.
   - Claude Code stops pushing new messages until you ask it to send something; "check duet" shows
     the held ones meanwhile.
   - Claude Code can't tell the MCP server whether you typed. The agent marks a send as yours with
@@ -234,25 +236,62 @@ claude --dangerously-load-development-channels server:duet --allowedTools mcp__d
 
 ### Codex
 
+**The plugin** (Codex CLI and the desktop app):
+
 ```
-npx -y github:qaioz/pi-duet setup codex --room <room> --name <name>
-codex                             # then tell it: check duet
+codex plugin marketplace add qaioz/pi-duet
+codex plugin add duet@pi-duet       # or /plugins inside Codex
+codex                               # a new session; then: join duet room <room> as <name>
 ```
 
-- `setup codex` adds an `[mcp_servers.duet]` block to `~/.codex/config.toml`:
+- The first time, Codex asks you to review duet's hooks: choose **Trust all**. They call duet's own
+  server (no shell). After a duet update they are new again, and Codex asks once more.
+- Join from inside Codex: "join duet room amber-otter-4821-x7q2 as gaioz". Each folder remembers its
+  room: a new session there rejoins it (in ask mode) for 12 hours, and takes it over from an older
+  session in the same folder. "leave duet" leaves and forgets it.
+- In Codex: "duet auto" / "duet ask" (auto asks you to confirm in a form), "check duet", "duet
+  status", "what was said in duet" (the room's last messages, from the relay).
+- Updating: `codex plugin marketplace upgrade pi-duet`, then `codex plugin add duet@pi-duet` again
+  and start a new session.
+
+**`setup codex`** (the IDE extension, which has no plugins; or if you prefer one global room):
+
+```
+npx -y github:qaioz/pi-duet setup codex --room <room> --name <name> [--mode auto]
+codex
+```
+
+- `setup codex` adds an `[mcp_servers.duet]` block and duet's hooks to `~/.codex/config.toml`:
   - startup and tool timeouts of 120 s
   - `required = true`, so the first turn waits for the server
   - `default_tools_approval_mode = "approve"`, which approves duet's own tools only. Your sandbox and
     approval settings stay as they are.
+  - the same hooks as the plugin, between `# duet hooks: begin` and `# duet hooks: end`; your own
+    hooks stay.
+- Every Codex window then joins that room under that name (the newest session in a folder takes it).
+  Use the plugin for a room per folder.
 - It keeps a copy of the old file as `config.toml.before-duet`, and replaces an earlier duet block.
   Remove it with `npx -y github:qaioz/pi-duet setup codex --off`.
-- **Codex already open:**
-  1. Run `!npx -y github:qaioz/pi-duet setup codex …` inside Codex.
-  2. Run `/quit`.
-  3. Run `codex resume --last`, which brings the conversation back.
-  4. Tell it "check duet".
-- Use `config.toml`, not `-c` flags, for duet. A `-c` flag makes Codex run its own private server, and
-  pushing new messages was only tested against the shared one.
+- **Codex already open:** run `!npx -y github:qaioz/pi-duet setup codex …` inside Codex, `/quit`,
+  then `codex resume --last`.
+- Use `config.toml`, not `-c` flags, for duet. A `-c` flag makes Codex run its own private server,
+  which `codex queue` can't reach.
+- Don't use both the plugin and `setup codex`: two servers named duet.
+
+#### Codex: what duet guards, and what it doesn't
+
+While Codex works on the other side's request (from the prompt duet handed over, or from the point a
+turn-end hand-over continued your own turn), duet's PreToolUse hook refuses:
+
+- patches (`apply_patch`, also when run through the shell) to files outside the session's folder, or
+  to `.codex`, `AGENTS.md`, `.git`, `CLAUDE.md`, `.vscode` and the rest of the Claude Code plugin's list;
+- background and scheduled commands (`&`, `nohup`, `setsid`, `crontab`, `at`, `tmux`, …);
+- your other MCP servers' tools, subagents, and plugin or permission tools.
+
+**It fails open:** Codex runs a hook that errors, times out (5 s) or gets no answer as if it weren't
+there, so if duet's server is slow or gone, the tool runs. It checks shell commands only for
+background work: what a command reads or writes is up to Codex's sandbox and approvals, which stay
+on. In auto mode, anything your sandbox and approval settings allow, the other side's requests can do.
 
 ### Several windows
 
@@ -260,9 +299,12 @@ Only one window per computer can be in a room under a given name.
 
 - **Claude Code plugin:** run `/duet <room>` in a second window and it asks whether to move the room
   there; the first window hands it over and says so.
+- **Across clients** (pi, Codex, Claude Code): one lock, `~/.duet/<hash>.lock`. A Claude Code window
+  and a Codex window in the same room under the **same name** can't both be in it: the second one
+  says who has it ("gaioz is already in room … in Codex (/work/repo)"). Use another name.
 - **pi, MCP:** the first one that started has it. The others refuse to send or receive, and say
   which process has the room. Close that one, and the next duet tool call in another window takes
-  over.
+  over. A new Codex session in the same folder takes the room from the older one.
 
 ## How it works
 
@@ -274,7 +316,9 @@ Only one window per computer can be in a room under a given name.
   server, and the page has no backend.
 - If an agent was closed, it catches up on what was sent meanwhile when it starts again.
 - pi uses its own extension (`index.ts`). Codex, and Claude Code's channel route, use a small
-  dependency-free MCP server (`mcp.js`, run with `npx`). Both share `transport.js`.
+  dependency-free MCP server (`mcp.js`, run with `npx`, or by the Codex plugin), with duet's hooks for
+  Codex calling back into it (`codex/hooks.json`). They share `transport.js`, and every client shares
+  the lock in `lock.js`.
 - The Claude Code plugin is a [mod](https://code.claude.com/docs/en/plugins/mods/overview)
   (`hooks/duet.js`): it receives with `curl` against the relay's stream (mods have no streaming
   network call) and sends with Claude Code's own `fetch`, so a session whose policy refuses network
@@ -337,6 +381,7 @@ node --test test/mod-unit.mjs             # Claude Code plugin: wire format and 
 claude plugin test                        # Claude Code plugin: hooks, cards, pane (Claude Code's own test kit)
 node test/site.mjs                        # the website in headless Chromium
 node test/e2e.mjs talk do loop            # two real pi agents (needs OPENROUTER_API_KEY; costs cents)
+node test/codex.mjs                       # Codex: hooks, ask form, guard, turn-end hand-over, join (no model)
 node test/pairs.mjs                       # mixed pairs: pi, Claude Code, Codex (see the file header)
 ```
 
