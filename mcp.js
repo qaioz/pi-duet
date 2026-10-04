@@ -768,7 +768,7 @@ function toolList() {
 				]
 			: []),
 		// The panel, for hosts that draw MCP Apps (not Codex or the Claude Code CLI).
-		...(drawsPanels(clientCaps) ? [roomTool, ...appTools] : []),
+		...(drawsPanels(clientCaps, host) ? [roomTool, ...appTools] : []),
 	];
 }
 
@@ -1094,7 +1094,7 @@ async function handle(msg) {
 		else if (method === "tools/list") {
 			result = { tools: toolList() };
 		} else if (method === "resources/list") {
-			result = { resources: drawsPanels(clientCaps) ? [resourceEntry] : [] };
+			result = { resources: drawsPanels(clientCaps, host) ? [resourceEntry] : [] };
 		} else if (method === "resources/templates/list") {
 			result = { resourceTemplates: [] };
 		} else if (method === "resources/read") {

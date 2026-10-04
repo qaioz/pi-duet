@@ -51,12 +51,30 @@ const LIMIT = {
 	normal: { perMin: num("DUET_IP_PER_MIN", 600), joins: num("DUET_JOINS_PER_IP", 20), seats: num("DUET_SEATS_PER_IP", 10), inflight: 8 },
 	shared: { perMin: 30_000, joins: 2000, seats: Infinity, inflight: 400 },
 };
-// claude.ai's outbound ranges (published by Anthropic: tool calls to connectors come from these).
-// Others (OpenAI's) can be added with DUET_SHARED_RANGES=cidr,cidr.
-const shared = new BlockList();
-for (const cidr of ["160.79.104.0/21", "2607:6bc0::/48", ...list("DUET_SHARED_RANGES")]) {
-	const [addr, bits] = cidr.split("/");
-	shared.addSubnet(addr, Number(bits), isIPv6(addr) ? "ipv6" : "ipv4");
+// The chat apps' outbound ranges: claude.ai's (published by Anthropic), ChatGPT's connectors (OpenAI
+// publishes them at OPENAI_RANGES; fetched at start and daily), and any in DUET_SHARED_RANGES=cidr,cidr.
+const OPENAI_RANGES = process.env.DUET_OPENAI_RANGES ?? "https://openai.com/chatgpt-connectors.json";
+let shared = rangeList([]);
+function rangeList(extra) {
+	const b = new BlockList();
+	for (const cidr of ["160.79.104.0/21", "2607:6bc0::/48", ...list("DUET_SHARED_RANGES"), ...extra]) {
+		const [addr, bits] = String(cidr).split("/");
+		try {
+			b.addSubnet(addr, Number(bits), isIPv6(addr) ? "ipv6" : "ipv4");
+		} catch {} // not a range: skip it
+	}
+	return b;
+}
+async function loadOpenAiRanges() {
+	if (!OPENAI_RANGES) return;
+	try {
+		const r = await fetch(OPENAI_RANGES, { signal: AbortSignal.timeout(15_000) });
+		const prefixes = (await r.json()).prefixes?.map((p) => p.ipv4Prefix ?? p.ipv6Prefix).filter(Boolean) ?? [];
+		if (prefixes.length) shared = rangeList(prefixes.slice(0, 5000));
+		console.log(`duet hosted: ${prefixes.length} ChatGPT connector ranges`);
+	} catch (e) {
+		console.error(`duet hosted: couldn't load ChatGPT's ranges (${e?.name ?? "error"}); they get the normal limits`);
+	}
 }
 // Browsers may call this server only from the chat apps' own pages and local development; a server
 // (how claude.ai and ChatGPT call it) sends no Origin. Stops any web page from using its visitors'
@@ -335,6 +353,10 @@ async function callTool(name, a, ip) {
 			if (seats.size >= LIMIT.seats) return panelError(full);
 			if (!rooms.has(topic) && rooms.size >= LIMIT.rooms) return panelError(full.replace("is full", "has too many rooms open"));
 			if ([...seats.values()].filter((s) => s.address === address).length >= cls.seats) return panelError("Too many duet panels open from here: leave one first.");
+			// One panel per name in a room, as everywhere in duet: a second one would hand the same requests over again.
+			if ([...(rooms.get(topic)?.seats ?? [])].some((s) => s.name.toLowerCase() === name.toLowerCase())) {
+				return panelError(`${name} is already in this room in another chat: leave it there first, or use another name.`);
+			}
 			seat = new Seat(key, topic, name, room, address);
 			seats.set(key, seat);
 			handles.set(seat.handle, seat);
@@ -394,6 +416,8 @@ async function rpc(msg, ip) {
 	try {
 		switch (method) {
 			case "initialize":
+				// Which chat apps connect and whether they draw panels: the app's name only, nothing of the user.
+				console.log(`duet hosted: initialize from ${String(params?.clientInfo?.name ?? "?").replace(/[^\w .-]/g, "").slice(0, 40)}, ${params?.capabilities?.extensions?.["io.modelcontextprotocol/ui"] ? "draws panels" : "no MCP Apps capability"}`);
 				return ok({
 					protocolVersion: PROTOCOLS.includes(params?.protocolVersion) ? params.protocolVersion : PROTOCOLS[0],
 					capabilities: { tools: {}, resources: {} },
@@ -513,6 +537,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 	server.requestTimeout = 15_000;
 	server.headersTimeout = 10_000;
 	server.listen(PORT, HOST, () => console.log(`duet hosted MCP server ${VERSION} on http://${HOST}:${server.address().port}/mcp (relay ${RELAY})`));
+	loadOpenAiRanges();
+	setInterval(loadOpenAiRanges, 86_400_000).unref();
 	for (const s of ["SIGINT", "SIGTERM"]) process.on(s, () => {
 		for (const seat of [...seats.values()]) closeSeat(seat);
 		setTimeout(() => process.exit(0), 300).unref();

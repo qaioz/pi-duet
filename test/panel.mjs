@@ -144,6 +144,12 @@ async function localTests() {
 		check(`stdio: ${client} without the MCP Apps capability gets no panel tools`, !names.some((n) => n.startsWith("duet_room") || n === "duet_take" || n === "duet_ignore") && !r.length, names.join(" "));
 		s.stop();
 	}
+	// Claude Desktop's chat names itself claude-ai: it gets the panel even if it doesn't say it draws one.
+	const cd = stdio("claude-desktop");
+	await cd.init("claude-ai", {});
+	const cdTools = (await cd.request("tools/list")).result.tools.map((t) => t.name);
+	check("stdio: claude-ai (Claude Desktop's chat) gets the panel tools", cdTools.includes("duet_room") && cdTools.includes("duet_take"), cdTools.join(" "));
+	cd.stop();
 
 	// Join from the panel, a peer's request arrives, the panel hands it over.
 	const room = `t-${randomUUID()}`;
@@ -329,6 +335,8 @@ async function hostedTests() {
 	await c.call("duet_room_join", { room: roomA, name: "ana" });
 	await sleep(1500);
 	const sawAna = data(await a.call("duet_room_state")).peers.some((p) => p.name === "ana");
+	const twice = await client(h.url).call("duet_room_join", { room: roomA, name: "Gaioz" });
+	check("hosted: one panel per name in a room (a second chat as gaioz is refused)", twice.isError && /already in this room in another chat/.test(data(twice).error), data(twice).error);
 	await nika.say("for both of you");
 	const both = await until(async () => {
 		const [x, y] = [data(await a.call("duet_room_state")), data(await c.call("duet_room_state"))];
@@ -498,10 +506,11 @@ addEventListener("message", async (ev) => {
 		await until(() => page.evaluate(() => window.messages.length), 10_000, "ui/message");
 		await sleep(500);
 		const msgs = await page.evaluate(() => window.messages);
+		const didnt = await panel.locator("#handed-note button").textContent().catch(() => "");
 		const m = msgs[0];
 		check(
-			"browser: Hand to agent sends the framed text as the user's message (ui/message)",
-			msgs.length === 1 && m.role === "user" && Array.isArray(m.content) && m.content[0].type === "text" && m.content[0].text.startsWith("[duet] from nika") && m.content[0].text.includes(evil) && /duet_send with seat "/.test(m.content[0].text),
+			"browser: Hand to agent sends the framed text as the user's message (ui/message), with a way back if it didn't arrive",
+			didnt === "Didn't arrive?" && msgs.length === 1 && m.role === "user" && Array.isArray(m.content) && m.content[0].type === "text" && m.content[0].text.startsWith("[duet] from nika") && m.content[0].text.includes(evil) && /duet_send with seat "/.test(m.content[0].text),
 			JSON.stringify(m?.content?.[0]?.text?.slice(0, 160)),
 		);
 		// The light panel is another seat in the same room: it got its own copy and still waits for its own click.

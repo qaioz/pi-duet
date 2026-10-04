@@ -13,9 +13,10 @@ export const PANEL_MIME = "text/html;profile=mcp-app";
 export const UI_EXTENSION = "io.modelcontextprotocol/ui";
 
 // Does the host draw MCP Apps? Hosts that do say so in `initialize` (VS Code and Goose do, checked in
-// their source). Any other host gets no panel tools: there the model would see the panel's own tools
-// and could hand requests to itself.
-export const drawsPanels = (capabilities) => !!capabilities?.extensions?.[UI_EXTENSION];
+// their source). Claude Desktop's chat, which names itself "claude-ai", draws them too; whether it says
+// so isn't known here (no Mac or Windows to look), so it gets the panel by name. Any other host gets
+// no panel tools: there the model would see the panel's own tools and could hand requests to itself.
+export const drawsPanels = (capabilities, host) => !!capabilities?.extensions?.[UI_EXTENSION] || host === "claude-ai";
 
 // A peer's text as the panel and the hand-over show it: no control characters other than tab and
 // newline (C0 and C1), no invisible formatting (bidi overrides, zero-width, tags: \p{Cf}), and none of
@@ -257,7 +258,7 @@ textarea { width: 100%; min-height: 120px; font: 12px/1.4 var(--mono); backgroun
 			<div class="card">
 				<div id="handed-note"></div>
 				<div id="fallback" class="hidden">
-					<p class="muted">Your chat app didn't take the message. Copy it and paste it into the chat yourself:</p>
+					<p class="muted">If your chat app didn't take the message, copy it and paste it into the chat yourself, or put it back:</p>
 					<textarea id="fallback-text" readonly></textarea>
 					<div class="actions" style="margin-top:6px"><button type="button" id="copy-fallback">Copy</button><button type="button" id="put-back">Put it back</button><button type="button" id="close-fallback">Done</button></div>
 				</div>
@@ -426,13 +427,16 @@ textarea { width: 100%; min-height: 120px; font: 12px/1.4 var(--mono); backgroun
 			const r = await rpc("ui/message", { role: "user", content: [{ type: "text", text }] }, 300000);
 			ok = !(r && r.isError);
 		} catch (e) { late = /timed out/.test(e.message); }
+		$("fallback-text").value = text;
+		takenId = id;
 		if (ok) {
-			$("handed-note").textContent = "Handed to your agent. If it only appears in the message box, press Enter to send it.";
+			// A chat app can say yes and still drop it (claude.ai on the web has been reported to): keep a way back.
+			$("handed-note").textContent = "Handed to your agent. If it only appears in the message box, press Enter to send it. ";
+			const again = el("button", "link", "Didn't arrive?"); again.type = "button";
+			again.onclick = () => { again.remove(); $("fallback").classList.remove("hidden"); };
+			$("handed-note").append(again);
 		} else {
 			$("handed-note").textContent = late ? "Your chat app didn't answer. If the message shows up in the chat after all, don't paste it again." : "";
-			$("fallback-text").value = text;
-			takenId = id;
-			$("put-back").classList.remove("hidden");
 			$("fallback").classList.remove("hidden");
 		}
 		busy = false;
