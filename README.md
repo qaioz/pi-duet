@@ -315,11 +315,13 @@ Web chat apps can only reach a public HTTPS server, so duet runs one: `https://m
 - **No accounts.** Each open panel has a seat: its own room and inbox, found by a random id the panel makes. The
   agent finds the room by a short seat code (in the handed-over text and in its context), which can send but not
   read.
-- **Limits** (it is a public endpoint without accounts): at most 50 rooms and 300 panels at once, 10 panels per
-  address; 30 messages (2 MB) per panel per 10 minutes and the reply cap of 8 without a click; long messages
-  (over ~3.8 KB, attachments on the relay) 60 MB a day in all; requests and joins per address (wide for
-  claude.ai's and ChatGPT's published ranges, which carry many users); only the chat apps' own pages may call it from a
-  browser. Over a limit, the panel or the agent says so.
+- **Limits** (it is a public endpoint without accounts): at most 50 rooms and 300 panels at once; per address
+  10 panels in 3 rooms; 30 messages (2 MB) per panel per 10 minutes and the reply cap of 8 without a click; long
+  messages (over ~4 KB as stored, attachments on the relay) 10 MB per address and 60 MB in all a day; requests,
+  joins and request bodies in flight per address (wide for claude.ai's and ChatGPT's published ranges, which carry
+  many users). Chat apps call it from their servers; a browser may call it only from local development tools.
+  Over a limit, the panel or the agent says so. Someone with many addresses can still fill the 50 rooms: the
+  panel then says the hosted duet is full (Claude Desktop, Claude Code, Codex and pi don't use it).
 - **The seat code** in a handed-over message lets whoever has it send into the room as you, while your panel is
   open (a share link of the chat carries it). Don't share a chat with a seat code in it while you're in the room.
 
