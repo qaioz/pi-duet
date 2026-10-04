@@ -413,6 +413,17 @@ function ancestorArgs() {
 	}
 	return out;
 }
+// Started for a one-off run (`codex exec`, which runs its own app server), not a window: it must not
+// take the room from the user's window, or messages would go to a conversation nobody sees.
+let oneOff;
+function oneOffRun() {
+	if (oneOff === undefined) {
+		const chain = ancestorArgs() ?? [];
+		oneOff = chain.some((a) => /(^|[\/\\])codex(\.js|\.exe)?$/.test(a[0] === "node" || /(^|\/)node$/.test(a[0] ?? "") ? (a[1] ?? "") : (a[0] ?? "")) && a.includes("exec"));
+	}
+	return oneOff;
+}
+
 // The nearest Claude Code process up the tree decides: did it get --dangerously-load-development-
 // channels with server:duet? (--channels takes only approved plugins, so a bare server there is
 // refused by Claude Code.) No Claude Code process found: can't tell.
@@ -519,7 +530,7 @@ function leave(release = true) {
 // The Codex plugin has no room on its command line: a new session in a folder that was in a room in
 // the last 12 hours rejoins it, in ask mode.
 async function rejoinFolder() {
-	if (room || !folder) return;
+	if (room || !folder || oneOffRun()) return; // `codex exec` and friends never join on their own
 	const rec = readJson("rooms.json", {})[folder];
 	if (!rec?.room || !rec.name || Date.now() - (rec.at ?? 0) > REJOIN_MS) return;
 	[room, name, server] = [rec.room, rec.name, rec.server || server];
@@ -615,7 +626,7 @@ async function hello(a) {
 	learn(a);
 	await rejoinFolder();
 	// A room from the command line (setup codex): a new session in a folder takes it from an older one there.
-	if (room && name && !sub) await joinRoom({ steal: true });
+	if (room && name && !sub) await joinRoom({ steal: !oneOffRun() });
 	helloDone = true;
 	return catchUp();
 }

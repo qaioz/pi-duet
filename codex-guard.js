@@ -12,8 +12,15 @@ import { inside, protectedPart } from "./hooks/guard.js";
 // Work that outlives the request: background jobs, schedulers, detached terminals. A program counts in
 // command position (start, after ; & | ( ` $( or a quote, or after sudo/env/exec/nohup-like words),
 // with or without a path; `&` at the end of a command (not && or 2>&1) is a background job.
-const BACKGROUND =
-	/(^|[;&|({`'"]|\$\(|\b(?:sudo|env|exec|command|time|xargs)\s|\b[A-Za-z_]\w*=\S*\s)\s*(?:[\w.\/-]*\/)?(nohup|setsid|disown|crontab|at|batch|systemd-run|systemctl|launchctl|schtasks|tmux|screen|daemonize|start-stop-daemon)(\s|$|['";)])|(^|[^&>])&(?![&>])(\s|$|[;)'"])/;
+// Words that are also plain English (at, batch, screen) count only in command position proper, not
+// after a quote.
+const BACKGROUND = new RegExp(
+	[
+		String.raw`(^|[;&|({\x60'"]|\$\(|\b(?:sudo|env|exec|command|time|xargs)\s|\b[A-Za-z_]\w*=\S*\s)\s*(?:[\w./-]*\/)?(nohup|setsid|disown|crontab|systemd-run|systemctl|launchctl|schtasks|tmux|daemonize|start-stop-daemon)(\s|$|['";)])`,
+		String.raw`(^|[;&|({\x60]|\$\(|\b(?:sudo|env|exec|command|time|xargs)\s)\s*(?:[\w./-]*\/)?(at|batch|screen)(\s|$|[;)])`,
+		String.raw`(^|[^&>|])&(?![&>])(\s|$|[;)'"])`,
+	].join("|"),
+);
 // Tools that reach past this session: other agents and messages to them, plugins, extra permissions,
 // other MCP servers' resources.
 const OFF = /agent|plugin|permission|mcp_resource|send_input|send_message(?!_to_user)|followup|spawn/i;
@@ -48,10 +55,15 @@ export function checkCodexTool(call, { folder, home, peer, ownServer = "duet" })
 		// There Codex resolves relative paths against the command's own folder (a `cd …` in front, or the
 		// call's workdir, which hooks don't see): only a bare apply_patch with absolute paths is checkable.
 		if (/\*\*\*\s*Begin Patch/.test(command)) {
-			if (!/^\s*apply_patch\b/.test(command)) return `duet: while working on ${peer}'s request, run apply_patch on its own (nothing before it, such as cd). ${ask}`;
+			if (!/^\s*apply_?patch\b/.test(command)) return `duet: while working on ${peer}'s request, run apply_patch on its own (nothing before it, such as cd). ${ask}`;
+			// Nothing after it either: the heredoc must end the command.
+			const lines = command.trimEnd().split("\n");
+			const tag = lines[0].match(/<<-?\s*['"]?(\w+)['"]?\s*$/)?.[1];
+			if (!tag || lines.at(-1).trim() !== tag) return `duet: while working on ${peer}'s request, run apply_patch on its own (nothing after the patch). ${ask}`;
 			patching = true;
 			paths = patchPaths(command);
-			const relative = paths.find((p) => !/^(\/|~\/|[A-Za-z]:[\\/])/.test(p));
+			// "~/x" is not a full path to Codex's patch parser: it is joined onto the command's folder.
+			const relative = paths.find((p) => !/^(\/|[A-Za-z]:[\\/])/.test(p));
 			if (relative) return `duet: while working on ${peer}'s request, a patch run through the shell must name files by their full path under ${folder || "this session's folder"} (${relative} isn't). ${ask}`;
 		} else {
 			if (BACKGROUND.test(command)) return `duet: background and scheduled commands are off while working on ${peer}'s request; run it in the foreground. ${ask}`;
