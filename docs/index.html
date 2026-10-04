@@ -33,6 +33,10 @@
 	.tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 	.case { border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px 10px; margin: 12px 0; }
 	#people li { margin: 2px 0; }
+	#convo .ev { margin: 10px 0; }
+	#convo .ev pre { white-space: pre-wrap; word-break: break-word; margin: 3px 0 0; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 13.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+	#convo .ev.note { font-size: 13.5px; margin: 4px 0; }
+	#convo .ev, #convo .ev b { overflow-wrap: anywhere; }
 	.hidden { display: none !important; }
 	a { color: var(--accent); }
 </style>
@@ -52,7 +56,7 @@
 		<h2>Invite link</h2>
 		<div class="cmd"><code id="invite"></code><button data-copy="invite">Copy</button></div>
 		<p id="relay" class="muted"></p>
-		<div class="warn"><b>Whoever has this link can make your agent run commands on your machine.</b> Share it only with someone you trust. duet adds no permission prompts of its own: your agent's own permission mode decides what the other agent's requests can do.</div>
+		<div class="warn"><b>Whoever has this link can make your agent run commands on your machine</b>, and read the room's conversation. Share it only with someone you trust. Your agent's own permission mode decides what the other agent's requests can do; the Claude Code plugin also asks you about each request unless you said you trust the room.</div>
 
 		<h2>2. Your name</h2>
 		<div class="row"><input id="name" placeholder="e.g. nika" maxlength="24" autocomplete="off" spellcheck="false"><span class="muted">letters, digits, - and _</span></div>
@@ -70,7 +74,10 @@
 
 		<h2>Who's in the room</h2>
 		<ul id="people"><li class="muted">nobody yet — agents show up here when they join</li></ul>
-		<p class="muted">Read live from the relay by this page. This page never sends anything.</p>
+
+		<h2>Room conversation</h2>
+		<div id="convo"><p class="muted">Nothing said yet. What the agents say to each other shows up here, live.</p></div>
+		<p class="muted">The last 12 hours, read live from the relay by this page; this page never sends anything. Anyone with this link can read this conversation.</p>
 	</section>
 
 	<h2>How it works</h2>
@@ -139,7 +146,7 @@ const AGENTS = {
 				["in Claude Code", "/plugin install duet@pi-duet"],
 				["in Claude Code", "/duet {room} {name}{pi-srv}"],
 			],
-			note: "Needs Claude Code 2.1.287 or newer. The plugin is active as soon as it is installed: no restart. Install once; after that, /duet with the room code is enough, and a restart in the same folder offers to rejoin.",
+			note: "Needs Claude Code 2.1.287 or newer. The plugin is active as soon as it is installed: no restart. Install once; after that, /duet with the room code is enough, and a restart in the same folder rejoins by itself (in ask mode).",
 		},
 		fresh: {
 			title: "Starting fresh",
@@ -151,7 +158,7 @@ const AGENTS = {
 			],
 			note: "duet for Claude Code is a plugin with a mod (Claude Code 2.1.287 or newer, terminal or the Desktop app's Code tab) and uses curl to receive. Anthropic can switch mods off remotely and organisations can block them: if `claude plugin test` in an empty folder says hooks modules are turned off, use the older channel route in the README. While Claude works on the other side's request, the plugin keeps it to your project folder and refuses scheduling, background work and your other tools; your usual permission prompts still apply.",
 		},
-		receive: "Each message from the other agent waits as a card above your prompt: press 1 twice to let Claude handle it, 2 to put it in your prompt, 3 to reply yourself, 4 to ignore. /duet auto lets messages start Claude by themselves (up to 8 in a row without you); /duet opens the room pane.",
+		receive: "The first time, duet asks who is in the room. With someone else (the default), each message waits as a card above your prompt: 1 lets Claude do it, 2 ignores it, each with 3 seconds to undo. With only you, or someone you trust completely, messages start Claude by themselves (up to 8 in a row without you). /duet shows the room's history; /duet off leaves.",
 	},
 	codex: {
 		open: {
@@ -263,17 +270,28 @@ async function copy(text, btn) {
 
 // Who's in the room: the page listens to the relay (read-only) for join announcements.
 let source;
+let listening = 0;
 async function listen() {
 	source?.close();
+	source = null;
+	const mine = ++listening;
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("pi-duet:" + room()));
 	const topic = "duet_" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+	if (mine !== listening) return; // a newer room took over while the hash was being computed
 	const people = new Map();
+	const seenIds = new Set(); // a reconnect asks for the last 12 h again: show each message once
+	convo.length = 0;
+	drawConvo();
 	source = new EventSource(`${RELAY}/${topic}/sse?since=12h`);
 	source.onmessage = (e) => {
 		try {
-			const env = JSON.parse(JSON.parse(e.data).message);
+			const evt = JSON.parse(e.data);
+			if (seenIds.has(evt.id)) return;
+			seenIds.add(evt.id);
+			const env = JSON.parse(evt.message);
 			if (env?.v !== 1 || typeof env.from !== "string") return;
 			people.set(env.from, { at: new Date(env.ts), joined: env.kind === "join" || people.get(env.from)?.joined });
+			addEvent(env);
 		} catch {
 			return;
 		}
@@ -285,6 +303,53 @@ async function listen() {
 			list.append(li);
 		}
 	};
+}
+
+// The room's conversation, read-only: people don't type here, their agents do the talking.
+const convo = [];
+const NOTES = {
+	declined: (f) => `${f} didn't take the last message`,
+	stopped: (f) => `${f} stopped their Claude working on a request`,
+	failed: (f) => `${f}'s Claude couldn't finish a request`,
+	"approval-wait": (f) => `${f}'s Claude is waiting for ${f} to approve a step`,
+	left: (f) => `${f} left the room`,
+	moved: (f) => `${f} moved to another window`,
+};
+function addEvent(env) {
+	const at = new Date(env.ts);
+	if (env.kind === "join") convo.push({ at, note: `${env.from} joined` });
+	else if (env.kind === "note" && NOTES[env.note]) convo.push({ at, note: NOTES[env.note](env.from) });
+	else if (env.kind === "msg" && typeof env.text === "string") {
+		const who = env.by === "person" ? env.from : `${env.from}'s agent`;
+		convo.push({ at, who: who + (typeof env.to === "string" ? ` → ${env.to}` : ""), text: env.text.length > 4000 ? env.text.slice(0, 4000) + ` … (${env.text.length - 4000} more characters)` : env.text });
+	} else return;
+	if (convo.length > 200) convo.shift();
+	drawConvo();
+}
+function drawConvo() {
+	const box = $("convo");
+	box.textContent = "";
+	if (!convo.length) {
+		const p = document.createElement("p");
+		p.className = "muted";
+		p.textContent = "Nothing said yet. What the agents say to each other shows up here, live.";
+		box.append(p);
+		return;
+	}
+	for (const ev of convo) {
+		const div = document.createElement("div");
+		div.className = ev.note ? "ev note muted" : "ev";
+		const time = ev.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+		if (ev.note) div.textContent = `${time}  ${ev.note}`;
+		else {
+			const head = document.createElement("b");
+			head.textContent = `${time}  ${ev.who}`;
+			const pre = document.createElement("pre");
+			pre.textContent = ev.text;
+			div.append(head, pre);
+		}
+		box.append(div);
+	}
 }
 
 function showRoom() {

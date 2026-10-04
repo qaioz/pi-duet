@@ -27,8 +27,12 @@ export function isRelayUrl(url) {
 	return /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(url);
 }
 
+// Words that mean "leave" in /duet (pi uses /duet off). None of them can be a room name.
+export const LEAVE_WORDS = ["off", "leave", "stop", "disable", "quit", "exit"];
+
 // A room code is the shared secret: letters, digits and dashes, 3 to 64 characters.
-export const isRoomCode = (room) => typeof room === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$/.test(room);
+export const isRoomCode = (room) =>
+	typeof room === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$/.test(room) && !LEAVE_WORDS.includes(room.toLowerCase());
 
 const hex = (bytes) => Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
 

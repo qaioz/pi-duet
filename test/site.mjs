@@ -163,6 +163,17 @@ try {
 	await page.waitForFunction(() => document.getElementById("people").textContent.includes("nika"), null, { timeout: 15_000 });
 	check("who's in the room shows a join", (await page.textContent("#people")).includes("nika"), (await page.textContent("#people")).trim());
 
+	// The room conversation: read-only, live, and what peers send is shown as text, never as HTML.
+	await publish(SERVER, topicFor(room), envelope({ fromId: "site-test", from: "nika", kind: "msg", text: "please run the tests <img src=x onerror=window.PWNED=1>" }));
+	await publish(SERVER, topicFor(room), { ...envelope({ fromId: "site-test", from: "nika", kind: "msg" }), kind: "note", note: "declined", text: undefined });
+	await page.waitForFunction(() => document.getElementById("convo").textContent.includes("didn't take"), null, { timeout: 15_000 });
+	const convo = await page.evaluate(() => ({ text: document.getElementById("convo").textContent, imgs: document.querySelectorAll("#convo img").length, inputs: document.querySelectorAll("#convo input, #convo textarea, #convo button").length, pwned: !!window.PWNED }));
+	check(
+		"room conversation shows messages and notes as plain text, with nothing to type into",
+		convo.text.includes("nika's agent") && convo.text.includes("please run the tests <img") && convo.text.includes("nika didn't take the last message") && convo.imgs === 0 && convo.inputs === 0 && !convo.pwned,
+		`text: ${JSON.stringify(convo.text.slice(0, 160))}; img elements ${convo.imgs}; inputs ${convo.inputs}; script ran ${convo.pwned}`,
+	);
+
 	// Nothing but the page itself and the relay is contacted; the room code never leaves the browser.
 	const hosts = [...new Set(requests.map((u) => new URL(u).origin))];
 	const leaked = requests.filter((u) => u.includes(room));

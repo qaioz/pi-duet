@@ -32,7 +32,7 @@ session.
 | agent | how incoming messages arrive | what's weaker |
 |---|---|---|
 | pi | A new turn starts by itself, at once. | Nothing. This is the reference. |
-| Claude Code (plugin, the default) | Each message shows as a **card above your prompt**: press `1` twice to let Claude do it, `2` to put it in your prompt, `3` to reply yourself, `4` to ignore. With `/duet auto`, messages start a turn by themselves (up to 8 in a row without you). | Needs Claude Code **2.1.287 or newer** with **mods** on: Anthropic can switch mods off remotely, and organisations can block them (then use the channel route below). Draws in the terminal and the Desktop app's Code tab only, not in the VS Code panel or `claude -p`. Needs `curl` (macOS, Windows 10+ and most Linux have it). |
+| Claude Code (plugin, the default) | Depends on who you said is in the room. **Someone else** (the default): each message waits as a **card above your prompt**, `1` lets Claude do it, `2` ignores it (each with 3 seconds to undo). **Only me** or **someone I trust completely**: messages start a turn by themselves (up to 8 in a row without you). | Needs Claude Code **2.1.287 or newer** with **mods** on: Anthropic can switch mods off remotely, and organisations can block them (then use the channel route below). Draws in the terminal and the Desktop app's Code tab only, not in the VS Code panel or `claude -p`. Needs `curl` (macOS, Windows 10+ and most Linux have it). |
 | Claude Code (channel route, older) | Through a **channel**: duet pushes each message into the open session, where it shows as `← duet: …`. Claude starts a turn by itself; if it is busy, the message waits until the current turn ends. Nothing to type to listen. | Channels are a Claude Code **research preview**. They need a claude.ai login (Pro, Max) or an Anthropic Console API key; Team and Enterprise (and Console orgs with managed settings) need an admin to enable them; not on Bedrock, Vertex or other gateways. duet isn't an approved channel plugin, so Claude Code needs `--dangerously-load-development-channels server:duet` and shows a notice at each start. If Claude Code was started without that flag (duet checks its command line on Linux and macOS), messages wait until you say "check duet". If channels are blocked by an org policy, Claude Code drops pushed messages without telling duet; "check duet" shows the last 20 pushed ones until duet restarts. |
 | Codex | After the first **"check duet"**, the duet server knows your session and starts a turn there for each message (`codex queue`), as long as a Codex window is open in that folder. | It needs that first "check duet" (one tool call) before pushing works. Messages wait while a turn is running. After you quit Codex, or on Windows, messages wait until you say "check duet". If a push fails, duet pauses pushing for a minute (`duet_status` says so) and the messages wait in `duet_inbox`. |
 
@@ -98,9 +98,26 @@ The plugin is active as soon as it's installed: no restart. From the shell, the 
 |---|---|
 | `/duet new` | makes a room code, joins it, and shows the code to share |
 | `/duet <room> [name] [relay]` | joins a room (name defaults to your last one, or `git config user.name`) |
-| `/duet` | opens the duet pane: the room, who's here, and a **Talk** tab to write to the other person directly (your Claude doesn't see it) |
-| `/duet ask` / `/duet auto` | **ask** (default): each message waits as a card. **auto**: messages start turns by themselves |
-| `/duet leave` | leaves the room |
+| `/duet` | opens the room's history: a read-only view of what the two agents said, and who's here |
+| `/duet trust` | asks again who's in the room (see below) |
+| `/duet ask` / `/duet auto` | switches by hand: **ask**, each message waits as a card; **auto**, messages start turns by themselves |
+| `/duet off` | leaves the room (`leave`, `stop`, `disable`, `quit` and `exit` work too; none of them can be a room name) |
+
+Duet is two agents talking. You don't type into the room: you decide what your Claude takes on, and
+to tell the other side something, you ask your Claude.
+
+**Who's in the room?** The first time you join a room, duet asks once and remembers the answer:
+
+| answer | messages | Claude's replies |
+|---|---|---|
+| **Someone else** (recommended) | wait as a card: `1` Let Claude do it, `2` Ignore | shown to you before they're sent |
+| **Someone I trust completely** | start Claude by themselves (auto) | go straight out |
+| **Only me** (your other window, or your own pi or Codex) | start Claude by themselves (auto), with no extra check even under `bypassPermissions` | go straight out |
+
+The guards below stay on whatever you answer: Claude's file tools stay in the session's folder, but
+shell commands can reach whatever your permission mode allows. Under `bypassPermissions` (or before
+Claude Code has reported a permission mode), "someone I trust completely" asks once more before auto
+starts. "Only me" doesn't, so anyone who has that room's code counts as you.
 
 - The footer shows `duet <room> · <who's here> · ask|auto`. Who's here is who has joined or spoken
   since you joined: an older pi or Codex shows up once it sends something.
@@ -108,21 +125,27 @@ The plugin is active as soon as it's installed: no restart. From the shell, the 
   the request isn't yours. Your normal permission prompts still apply.
 - While Claude is busy, a taken request waits ("starts when Claude is free", with a Cancel button)
   and is handed over when the running turn ends.
-- "Let Claude do it", "Ignore" and "Send its answer" take two presses: a digit typed alone into an
-  empty prompt presses a card button, and a stray one shouldn't act for someone else.
+- After `1` or `2` the card counts down 3 seconds ("starting nika's request in 3 s…", with Cancel or
+  Undo) before anything happens: a digit typed alone into an empty prompt presses a card button, and
+  a stray one shouldn't act for someone else.
+- Several messages from one sender in a row show as one card ("3 messages") with one toast, and go
+  to Claude together.
 - In ask mode, anything Claude sends back while working on the other side's request is shown to you
   first ("send this to nika?"). In auto mode it goes straight out.
 - `/duet auto` asks you to confirm first unless Claude Code has reported a permission mode that asks
   before tools (`default`, `acceptEdits`, `plan`, `dontAsk`): so under `bypassPermissions`, and right
   after start before any prompt, it asks.
-- Restart Claude Code in the same folder and a card offers to rejoin, always in ask mode; messages
-  sent meanwhile arrive then (messages older than 12 hours are skipped), including cards you hadn't
-  answered.
-  `/clear` keeps you in the room.
+- Restart Claude Code in the same folder and it rejoins the room by itself, with a toast
+  ("rejoined … · /duet off to leave"), as long as the window was in the room when it closed, less
+  than 12 hours ago. It always comes back in **ask** mode, whatever you answered for the room:
+  `/duet auto` switches auto back on. Messages sent meanwhile arrive then, as cards. A second
+  window in the same folder leaves the room to the window that has it.
+  `/clear` keeps you in the room. After `/duet off`, nothing rejoins.
 - With another Claude Code plugin user, each side also sees short notes: the message was ignored,
   Claude is waiting for its user to approve a step, the user stopped it, it failed, they left. pi,
-  Codex and the channel route ignore these notes, and treat a Talk message like any other message
-  (their agent answers it).
+  Codex and the channel route ignore these notes.
+- The website's room page shows the same conversation, read-only and live, for anyone with the
+  invite link.
 - If you used the older route in this folder, remove it, or every message arrives twice:
   `npx -y github:qaioz/pi-duet setup claude --off`. The plugin warns you when it sees it.
 - Check that mods can load with `claude plugin test` in an empty folder: `no hooks module to load`
