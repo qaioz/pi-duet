@@ -1,0 +1,6 @@
+# --- duet hosted MCP server (added 2026-10-04; config in /opt/duet-mcp) ---
+# No access log (Caddy logs none unless asked): requests carry no room code in the URL anyway.
+mcp-duet.gaioz.online {
+	header -Server
+	reverse_proxy 127.0.0.1:8092
+}

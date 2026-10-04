@@ -323,7 +323,7 @@ async function plumbing() {
 
 	// A name outside the rule is made to fit, or peers would drop everything it sends.
 	const odd = startAgent("bob", freshRoom(), { agentDir: join(ROOT, "fit-agent"), cwd: join(ROOT, "fit"), extraEnv: { DUET_NAME: "bob q@laptop" } });
-	const fitted = await until(() => statusOf(odd)?.startsWith("duet: bob-q-laptop") && statusOf(odd), 20_000, "fitted name").catch(() => statusOf(odd));
+	const fitted = await until(() => statusOf(odd) === "duet: bob-q-laptop" && statusOf(odd), 20_000, "fitted name").catch(() => statusOf(odd)); // past "(connecting…)"
 	await odd.stop();
 	check("a name outside the rule is made to fit", fitted === "duet: bob-q-laptop", `DUET_NAME="bob q@laptop" → status ${JSON.stringify(fitted)}`);
 	fake.close();

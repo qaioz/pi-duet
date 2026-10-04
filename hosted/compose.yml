@@ -1,0 +1,27 @@
+# duet's hosted MCP server on the reset14 box, next to the relay. Run from /opt/duet-mcp/hosted:
+#   docker compose up -d --build
+# Caddy (in /opt/reset14/deploy, host networking) serves it: mcp-duet.gaioz.online -> 127.0.0.1:8092.
+# Host networking: it reaches the relay at https://duet.gaioz.online from the box's own address, which
+# the relay exempts from its request limits (its 60-subscriptions-per-address cap still applies, so
+# this server keeps at most 50 rooms open).
+name: duet-mcp
+services:
+  mcp:
+    build:
+      context: ..
+      dockerfile: hosted/Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      HOST: 127.0.0.1
+      PORT: "8092"
+      DUET_SERVER: https://duet.gaioz.online
+      PUBLIC_URL: https://mcp-duet.gaioz.online
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 384m
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
