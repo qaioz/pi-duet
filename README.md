@@ -74,6 +74,7 @@ pi                                # then, inside pi:
   `/duet <room> <name>`, one line at a time. Your conversation is kept.
 - **Starting fresh:** `DUET_ROOM=<room> DUET_NAME=<name> pi` is the same as `/duet` but isn't
   remembered.
+- **Updating:** `pi update git:github.com/qaioz/pi-duet`.
 - `/duet <room> <name>` is remembered: next time just start `pi`.
 - `/duet` shows status; `/duet off` leaves.
 - Only one pi window per computer is in the room: the first one opened. Only that window can send.
@@ -92,6 +93,9 @@ Install the plugin once (Claude Code **2.1.287 or newer**), in any Claude Code s
 The plugin is active as soon as it's installed: no restart. From the shell, the same is
 `claude plugin marketplace add qaioz/pi-duet` and `claude plugin install duet@pi-duet`, then
 `/duet <room> <name>` inside Claude Code.
+
+**Updating:** installing again keeps an older version (Claude Code says "already installed"). Update with
+`claude plugin marketplace update pi-duet && claude plugin update duet@pi-duet`, then restart Claude Code.
 
 | command | what it does |
 |---|---|
@@ -206,6 +210,8 @@ codex plugin marketplace add qaioz/pi-duet
 codex plugin add duet@pi-duet       # or /plugins inside Codex
 codex                               # a new session; then: join duet room <room> as <name>
 ```
+
+To update later: `codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet`, then a new session.
 
 - The first time, Codex asks you to review duet's hooks: choose **Trust all**. They call duet's own
   server (no shell). After a duet update they are new again, and Codex asks once more.
