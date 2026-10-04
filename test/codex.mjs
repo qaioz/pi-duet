@@ -153,13 +153,18 @@ async function main() {
 		otherMcp: checkCodexTool({ tool: "mcp__github__create_issue", input: {} }, ctx),
 		agent: checkCodexTool({ tool: "spawn_agent", input: {} }, ctx),
 		plan: checkCodexTool({ tool: "update_plan", input: {} }, ctx),
+		// Observed live (gpt-5.6-luna): apply_patch run through the shell, reported as Bash.
+		shellPatch: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: /tmp/x.txt\n+hi\n*** End Patch\nPATCH" } }, ctx),
+		shellPatchIn: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: src/x.txt\n+hi\n*** End Patch\nPATCH" } }, ctx),
+		shellPatchAgents: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: AGENTS.md\n+x\n*** End Patch\nPATCH" } }, ctx),
 	};
 	const no = (v, re) => typeof v === "string" && re.test(v);
 	check(
 		"guard: patches stay in the folder and off config paths; background, other MCP tools and agents are off",
 		verdicts.inside === null && no(verdicts.outside, /outside/) && no(verdicts.agents, /controls what runs/) && no(verdicts.codexDir, /controls what runs/) && no(verdicts.moveOut, /outside/) &&
 			verdicts.bash === null && no(verdicts.bg, /background/) && no(verdicts.nohup, /background/) && no(verdicts.cron, /background/) && verdicts.ownMcp === null &&
-			no(verdicts.otherMcp, /other tools/) && no(verdicts.agent, /off/) && verdicts.plan === null,
+			no(verdicts.otherMcp, /other tools/) && no(verdicts.agent, /off/) && verdicts.plan === null &&
+			no(verdicts.shellPatch, /outside/) && verdicts.shellPatchIn === null && no(verdicts.shellPatchAgents, /controls what runs/),
 		JSON.stringify(Object.fromEntries(Object.entries(verdicts).map(([k, v]) => [k, v === null ? "ok" : v.slice(0, 40)]))),
 	);
 	check("guard: every file a patch names", patchPaths("*** Add File: a\n*** Delete File: b\n*** Update File: c\n*** Move to: d").join() === "a,b,c,d", "a,b,c,d");

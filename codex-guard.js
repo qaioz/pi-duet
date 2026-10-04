@@ -35,17 +35,25 @@ export function checkCodexTool(call, { folder, home, peer, ownServer = "duet" })
 		return `duet: while working on ${peer}'s request, your user's other tools (${tool}) are off. ${ask}`;
 	}
 	if (OFF.test(tool)) return `duet: while working on ${peer}'s request, ${tool} is off. ${ask}`;
+	let paths;
+	let patching = tool === "apply_patch";
 	if (tool === "Bash") {
 		const command = Array.isArray(input.command) ? input.command.join(" ") : String(input.command ?? input.cmd ?? "");
-		if (BACKGROUND.test(command)) return `duet: background and scheduled commands are off while working on ${peer}'s request; run it in the foreground. ${ask}`;
-		return null;
+		// Codex models often run apply_patch through the shell (`apply_patch <<'PATCH' …`): check its files.
+		if (/\*\*\* Begin Patch/.test(command)) {
+			patching = true;
+			paths = patchPaths(command);
+		} else {
+			if (BACKGROUND.test(command)) return `duet: background and scheduled commands are off while working on ${peer}'s request; run it in the foreground. ${ask}`;
+			return null;
+		}
 	}
-	const paths = tool === "apply_patch" ? patchPaths(input.command ?? input.patch ?? input.input) : [input.path, input.file_path].filter((p) => typeof p === "string" && p);
+	paths ??= patching ? patchPaths(input.command ?? input.patch ?? input.input) : [input.path, input.file_path].filter((p) => typeof p === "string" && p);
 	if (!folder) return paths.length ? `duet: duet doesn't know this session's folder yet, so ${peer}'s request may not change files. ${ask}` : null;
 	for (const path of paths) {
 		const rel = inside(path, folder, home);
 		if (rel === null) return `duet: while working on ${peer}'s request, only files under ${folder} may be used; ${path} is outside it. ${ask}`;
-		const hit = tool === "apply_patch" ? protectedPart(rel) : undefined;
+		const hit = patching ? protectedPart(rel) : undefined;
 		if (hit) return `duet: ${peer}'s request may not change ${rel}: ${hit} controls what runs on this computer later. ${ask}`;
 	}
 	return null;
