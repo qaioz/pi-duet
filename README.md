@@ -277,6 +277,9 @@ codex
 - Use `config.toml`, not `-c` flags, for duet. A `-c` flag makes Codex run its own private server,
   which `codex queue` can't reach.
 - Don't use both the plugin and `setup codex`: two servers named duet.
+- A one-off `codex exec` in the folder never takes the room. A background Codex session that another
+  tool drives through `codex app-server` can: messages then go to that session until it ends, and
+  your window takes the room back.
 
 #### Codex: what duet guards, and what it doesn't
 

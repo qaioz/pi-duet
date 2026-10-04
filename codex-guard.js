@@ -57,9 +57,11 @@ export function checkCodexTool(call, { folder, home, peer, ownServer = "duet" })
 		if (/\*\*\*\s*Begin Patch/.test(command)) {
 			if (!/^\s*apply_?patch\b/.test(command)) return `duet: while working on ${peer}'s request, run apply_patch on its own (nothing before it, such as cd). ${ask}`;
 			// Nothing after it either: the heredoc must end the command.
+			// The first line is exactly `apply_patch <<'TAG'`, and TAG appears once, as the last line (bash
+			// ends a heredoc at the first such line and runs whatever follows).
 			const lines = command.trimEnd().split("\n");
-			const tag = lines[0].match(/<<-?\s*['"]?(\w+)['"]?\s*$/)?.[1];
-			if (!tag || lines.at(-1).trim() !== tag) return `duet: while working on ${peer}'s request, run apply_patch on its own (nothing after the patch). ${ask}`;
+			const tag = lines[0].match(/^\s*apply_?patch\s+<<-?\s*['"]?(\w+)['"]?\s*$/)?.[1];
+			if (!tag || lines.at(-1).trim() !== tag || lines.slice(1, -1).some((l) => l.trim() === tag)) return `duet: while working on ${peer}'s request, run apply_patch on its own (nothing after the patch). ${ask}`;
 			patching = true;
 			paths = patchPaths(command);
 			// "~/x" is not a full path to Codex's patch parser: it is joined onto the command's folder.

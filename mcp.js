@@ -413,13 +413,15 @@ function ancestorArgs() {
 	}
 	return out;
 }
-// Started for a one-off run (`codex exec`, which runs its own app server), not a window: it must not
-// take the room from the user's window, or messages would go to a conversation nobody sees.
+// Started for a one-off run (`codex exec` or `codex e`, which run their own app server), not a window:
+// it must not take the room from the user's window, or messages would go to a conversation nobody sees.
+// Known gap: a background session driven through `codex app-server` (another tool's Codex client) looks
+// like the user's own window here; if it takes the room, the window gets it back when it ends.
 let oneOff;
 function oneOffRun() {
 	if (oneOff === undefined) {
 		const chain = ancestorArgs() ?? [];
-		oneOff = chain.some((a) => /(^|[\/\\])codex(\.js|\.exe)?$/.test(a[0] === "node" || /(^|\/)node$/.test(a[0] ?? "") ? (a[1] ?? "") : (a[0] ?? "")) && a.includes("exec"));
+		oneOff = chain.some((a) => /(^|[\/\\])codex(\.js|\.exe)?$/.test(a[0] === "node" || /(^|\/)node$/.test(a[0] ?? "") ? (a[1] ?? "") : (a[0] ?? "")) && (a.includes("exec") || a.includes("e")));
 	}
 	return oneOff;
 }

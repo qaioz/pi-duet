@@ -191,6 +191,8 @@ async function main() {
 		atNoon: checkCodexTool({ tool: "Bash", input: { command: 'echo "at noon"' } }, ctx),
 		afterPatch: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: /w/r/a\n+x\n*** End Patch\nEOF\nnohup ./evil &" } }, ctx),
 		tildePatch: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: ~/proj/a\n+x\n*** End Patch\nEOF" } }, ctx),
+		earlyEnd: checkCodexTool({ tool: "Bash", input: { command: "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: /w/r/a\n+x\n*** End Patch\nEOF\nnohup ./evil &\nEOF" } }, ctx),
+		firstLine: checkCodexTool({ tool: "Bash", input: { command: "apply_patch; nohup ./evil & <<'EOF'\n*** Begin Patch\n*** Add File: /w/r/a\n+x\n*** End Patch\nEOF" } }, ctx),
 		applypatch: checkCodexTool({ tool: "Bash", input: { command: "applypatch <<'EOF'\n*** Begin Patch\n*** Add File: /etc/x\n+x\n*** End Patch\nEOF" } }, ctx),
 		gitAt: checkCodexTool({ tool: "Bash", input: { command: 'git commit -m "look at this"' } }, ctx),
 		grepScreen: checkCodexTool({ tool: "Bash", input: { command: "grep screen notes.txt 2>&1" } }, ctx),
@@ -200,7 +202,7 @@ async function main() {
 		no(more.indented, /outside/) && no(more.unreadable, /couldn't read/) && no(more.driveRel, /plain path/) && no(more.shC, /background/) && no(more.pathNohup, /background/) && no(more.bashCNohup, /background/) &&
 			no(more.mcpRes, /off/) && no(more.sendInput, /off/) && more.gitAt === null && more.grepScreen === null &&
 			no(more.cdPatch, /on its own/) && no(more.relShellPatch, /full path/) && no(more.bgMid, /background/) && no(more.bgBrace, /background/) && no(more.envNohup, /background/) && no(more.systemctl, /background/) &&
-			more.redirect === null && more.toUser === null && more.pipeAmp === null && more.atNoon === null && no(more.afterPatch, /nothing after/) && no(more.tildePatch, /full path/) && no(more.applypatch, /outside/),
+			more.redirect === null && more.toUser === null && more.pipeAmp === null && more.atNoon === null && no(more.afterPatch, /nothing after/) && no(more.tildePatch, /full path/) && no(more.applypatch, /outside/) && no(more.earlyEnd, /nothing after/) && more.firstLine !== null,
 		JSON.stringify(Object.fromEntries(Object.entries(more).map(([k, v]) => [k, v === null ? "ok" : v.slice(0, 30)]))),
 	);
 	check("guard: every file a patch names", patchPaths("*** Add File: a\n*** Delete File: b\n*** Update File: c\n*** Move to: d").join() === "a,b,c,d", "a,b,c,d");
