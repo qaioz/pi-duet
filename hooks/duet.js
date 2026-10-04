@@ -1098,10 +1098,17 @@ function notePermissionMode(e) {
 
 export function register(on) {
 	on("session.start", async ($, e, next) => {
+		// First: a /duet typed (or given on the command line) as Claude Code starts must find the
+		// command. Registered after the work below, it lost that race on a Mac (seen 2026-10-04).
+		try {
+			await $.command.register({ name: "duet", description: "Pair with another developer's agent: /duet new, /duet <room>, /duet off", argumentHint: "[new | <room> [name] [relay] | off | trust | ask | auto | status]", immediate: true });
+		} catch {}
 		cwd = e.cwd || (await $.session.cwd());
 		home = (await $.env.get("HOME")) || (await $.env.get("USERPROFILE")) || "";
 		duetDir = ((await $.env.get("DUET_HOME")) || `${home.replace(/[\\/]+$/, "")}/.duet`).replace(/\\/g, "/");
 		const relay = (await $.env.get("DUET_SERVER")) || "";
+		const envRoom = (await $.env.get("DUET_ROOM")) || "";
+		const envName = (await $.env.get("DUET_NAME")) || "";
 		if (relay && isRelayUrl(relay)) server = relay.replace(/\/+$/, "");
 		installId = (await $.store.get("install")) || "";
 		if (!installId) {
@@ -1150,6 +1157,11 @@ export function register(on) {
 			if (active && owner?.token === active.token && !owner.released) {
 				token = active.token;
 				void join($, active.code, active.name, active.mode, true, active.relay);
+			} else if (envRoom && !(await $.env.get("DUET_ENV_JOINED"))) {
+				// Started as DUET_ROOM=<room> DUET_NAME=<name> claude (the website's line): join as
+				// /duet <room> <name> would, whenever this module loads. Once per process: not again on /clear.
+				await $.env.set("DUET_ENV_JOINED", "1");
+				void join($, envRoom, envName || undefined, "ask", false);
 			} else {
 				void autoRejoin($);
 			}
@@ -1171,9 +1183,6 @@ export function register(on) {
 					required: ["text"],
 				},
 			});
-		} catch {}
-		try {
-			await $.command.register({ name: "duet", description: "Pair with another developer's agent: /duet new, /duet <room>, /duet off", argumentHint: "[new | <room> [name] [relay] | off | trust | ask | auto | status]", immediate: true });
 		} catch {}
 		return next(e);
 	});
