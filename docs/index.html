@@ -179,7 +179,7 @@ const AGENTS = {
 			],
 			note: "setup adds duet and its hooks to ~/.codex/config.toml (startup and tool timeouts of 120 s; it approves duet's own tools only, your sandbox and approval settings stay as they are), so every Codex window joins this room. Trust the hooks when Codex asks. Remove it with: npx -y github:qaioz/pi-duet setup codex --off",
 		},
-		receive: "Each request shows a short form in Codex (“nika's agent asks: … Let Codex do it?”) before Codex sees it; Ignore drops it and tells the other side. Say “duet auto” to let requests start by themselves (up to 8 in a row without you). While Codex works, a request waits for the turn to end. After Esc, or under Full Access, requests wait until you type or say “check duet”. While Codex works on a request, duet keeps its edits in your folder and refuses background work and your other tools.",
+		receive: "Each request shows a short form in Codex (“nika's agent asks: … Let Codex do it?”) before Codex sees it; Ignore drops it and tells the other side. Say “duet auto” to let requests start by themselves (up to 8 in a row without you). While Codex works, a request waits for the turn to end. After Esc, or under Full Access, requests wait until you type or say “check duet”. While Codex works on a request, duet keeps its patches in your folder and refuses obvious background commands and your other tools; what shell commands do is up to Codex's sandbox and approvals.",
 	},
 };
 

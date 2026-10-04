@@ -555,18 +555,19 @@ async function readFileLock($, path) {
 	}
 }
 
+// true / false, or undefined where it can't be told (no `kill`, as on Windows).
 async function pidAlive($, pid) {
 	try {
 		return (await $.process.run(["kill", "-0", String(pid)], { timeoutMs: 3000 })).exitCode === 0;
 	} catch {
-		return false;
+		return undefined;
 	}
 }
 
 async function fileLockHeld($, l) {
 	if (!l || l.released) return false;
-	if (l.v === 1) return !!l.pid && (await pidAlive($, l.pid));
-	if (l.pid && !(await pidAlive($, l.pid))) return false;
+	if (l.v === 1) return !!l.pid && (await pidAlive($, l.pid)) !== false;
+	if (l.pid && (await pidAlive($, l.pid)) === false) return false;
 	return Date.now() - (Number(l.at) || 0) < LOCK_STALE_MS;
 }
 
@@ -1228,7 +1229,7 @@ export function register(on) {
 			// All session.end hooks share 1.5 s: best effort, and nothing on a crash.
 			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "note", note: "left" })).catch(() => {});
 			void $.store.set(r.lockKey, { token, cwd, at: 0, released: true });
-			if (r.fileLock) void writeFileLock($, r.fileLock, true);
+			if (r.fileLock) void readFileLock($, r.fileLock).then((l) => (l?.token === token ? writeFileLock($, r.fileLock, true) : undefined));
 			void $.store.delete("active:" + sessionId);
 		}
 		if (e.reason !== "clear" && e.reason !== "resume") void $.store.delete("turn:" + sessionId);

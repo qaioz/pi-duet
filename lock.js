@@ -92,7 +92,7 @@ export async function takeLock(path, me) {
 /** The owner's beat: false when another client holds the lock now (it took the room over). */
 export function refreshLock(path, me) {
 	const cur = readLock(path);
-	if (cur && cur.token !== me.token) return false; // missing (deleted by hand, unreadable): ours again
+	if (cur && cur.token !== me.token && !cur.released) return false; // missing or released: ours again
 	write(path, me);
 	return true;
 }

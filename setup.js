@@ -113,6 +113,14 @@ function setupCodex() {
 	const path = join(dir, "config.toml");
 	const old = existsSync(path) ? readFileSync(path, "utf8") : "";
 
+	// Our hooks go between two marker lines. Only a complete pair is ever removed: a begin marker with
+	// no end would otherwise take everything after it.
+	const lines = old.split("\n").map((l) => l.trim());
+	const begins = lines.filter((l) => l === HOOKS_BEGIN).length;
+	const ends = lines.filter((l) => l === HOOKS_END).length;
+	if (begins !== ends || lines.indexOf(HOOKS_BEGIN) > lines.indexOf(HOOKS_END)) {
+		fail(`${path} has a "${HOOKS_BEGIN}" line without its "${HOOKS_END}" (or the other way round). Fix or remove duet's hook lines by hand, then run setup again.`);
+	}
 	// Drop any earlier duet block: its hooks between the markers, its tables and our marker comment.
 	const kept = [];
 	let inDuet = false;
@@ -128,7 +136,11 @@ function setupCodex() {
 		if (!inDuet && line.trim() !== MARK) kept.push(line);
 	}
 	let text = kept.join("\n").replace(/\n+$/, "");
-
+	// Hooks the user defines inline (`[hooks]` with `Stop = [...]`, or `hooks = {…}`) can't take our
+	// `[[hooks.Stop]]` tables: Codex would refuse the whole file. Leave the hooks out and say how.
+	const events = Object.keys(JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "codex/hooks.json"), "utf8")).hooks);
+	const inline = new RegExp(`^\\s*(hooks\\s*=|(hooks\\.)?(${events.join("|")})\\s*=)`, "m");
+	const hooksClash = inline.test(text);
 	if (!off) {
 		const q = JSON.stringify; // a TOML basic string, for the characters allowed above
 		text += `${text ? "\n\n" : ""}${MARK}
@@ -140,9 +152,13 @@ startup_timeout_sec = 120
 tool_timeout_sec = 120
 default_tools_approval_mode = "approve"
 env_vars = ["CODEX_HOME"]
-
-${HOOKS_BEGIN}${hooksToml()}${HOOKS_END}
-`;
+${hooksClash ? "" : `\n${HOOKS_BEGIN}${hooksToml()}${HOOKS_END}\n`}`;
+		if (hooksClash) {
+			console.error(
+				`duet setup: ${path} defines Codex hooks inline, so duet's hooks were left out (adding them would break the file). ` +
+					"Without them, requests from the other agent wait until you say 'check duet' (ask mode). Add the hooks in codex/hooks.json of this package by hand to get the form.",
+			);
+		}
 	}
 
 	mkdirSync(dir, { recursive: true });

@@ -268,8 +268,8 @@ codex
     approval settings stay as they are.
   - the same hooks as the plugin, between `# duet hooks: begin` and `# duet hooks: end`; your own
     hooks stay.
-- Every Codex window then joins that room under that name (the newest session in a folder takes it).
-  Use the plugin for a room per folder.
+- Every Codex window then joins that room under that name: a new session takes it from an older one
+  in the same folder; in another folder the first one keeps it. Use the plugin for a room per folder.
 - It keeps a copy of the old file as `config.toml.before-duet`, and replaces an earlier duet block.
   Remove it with `npx -y github:qaioz/pi-duet setup codex --off`.
 - **Codex already open:** run `!npx -y github:qaioz/pi-duet setup codex …` inside Codex, `/quit`,
@@ -280,18 +280,27 @@ codex
 
 #### Codex: what duet guards, and what it doesn't
 
-While Codex works on the other side's request (from the prompt duet handed over, or from the point a
-turn-end hand-over continued your own turn), duet's PreToolUse hook refuses:
+While Codex works on the other side's request (from the prompt duet handed over, from the point a
+turn-end hand-over continued your own turn, or after `duet_inbox` showed requests), duet's PreToolUse
+hook refuses:
 
 - patches (`apply_patch`, also when run through the shell) to files outside the session's folder, or
-  to `.codex`, `AGENTS.md`, `.git`, `CLAUDE.md`, `.vscode` and the rest of the Claude Code plugin's list;
-- background and scheduled commands (`&`, `nohup`, `setsid`, `crontab`, `at`, `tmux`, …);
-- your other MCP servers' tools, subagents, and plugin or permission tools.
+  to `.codex`, `AGENTS.md`, `.git`, `CLAUDE.md`, `.vscode` and the rest of the Claude Code plugin's
+  list, and patches whose files it can't read;
+- shell commands that look like background or scheduled work (`&`, `nohup`, `setsid`, `crontab`,
+  `at`, `tmux`, …), a best-effort pattern match;
+- your other MCP servers' tools and resources, subagents and messages to them, and plugin or
+  permission tools.
 
-**It fails open:** Codex runs a hook that errors, times out (5 s) or gets no answer as if it weren't
-there, so if duet's server is slow or gone, the tool runs. It checks shell commands only for
-background work: what a command reads or writes is up to Codex's sandbox and approvals, which stay
-on. In auto mode, anything your sandbox and approval settings allow, the other side's requests can do.
+What it doesn't do:
+
+- **Shell commands are not checked for what they read or write.** `printf … > AGENTS.md` or a
+  script that starts its own background process gets through; Codex's sandbox and approvals decide.
+  Text typed into a shell session that is already open (`write_stdin`) never reaches a hook.
+- **It fails open, and so does the ask form:** Codex treats a hook that errors, times out or gets no
+  answer as if it weren't there. If duet's server is slow or gone, a tool runs, and a request handed
+  over without its UserPromptSubmit hook runs without the form.
+- In auto mode, anything your sandbox and approval settings allow, the other side's requests can do.
 
 ### Several windows
 

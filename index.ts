@@ -203,11 +203,12 @@ export default function (pi: ExtensionAPI) {
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
 			if (isPlaceholderName(parts[1])) return notify(`duet: "${parts[1]}" is the website's placeholder: use your own name`, "error");
 			if (parts[2] && !isRelayUrl(parts[2].replace(/\/+$/, ""))) return notify("duet: the server must be an http(s) URL", "error");
-				leave();
-			[room, name] = [parts[0], fitName(parts[1])];
-			server = (parts[2] || process.env.DUET_SERVER || DEFAULT_SERVER).replace(/\/+$/, "");
-			const owner = lockOwner();
-			if (owner) return notify(`duet: ${heldBy(owner)}`, "error");
+			// Check the new room's lock before leaving this one: a refusal leaves everything as it was.
+			const next = { room: parts[0], name: fitName(parts[1]), server: (parts[2] || process.env.DUET_SERVER || DEFAULT_SERVER).replace(/\/+$/, "") };
+			const theirs = readLock(lockPath(next.server, next.room, next.name));
+			if (theirs && theirs.token !== me.token && lockHeld(theirs)) return notify(`duet: ${describeHolder(theirs)} has room ${next.room} as ${next.name} on this computer — use that one, or another name`, "error");
+			leave();
+			[room, name, server] = [next.room, next.name, next.server];
 			updateConfig((c) => Object.assign(c, { room, name, server: parts[2] ? server : undefined }));
 			await joinRoom();
 			if (!sub) return notify(`duet: ${status}`, "error");

@@ -9,15 +9,20 @@
 // writes is the sandbox's business.
 import { inside, protectedPart } from "./hooks/guard.js";
 
-// Work that outlives the request: background jobs, schedulers, detached terminals.
-const BACKGROUND = /(^|[\s;&|(`$])(nohup|setsid|disown|crontab|at|batch|systemd-run|launchctl|schtasks|tmux|screen)(\s|$)|(^|[^&])&\s*($|[;)\n])/;
-// Tools that reach past this session: other agents, plugins, extra permissions.
-const OFF = /agent|plugin|permission/i;
+// Work that outlives the request: background jobs, schedulers, detached terminals. A program counts in
+// command position (start, after ; & | ( ` $( or a quote, or after sudo/env/exec/nohup-like words),
+// with or without a path; `&` at the end of a command (not && or 2>&1) is a background job.
+const BACKGROUND =
+	/(^|[;&|(`'"]|\$\(|\b(?:sudo|env|exec|command|time|xargs)\s)\s*(?:[\w.\/-]*\/)?(nohup|setsid|disown|crontab|at|batch|systemd-run|launchctl|schtasks|tmux|screen|daemonize|start-stop-daemon)(\s|$|['";)])|(^|[^&>])&\s*($|[;)\n'"])/;
+// Tools that reach past this session: other agents and messages to them, plugins, extra permissions,
+// other MCP servers' resources.
+const OFF = /agent|plugin|permission|mcp_resource|send_input|send_message|followup|spawn/i;
 
 /** Every file an apply_patch touches. */
 export function patchPaths(patch) {
 	const out = [];
-	for (const m of String(patch ?? "").matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)) out.push(m[1].trim());
+	// Codex trims each line before it reads a header, so leading spaces count too.
+	for (const m of String(patch ?? "").matchAll(/^[ \t]*\*\*\*[ \t]*(?:(?:Add|Update|Delete) File|Move to):[ \t]*(.+?)[ \t]*\r?$/gm)) out.push(m[1].trim());
 	return out;
 }
 
@@ -40,7 +45,7 @@ export function checkCodexTool(call, { folder, home, peer, ownServer = "duet" })
 	if (tool === "Bash") {
 		const command = Array.isArray(input.command) ? input.command.join(" ") : String(input.command ?? input.cmd ?? "");
 		// Codex models often run apply_patch through the shell (`apply_patch <<'PATCH' …`): check its files.
-		if (/\*\*\* Begin Patch/.test(command)) {
+		if (/\*\*\*\s*Begin Patch/.test(command)) {
 			patching = true;
 			paths = patchPaths(command);
 		} else {
@@ -49,8 +54,11 @@ export function checkCodexTool(call, { folder, home, peer, ownServer = "duet" })
 		}
 	}
 	paths ??= patching ? patchPaths(input.command ?? input.patch ?? input.input) : [input.path, input.file_path].filter((p) => typeof p === "string" && p);
+	if (patching && !paths.length) return `duet: duet couldn't read which files this patch changes, so ${peer}'s request may not run it. ${ask}`;
 	if (!folder) return paths.length ? `duet: duet doesn't know this session's folder yet, so ${peer}'s request may not change files. ${ask}` : null;
 	for (const path of paths) {
+		// A Windows drive-relative path ("D:a.txt") is relative to that drive's own current folder.
+		if (/^[A-Za-z]:(?![\\/])/.test(path)) return `duet: ${path} isn't a plain path; ${peer}'s request may not use it. ${ask}`;
 		const rel = inside(path, folder, home);
 		if (rel === null) return `duet: while working on ${peer}'s request, only files under ${folder} may be used; ${path} is outside it. ${ask}`;
 		const hit = patching ? protectedPart(rel) : undefined;
