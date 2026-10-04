@@ -116,7 +116,7 @@ try {
 				const where = await row.$eval(".where", (w) => w.textContent);
 				commands[agent][kase].push({ where, cmd: shown });
 				total++;
-				const placeholder = /YOUR_NAME|\{[a-z-]+\}/.test(shown);
+				const placeholder = /YOUR_NAME|\{[a-z_-]+\}/.test(shown);
 				const joins = /--room|DUET_ROOM|^\/duet /.test(shown);
 				if (placeholder || (joins && !(shown.includes(room) && shown.includes("nika")))) unfilled.push(shown);
 				await row.$eval("button", (b) => b.click());
@@ -151,7 +151,10 @@ try {
 	const chat = commands.chat;
 	await friend.click('.tabs button[data-agent="chat"]');
 	const chatText = await friend.$eval("#commands", (c) => c.textContent);
-	const mcpb = await friend.$eval('#commands a[href="duet.mcpb"]', (a) => a.getAttribute("href")).catch(() => null);
+	const mcpbHref = await friend.$eval('#commands a[href="duet.mcpb"]', (a) => a.getAttribute("href")).catch(() => null);
+	const { existsSync } = await import("node:fs");
+	const mcpb = mcpbHref && existsSync(resolve(import.meta.dirname, "../docs", mcpbHref)) ? mcpbHref : null; // and the file is there to download
+	const notesFilled = !/\{[a-z_-]+\}/.test(chatText);
 	let vscodeJson = null;
 	try {
 		vscodeJson = JSON.parse(chat.vscode[0].cmd.match(/^code --add-mcp '(.*)'$/)[1]);
@@ -163,9 +166,14 @@ try {
 			chat.web[0].cmd === "https://mcp-duet.gaioz.online/mcp" && chat.web[1].cmd === room && chat.chatgpt[0].cmd === "https://mcp-duet.gaioz.online/mcp" &&
 			vscodeJson?.name === "duet" && vscodeJson.args.join(" ") === `-y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}` &&
 			chat.goose[0].cmd === `goose session --with-extension "npx -y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}"` &&
-			/Nothing reaches your agent by itself/.test(chatText) && /Nothing guards what your agent does next/.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && /Developer mode/.test(chatText),
+			notesFilled && /Nothing reaches your agent by itself/.test(chatText) &&
+			(SERVER === "https://duet.gaioz.online" || (/The hosted server always uses duet\.gaioz\.online/.test(chatText) && /The duet\.mcpb download always uses duet\.gaioz\.online/.test(chatText))) && /Nothing guards what your agent does next/.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && /Developer mode/.test(chatText),
 		JSON.stringify(Object.fromEntries(Object.entries(chat).map(([k, v]) => [k, v.map((c) => c.cmd.replace(room, "<room>"))]))).slice(0, 400),
 	);
+	// The stand-in name typed for real still counts as no name.
+	await friend.fill("#name", "yourname");
+	const standIn = await friend.$$eval("#commands .cmd button", (bs) => bs.every((b) => b.disabled));
+	check("typing the stand-in \"yourname\" keeps copying off", standIn, `all copy buttons disabled: ${standIn}`);
 	await friend.click('[data-copy="invite"]');
 	await friend.fill("#name", "__-nika");
 	const lead = await friend.inputValue("#name");
@@ -176,7 +184,7 @@ try {
 	// A crafted link can't put shell syntax into the commands: odd relays are ignored, plain ones kept.
 	const evilCtx = await browser.newContext();
 	const evil = await evilCtx.newPage();
-	const attempts = ["http://127.0.0.1:9;touch /tmp/PWNED;#", "https://x.com/$(id)", "https://x.com/`id`", "https://a b", 'https://x.com/"q', "https://u:p@x.com", "javascript:alert(1)", "https://x.com/$&"];
+	const attempts = ["https://x.com/'q", "http://127.0.0.1:9;touch /tmp/PWNED;#", "https://x.com/$(id)", "https://x.com/`id`", "https://a b", 'https://x.com/"q', "https://u:p@x.com", "javascript:alert(1)", "https://x.com/$&"];
 	const leaks = [];
 	for (const relay of attempts) {
 		await evil.goto(`${site}?relay=${encodeURIComponent(relay)}#${room}`);
@@ -184,7 +192,7 @@ try {
 		const all = await allCommands(evil);
 		const note = await evil.textContent("#relay");
 		// The commands always name a relay: a hostile one must give way to the default, untouched.
-		if (/PWNED|\$\(|`|"q|u:p@|javascript|\$&/.test(all) || !all.includes("--server https://duet.gaioz.online") || !/ignored/.test(note)) leaks.push(relay);
+		if (/PWNED|\$\(|`|"q|'q|u:p@|javascript|\$&/.test(all) || !all.includes("--server https://duet.gaioz.online") || !/ignored/.test(note)) leaks.push(relay);
 	}
 	await evil.goto(`${site}?relay=${encodeURIComponent("https://ntfy.example.com/")}#${room}`);
 	await evil.waitForSelector("#room:not(.hidden)");

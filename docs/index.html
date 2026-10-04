@@ -176,7 +176,7 @@ const AGENTS = {
 				title: "Claude Desktop (its chat)",
 				steps: [["terminal", `npx -y ${PKG} setup claude-desktop --room {room} --name {name}{arg-srv}`]],
 				link: ["duet.mcpb", "Or download duet.mcpb (one-click install: open it with Claude Desktop, then join from the panel)"],
-				note: "Adds duet to Claude Desktop's settings file (needs Node 20 or newer). Quit and reopen Claude Desktop, then say “open duet” in a chat. A click on Hand to agent puts the request in your message box: press Enter to send it. Remove it with: npx -y github:qaioz/pi-duet setup claude-desktop --off",
+				note: "Adds duet to Claude Desktop's settings file (needs Node 20 or newer). Quit and reopen Claude Desktop, then say “open duet” in a chat. A click on Hand to agent puts the request in your message box: press Enter to send it. Remove it with: npx -y github:qaioz/pi-duet setup claude-desktop --off{mcpb-relay}",
 			},
 			{
 				key: "web",
@@ -185,7 +185,7 @@ const AGENTS = {
 					["connector URL", HOSTED],
 					["room code: type it into the duet panel, not the chat", "{room}"],
 				],
-				note: "1. On claude.ai: Customize → Connectors → Add custom connector, paste the URL (no sign-in). 2. In a chat, say “open duet”. 3. In the duet panel, type the room code and your name, then Join. Once added, it works on the web, in the mobile apps and in Cowork. Team and Enterprise: an owner may have to allow custom connectors.{hosted-relay}",
+				note: "1. On claude.ai: Customize → Connectors → Add custom connector, paste the URL (no sign-in). 2. In a chat, say “open duet”. 3. In the duet panel, type the room code and your name, then Join. Once added, the connector is there on the web, in the Claude mobile apps and in Cowork. Team and Enterprise: an owner may have to allow custom connectors.{hosted-relay}",
 			},
 			{
 				key: "chatgpt",
@@ -194,7 +194,7 @@ const AGENTS = {
 					["connector URL", HOSTED],
 					["room code: type it into the duet panel, not the chat", "{room}"],
 				],
-				note: "1. Settings → Security and login → turn on Developer mode (not every plan has it). 2. On chatgpt.com/plugins, + → name it duet, paste the URL, no authentication → Create. 3. In a chat, add duet from the tools menu, say “open duet”, and join in the panel.{hosted-relay}",
+				note: "1. Settings → Security and login → turn on Developer mode (not every plan has it; in a workspace, an admin may have to allow it). 2. On chatgpt.com/plugins, + → name it duet, paste the URL, no authentication → Create. 3. In a chat, add duet from the tools menu, say “open duet”, and join in the panel.{hosted-relay}",
 			},
 			{
 				key: "vscode",
@@ -206,7 +206,7 @@ const AGENTS = {
 				key: "goose",
 				title: "Goose",
 				steps: [["terminal", `goose session --with-extension "npx -y ${PKG} --room {room} --name {name}{arg-srv}"`]],
-				note: "That's the Goose CLI, which draws no panels: there, say “check duet”. In Goose Desktop, add the same command as a command-line extension (Settings → Extensions), then ask “open duet”.",
+				note: "That's the Goose CLI, which draws no panels: there, say “check duet”. In Goose Desktop, add the npx -y … part (without the quotes) as a command-line extension (Settings → Extensions), then ask “open duet”.",
 			},
 		],
 		receive: "Nothing reaches your agent by itself: the duet panel shows each request from the other agent with Hand to agent and Ignore. One click on Hand to agent puts the request into the chat as your message: ChatGPT, VS Code and Goose send it, Claude Desktop puts it in your message box, and if your chat app takes nothing, the panel shows it to copy. Nothing guards what your agent does next: read the request before you hand it over. Your agent answers with duet_send; the answer shows up in the panel.",
@@ -215,7 +215,7 @@ const AGENTS = {
 
 let agent = "claude";
 const room = () => roomFromHash();
-const typedName = () => cleanName($("name").value);
+const typedName = () => (/^your[-_ ]?name$/i.test(cleanName($("name").value)) ? "" : cleanName($("name").value)); // the stand-in isn't a name
 const name = () => typedName() || "YOUR_NAME";
 
 function fill(cmd) {
@@ -228,6 +228,7 @@ function fill(cmd) {
 		.replace("{arg-srv}", () => ` --server ${RELAY}`)
 		.replace("{json-srv}", () => `,"--server","${RELAY}"`)
 		.replace("{hosted-relay}", () => (custom ? ` The hosted server always uses duet.gaioz.online, not ${RELAY}: with your own relay, use Claude Desktop, VS Code or Goose.` : ""))
+		.replace("{mcpb-relay}", () => (custom ? ` The duet.mcpb download always uses duet.gaioz.online, not ${RELAY}: with your own relay, use the command above.` : ""))
 		.replace("{codex-srv}", () => `, relay ${RELAY}`);
 }
 

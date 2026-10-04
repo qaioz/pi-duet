@@ -36,8 +36,7 @@ session.
 | pi | A new turn starts by itself, at once. | Nothing. This is the reference. |
 | Claude Code (plugin, the default) | Depends on who you said is in the room. **Someone else** (the default): each message waits as a **card above your prompt**, `1` lets Claude do it, `2` ignores it (each with 3 seconds to undo). **Only me** or **someone I trust completely**: messages start a turn by themselves (up to 8 in a row without you). | Needs Claude Code **2.1.287 or newer** with **mods** on: Anthropic can switch mods off remotely, and organisations can block them; then duet can't run there. Draws in the terminal and the Desktop app's Code tab only, not in the VS Code panel or `claude -p`. Needs `curl` (macOS, Windows 10+ and most Linux have it). |
 | Codex (plugin, or `setup codex`) | **Ask** (the default): each request shows a short form in Codex, "nika's agent asks: … Let Codex do it?", before Codex sees it; **Ignore** drops it and tells the other side. **Auto** (`duet auto`, after a yes): requests start a turn by themselves (up to 8 replies in a row without you). A request that arrives while Codex works waits for that turn to end and continues it. | Needs Codex's hooks, trusted once (`/hooks`), and a Codex window open in the folder. Requests start after your first prompt in a new session. After you press **Esc**, requests wait for your next prompt (Codex tells you so). Under **Full Access** Codex declines duet's form by itself, so requests wait until you say "check duet". On Windows, and after you quit Codex, they wait for "check duet" too. |
-
-| Chat apps (the duet panel) | Each request waits in **the duet panel** in the chat, with **Hand to agent** and **Ignore**. One click puts it into the chat as your message: ChatGPT, VS Code and Goose send it; Claude Desktop puts it in your message box (press Enter). | **Never by itself**: no chat app lets a panel start the model. **Nothing is guarded** once you hand a request over: the agent does what the chat's tools allow. The panel polls (every 4 s while you look at it), and a panel scrolled out of sight or in an old chat stops. |
+| Chat apps (the duet panel) | Each request waits in **the duet panel** in the chat, with **Hand to agent** and **Ignore**. One click puts it into the chat as your message: ChatGPT, VS Code and Goose send it; Claude Desktop puts it in your message box (press Enter). | **Never by itself**: no chat app lets a panel start the model. **Nothing is guarded** once you hand a request over: the agent does what the chat's tools allow. The panel polls (every 4 s while you look at it), and a panel stops when the chat app takes it down (an old chat, a closed tab). |
 
 Any agent can also read waiting messages with `duet_inbox` ("check duet").
 
@@ -280,11 +279,14 @@ your agent answers with `duet_send`; you can also ask it to "tell nika's agent �
 
 | chat app | how to add duet | tested |
 |---|---|---|
-| **Claude Desktop** (its chat) | `npx -y github:qaioz/pi-duet setup claude-desktop --room <room> --name <name>` (writes `claude_desktop_config.json`; `--off` removes it), or open [`duet.mcpb`](https://qaioz.github.io/pi-duet/duet.mcpb) with Claude Desktop and join from the panel. Quit and reopen the app. | see TEST-PLAN §17 |
-| **claude.ai**, Claude mobile apps, Cowork | Customize → Connectors → Add custom connector: `https://mcp-duet.gaioz.online/mcp` (no sign-in). Say "open duet", join in the panel. | see TEST-PLAN §17 |
-| **ChatGPT** | Developer mode (Settings → Security and login), then chatgpt.com/plugins → + → URL `https://mcp-duet.gaioz.online/mcp`, no authentication. | see TEST-PLAN §17 |
-| **VS Code** (Copilot agent mode) | `code --add-mcp '{"name":"duet","command":"npx","args":["-y","github:qaioz/pi-duet","--room","<room>","--name","<name>"]}'` | see TEST-PLAN §17 |
-| **Goose** | `goose session --with-extension "npx -y github:qaioz/pi-duet --room <room> --name <name>"` (Goose Desktop: the same command as a command-line extension) | see TEST-PLAN §17 |
+| **Claude Desktop** (its chat) | `npx -y github:qaioz/pi-duet setup claude-desktop --room <room> --name <name>` (writes `claude_desktop_config.json`; `--off` removes it), or open [`duet.mcpb`](https://qaioz.github.io/pi-duet/duet.mcpb) with Claude Desktop and join from the panel (the bundle uses the default relay). Quit and reopen the app. | not yet: the config file and the bundle are tested, the app itself not (no Mac or Windows here) |
+| **claude.ai**, Claude mobile apps, Cowork | Customize → Connectors → Add custom connector: `https://mcp-duet.gaioz.online/mcp` (no sign-in). Say "open duet", join in the panel. | RESULT-CLAUDE-AI |
+| **ChatGPT** | Developer mode (Settings → Security and login; not every plan has it), then chatgpt.com/plugins → + → URL `https://mcp-duet.gaioz.online/mcp`, no authentication. | not yet |
+| **VS Code** (Copilot agent mode) | `code --add-mcp '{"name":"duet","command":"npx","args":["-y","github:qaioz/pi-duet","--room","<room>","--name","<name>"]}'` | not yet |
+| **Goose** | `goose session --with-extension "npx -y github:qaioz/pi-duet --room <room> --name <name>"` (Goose Desktop: the `npx -y …` part as a command-line extension) | not yet |
+
+The panel itself is tested in Chromium and in the MCP Apps reference host (`ext-apps` `basic-host`), and the hosted
+server end to end over the real relay.
 
 A long request shows its start; **Show all** shows the rest before you hand it over. What a click does depends on the app: ChatGPT, VS Code and Goose send the request; Claude Desktop puts it in your
 message box; if the app takes nothing (claude.ai on the web has been reported to drop it), the panel shows the text
@@ -294,7 +296,8 @@ a message can't fake its own end and go on as you. The panel draws everything fr
 
 What the panel **can't** do, by design of the chat apps: start your agent by itself, fence what the agent does with
 a request (there are no hooks in chat apps: read the request before you hand it over), or receive anything while
-it's off screen. A request taken by one panel is gone from every other panel and from `duet_inbox`.
+it's off screen. A request handed over in one panel is gone from the others in the same chat (and, in Claude
+Desktop, VS Code and Goose, from `duet_inbox`); on the hosted server one name can be in a room in only one chat.
 
 #### The hosted server (claude.ai, the Claude apps, Cowork, ChatGPT)
 
@@ -302,10 +305,11 @@ Web chat apps can only reach a public HTTPS server, so duet runs one: `https://m
 (`hosted.js`, on the same box as the relay). What it sees and keeps:
 
 - **The room code:** only in the join call from your panel. It is hashed to the relay topic there and dropped;
-  the server never stores it, logs it or sends it back (the panel shows its first 4 characters, which it already
-  had). Nothing is written to disk, and no log line carries a room, a name or a message.
-- **Messages:** the ones in rooms its open panels are in, in memory, while the panel is open (a panel nobody
-  looks at for 30 minutes leaves its room). The relay already sees every message in plain text (no end-to-end
+  the server keeps only its first 4 characters (nothing of a short code) to show them in the panel, and never logs
+  it or sends more back. Nothing is written to disk, and no log line carries a room, a name or a message (it logs
+  which chat app connects).
+- **Messages:** the ones in rooms its open panels are in, in memory, while the panel is open (a panel that stops
+  polling, its chat closed, leaves its room after 30 minutes; one in a background tab keeps polling slowly). The relay already sees every message in plain text (no end-to-end
   encryption yet), and so does this server.
 - **Your chat app's servers** see the panel's tool calls (the room code once, at join) and what you hand over.
 - **No accounts.** Each open panel has a seat: its own room and inbox, found by a random id the panel makes. The
@@ -314,7 +318,7 @@ Web chat apps can only reach a public HTTPS server, so duet runs one: `https://m
 - **Limits** (it is a public endpoint without accounts): at most 50 rooms and 300 panels at once, 10 panels per
   address; 30 messages (2 MB) per panel per 10 minutes and the reply cap of 8 without a click; long messages
   (over ~3.8 KB, attachments on the relay) 60 MB a day in all; requests and joins per address (wide for
-  claude.ai's published ranges, which carry many users); only the chat apps' own pages may call it from a
+  claude.ai's and ChatGPT's published ranges, which carry many users); only the chat apps' own pages may call it from a
   browser. Over a limit, the panel or the agent says so.
 - **The seat code** in a handed-over message lets whoever has it send into the room as you, while your panel is
   open (a share link of the chat carries it). Don't share a chat with a seat code in it while you're in the room.
