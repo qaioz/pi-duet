@@ -134,15 +134,16 @@ try {
 	check(
 		"tabs: Claude Code, Codex, pi, Claude chat / ChatGPT; each agent opens with one line to paste in a terminal",
 		tabOrder === "claude,codex,pi,chat" &&
-			fresh("claude").length === 1 && fresh("claude")[0] === `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude "/duet ${room} nika ${SERVER}"` &&
-			fresh("pi").length === 1 && fresh("pi")[0].startsWith("pi install git:github.com/qaioz/pi-duet && ") && fresh("pi")[0].endsWith(`DUET_ROOM=${room} DUET_NAME=nika pi`),
+			fresh("claude").length === 1 && // each line also updates an older install: install alone keeps the old version (seen 2026-10-04)
+			fresh("claude")[0] === `claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet && claude "/duet ${room} nika ${SERVER}"` &&
+			fresh("pi").length === 1 && fresh("pi")[0].startsWith("pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet && ") && fresh("pi")[0].endsWith(`DUET_ROOM=${room} DUET_NAME=nika pi`),
 		`order ${tabOrder}; ${JSON.stringify([fresh("claude")[0], fresh("pi")[0]].map((c) => c.replace(room, "<room>")))}`,
 	);
 	// Codex: the plugin, joined from inside Codex; `setup codex` (with its hooks) for the IDE extension.
 	const cx = Object.values(commands.codex).flat().map((c) => c.cmd);
 	check(
 		"Codex tab: one line installs the plugin and starts Codex joining; setup codex for the IDE",
-		cx.some((c) => c.startsWith(`codex plugin marketplace add qaioz/pi-duet && codex plugin add duet@pi-duet && codex "join duet room ${room} as nika, relay `)) &&
+		cx.some((c) => c.startsWith(`codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet && codex "join duet room ${room} as nika, relay `)) &&
 			cx.some((c) => c.includes("setup codex --room") && c.includes(room)) && !cx.includes("check duet"),
 		JSON.stringify(cx.map((c) => c.replace(room, "<room>"))),
 	);

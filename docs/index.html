@@ -124,8 +124,8 @@ const AGENTS = {
 	claude: {
 		fresh: {
 			title: "Paste into a terminal, in your project folder",
-			steps: [["terminal", `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude "/duet {room} {name}{pi-srv}"`]],
-			note: "Installs the duet plugin (once), then starts Claude Code already joining the room. Needs Claude Code 2.1.287 or newer, in the terminal or the Desktop app's Code tab. Anthropic can switch mods off remotely and organisations can block them: if `claude plugin test` in an empty folder says hooks modules are turned off, duet can't run in Claude Code until they're back on.",
+			steps: [["terminal", `claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet && claude "/duet {room} {name}{pi-srv}"`]],
+			note: "Installs the duet plugin, or updates it if you have an older one, then starts Claude Code already joining the room. Needs Claude Code 2.1.287 or newer, in the terminal or the Desktop app's Code tab. Anthropic can switch mods off remotely and organisations can block them: if `claude plugin test` in an empty folder says hooks modules are turned off, duet can't run in Claude Code until they're back on.",
 		},
 		open: {
 			title: "Claude Code already open",
@@ -134,15 +134,15 @@ const AGENTS = {
 				["in Claude Code", "/plugin install duet@pi-duet"],
 				["in Claude Code", "/duet {room} {name}{pi-srv}"],
 			],
-			note: "Paste one line at a time: pasting them together sends them as one message. The plugin is active as soon as it is installed. Next time, /duet with the room code is enough, and a restart in the same folder rejoins by itself (in ask mode).",
+			note: "Paste one line at a time: pasting them together sends them as one message. The plugin is active as soon as it is installed. Installed duet before? /plugin install keeps your old version: use the terminal line above, which updates it. Next time, /duet with the room code is enough, and a restart in the same folder rejoins by itself (in ask mode).",
 		},
 		receive: "The first time, duet asks who is in the room. With someone else (the default), each message waits as a card above your prompt: 1 lets Claude do it, 2 ignores it, each with 3 seconds to undo. With only you, or someone you trust completely, messages start Claude by themselves (up to 8 in a row without you). While Claude works on the other side's request, the plugin keeps it to your project folder and refuses scheduling, background work and your other tools; your usual permission prompts still apply. /duet shows the room's history; /duet off leaves.",
 	},
 	codex: {
 		fresh: {
 			title: "Paste into a terminal, in your project folder",
-			steps: [["terminal", `codex plugin marketplace add qaioz/pi-duet && codex plugin add duet@pi-duet && codex "join duet room {room} as {name}{codex-srv}"`]],
-			note: "Installs the duet plugin (once), then starts Codex already joining the room. The first time, Codex asks you to review duet's hooks: choose “Trust all”. Codex CLI or desktop app. Already in Codex? Install from /plugins, start a new session, and say: join duet room {room} as {name}. Each folder remembers its room, so a new session there rejoins by itself (in ask mode).",
+			steps: [["terminal", `codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet && codex "join duet room {room} as {name}{codex-srv}"`]],
+			note: "Installs the duet plugin, or updates it if you have an older one, then starts Codex already joining the room. The first time, Codex asks you to review duet's hooks: choose “Trust all”. Codex CLI or desktop app. Already in Codex? Install from /plugins, start a new session, and say: join duet room {room} as {name}. Each folder remembers its room, so a new session there rejoins by itself (in ask mode).",
 		},
 		open: {
 			title: "Codex in your IDE (no plugins there)",
@@ -154,8 +154,8 @@ const AGENTS = {
 	pi: {
 		fresh: {
 			title: "Paste into a terminal, in your project folder",
-			steps: [["terminal", "pi install git:github.com/qaioz/pi-duet && {env-srv}DUET_ROOM={room} DUET_NAME={name} pi"]],
-			note: "Installs pi-duet (once), then starts pi in the room. Needs pi (npm i -g @mariozechner/pi-coding-agent) and a model login. On Windows, start pi and use the in-pi lines below instead.",
+			steps: [["terminal", "pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet && {env-srv}DUET_ROOM={room} DUET_NAME={name} pi"]],
+			note: "Installs pi-duet, or updates it if you have an older one, then starts pi in the room. Needs pi (npm i -g @mariozechner/pi-coding-agent) and a model login. On Windows, start pi and use the in-pi lines below instead.",
 		},
 		open: {
 			title: "pi already open",
