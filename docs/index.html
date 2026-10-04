@@ -44,7 +44,7 @@
 <body>
 <main>
 	<h1>duet</h1>
-	<p class="muted">Pair your coding agent with a friend's. Ask yours to ask theirs: “ask nika's agent to run the tests and send me the failures”. Works with <b>pi</b>, <b>Claude Code</b> and <b>Codex</b>, in any mix. No accounts, nothing to host.</p>
+	<p class="muted">Pair your coding agent with a friend's. Ask yours to ask theirs: “ask nika's agent to run the tests and send me the failures”. Works with <b>pi</b>, <b>Claude Code</b> and <b>Codex</b>, in any mix, and from <b>Claude or ChatGPT chats</b> through a panel in the chat. No accounts, nothing to host.</p>
 
 	<section id="start">
 		<h2>1. Start a room</h2>
@@ -66,6 +66,7 @@
 			<button role="tab" data-agent="claude" aria-selected="true">Claude Code</button>
 			<button role="tab" data-agent="codex" aria-selected="false">Codex</button>
 			<button role="tab" data-agent="pi" aria-selected="false">pi</button>
+			<button role="tab" data-agent="chat" aria-selected="false">Claude chat / ChatGPT</button>
 		</div>
 		<div id="commands"></div>
 
@@ -81,12 +82,13 @@
 	</section>
 
 	<h2>How it works</h2>
-	<p class="muted">The room code lives only in the part of the link after <code>#</code>, which browsers never send to a server. Messages travel through <b>duet.gaioz.online</b>, a relay (<a href="https://ntfy.sh">ntfy</a>) run by duet's author, on a topic named after a hash of the room code. It keeps messages for 30 days and can read them (they aren't end-to-end encrypted), and so can anyone with the room code. For anything sensitive, self-host a relay (see the README). Claude Code and Codex join through plugins (Codex's runs a small MCP server with Node 20 or newer); pi through its own extension. Source, limits and safety notes: <a href="https://github.com/qaioz/pi-duet">github.com/qaioz/pi-duet</a>.</p>
+	<p class="muted">The room code lives only in the part of the link after <code>#</code>, which browsers never send to a server. Messages travel through <b>duet.gaioz.online</b>, a relay (<a href="https://ntfy.sh">ntfy</a>) run by duet's author, on a topic named after a hash of the room code. It keeps messages for 30 days and can read them (they aren't end-to-end encrypted), and so can anyone with the room code. For anything sensitive, self-host a relay (see the README). Claude Code and Codex join through plugins (Codex's runs a small MCP server with Node 20 or newer); pi through its own extension. Chat apps show a <b>duet panel</b> (an MCP App) in the conversation: Claude Desktop, VS Code and Goose run duet's MCP server on your computer; claude.ai, the Claude mobile apps, Cowork and ChatGPT reach it at <b>mcp-duet.gaioz.online</b>, also run by duet's author. That server hashes the room code as soon as you join and keeps nothing on disk, but it sees the room's messages while your panel is open. Source, limits and safety notes: <a href="https://github.com/qaioz/pi-duet">github.com/qaioz/pi-duet</a>.</p>
 </main>
 
 <script>
 "use strict";
 const PKG = "github:qaioz/pi-duet";
+const HOSTED = "https://mcp-duet.gaioz.online/mcp"; // duet's hosted MCP server, for chat apps on the web
 // ?relay=<url> picks another ntfy server (self-hosted). The commands always name the relay.
 const DEFAULT_RELAY = "https://duet.gaioz.online";
 // Only a plain http(s) URL: the relay is pasted into shell commands, so anything else is ignored.
@@ -166,11 +168,54 @@ const AGENTS = {
 		},
 		receive: "Messages from the other agent arrive in pi as new turns by themselves.",
 	},
+	// Chat apps: the duet panel (an MCP App) in the conversation. Each host has its own case.
+	chat: {
+		cases: [
+			{
+				key: "desktop",
+				title: "Claude Desktop (its chat)",
+				steps: [["terminal", `npx -y ${PKG} setup claude-desktop --room {room} --name {name}{arg-srv}`]],
+				link: ["duet.mcpb", "Or download duet.mcpb (one-click install: open it with Claude Desktop, then join from the panel)"],
+				note: "Adds duet to Claude Desktop's settings file (needs Node 20 or newer). Quit and reopen Claude Desktop, then say “open duet” in a chat. A click on Hand to agent puts the request in your message box: press Enter to send it. Remove it with: npx -y github:qaioz/pi-duet setup claude-desktop --off{mcpb-relay}",
+			},
+			{
+				key: "web",
+				title: "claude.ai, the Claude apps, Cowork",
+				steps: [
+					["connector URL", HOSTED],
+					["room code: type it into the duet panel, not the chat", "{room}"],
+				],
+				note: "1. On claude.ai: Customize → Connectors → Add custom connector, paste the URL (no sign-in). 2. In a chat, say “open duet”. 3. In the duet panel, type the room code and your name, then Join. Once added, the connector is there on the web, in the Claude mobile apps and in Cowork. Team and Enterprise: an owner may have to allow custom connectors.{hosted-relay}",
+			},
+			{
+				key: "chatgpt",
+				title: "ChatGPT",
+				steps: [
+					["connector URL", HOSTED],
+					["room code: type it into the duet panel, not the chat", "{room}"],
+				],
+				note: "1. Settings → Security and login → turn on Developer mode (not every plan has it; in a workspace, an admin may have to allow it). 2. On chatgpt.com/plugins, + → name it duet, paste the URL, no authentication → Create. 3. In a chat, add duet from the tools menu, say “open duet”, and join in the panel.{hosted-relay}",
+			},
+			{
+				key: "vscode",
+				title: "VS Code (Copilot agent mode)",
+				steps: [["terminal", `code --add-mcp '{"name":"duet","command":"npx","args":["-y","${PKG}","--room","{room}","--name","{name}"{json-srv}]}'`]],
+				note: "Adds duet to VS Code's MCP servers. In Copilot Chat (agent mode), ask “open duet”. macOS and Linux shells; on Windows, run “MCP: Add Server” in VS Code with the same command and arguments.",
+			},
+			{
+				key: "goose",
+				title: "Goose",
+				steps: [["terminal", `goose session --with-extension "npx -y ${PKG} --room {room} --name {name}{arg-srv}"`]],
+				note: "That's the Goose CLI, which draws no panels: there, say “check duet”. In Goose Desktop, add the npx -y … part (without the quotes) as a command-line extension (Settings → Extensions), then ask “open duet”.",
+			},
+		],
+		receive: "Nothing reaches your agent by itself: the duet panel shows each request from the other agent with Hand to agent and Ignore. One click on Hand to agent puts the request into the chat as your message: ChatGPT, VS Code and Goose send it, Claude Desktop puts it in your message box, and if your chat app takes nothing, the panel shows it to copy. Nothing guards what your agent does next: read the request before you hand it over. Your agent answers with duet_send; the answer shows up in the panel.",
+	},
 };
 
 let agent = "claude";
 const room = () => roomFromHash();
-const typedName = () => cleanName($("name").value);
+const typedName = () => (/^your[-_ ]?name$/i.test(cleanName($("name").value)) ? "" : cleanName($("name").value)); // the stand-in isn't a name
 const name = () => typedName() || "YOUR_NAME";
 
 function fill(cmd) {
@@ -181,6 +226,9 @@ function fill(cmd) {
 		.replace("{pi-srv}", () => " " + RELAY)
 		.replace("{env-srv}", () => `DUET_SERVER=${RELAY} `)
 		.replace("{arg-srv}", () => ` --server ${RELAY}`)
+		.replace("{json-srv}", () => `,"--server","${RELAY}"`)
+		.replace("{hosted-relay}", () => (custom ? ` The hosted server always uses duet.gaioz.online, not ${RELAY}: with your own relay, use Claude Desktop, VS Code or Goose.` : ""))
+		.replace("{mcpb-relay}", () => (custom ? ` The duet.mcpb download always uses duet.gaioz.online, not ${RELAY}: with your own relay, use the command above.` : ""))
 		.replace("{codex-srv}", () => `, relay ${RELAY}`);
 }
 
@@ -195,11 +243,10 @@ function render() {
 		hint.textContent = "Type your name above first: every command below uses it.";
 		box.append(hint);
 	}
-	for (const key of ["fresh", "open"]) {
-		const c = a[key];
+	for (const c of a.cases ?? ["fresh", "open"].map((key) => ({ key, ...a[key] }))) {
 		const section = document.createElement("div");
 		section.className = "case";
-		section.dataset.case = key;
+		section.dataset.case = c.key;
 		const h = document.createElement("h3");
 		h.textContent = c.title;
 		section.append(h);
@@ -225,6 +272,14 @@ function render() {
 			row.append(n, wrap, btn);
 			section.append(row);
 		});
+		if (c.link) {
+			const p = document.createElement("p");
+			const l = document.createElement("a");
+			[l.href, l.textContent] = c.link;
+			l.download = "";
+			p.append(l);
+			section.append(p);
+		}
 		const note = document.createElement("p");
 		note.className = "muted";
 		note.textContent = fill(c.note);
