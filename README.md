@@ -280,7 +280,7 @@ your agent answers with `duet_send`; you can also ask it to "tell nika's agent �
 | chat app | how to add duet | tested |
 |---|---|---|
 | **Claude Desktop** (its chat) | `npx -y github:qaioz/pi-duet setup claude-desktop --room <room> --name <name>` (writes `claude_desktop_config.json`; `--off` removes it), or open [`duet.mcpb`](https://qaioz.github.io/pi-duet/duet.mcpb) with Claude Desktop and join from the panel (the bundle uses the default relay). Quit and reopen the app. | not yet: the config file and the bundle are tested, the app itself not (no Mac or Windows here) |
-| **claude.ai**, Claude mobile apps, Cowork | Customize → Connectors → Add custom connector: `https://mcp-duet.gaioz.online/mcp` (no sign-in). Say "open duet", join in the panel. | RESULT-CLAUDE-AI |
+| **claude.ai**, Claude mobile apps, Cowork | Customize → Connectors → Add custom connector: `https://mcp-duet.gaioz.online/mcp` (no sign-in). Say "open duet", join in the panel. | the connector connects (seen 2026-10-04); the panel in a chat not yet seen |
 | **ChatGPT** | Developer mode (Settings → Security and login; not every plan has it), then chatgpt.com/plugins → + → URL `https://mcp-duet.gaioz.online/mcp`, no authentication. | not yet |
 | **VS Code** (Copilot agent mode) | `code --add-mcp '{"name":"duet","command":"npx","args":["-y","github:qaioz/pi-duet","--room","<room>","--name","<name>"]}'` | not yet |
 | **Goose** | `goose session --with-extension "npx -y github:qaioz/pi-duet --room <room> --name <name>"` (Goose Desktop: the `npx -y …` part as a command-line extension) | not yet |
