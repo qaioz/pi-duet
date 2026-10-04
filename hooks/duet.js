@@ -56,13 +56,14 @@ let installId = "";
 let sessionId = "";
 let cwd = "";
 let home = "";
+let duetDir = ""; // ~/.duet (DUET_HOME): the lock every duet client on this computer shares
 let server = DEFAULT_SERVER;
 let defaultName = "";
 let permissionMode = ""; // "" until Claude Code reports it (classic.* events; not at startup, not to tool.call)
 let lastUnasked; // runsUnasked's latest answer, fresher than permissionMode after a Shift+Tab
 let oldMcp = false; // the old MCP-server setup of duet is active in this session too
 
-let room = null; // { code, name, key, fromId, topic, lockKey, mode, cursor, server }
+let room = null; // { code, name, key, fromId, topic, lockKey, fileLock, mode, cursor, server }
 let generation = 0; // bumped on every join and leave; loops of an older room stop
 let joinEpoch = 0; // bumped by /duet off: a join still in flight then gives up
 let wakeSupervisor = null;
@@ -531,6 +532,54 @@ async function claim($, lockKey) {
 	return back?.token === token ? null : back;
 }
 
+// ---------- the lock every duet client shares ----------
+// One window per room and name on this computer, whatever the client: pi, Codex (the MCP server) or
+// this plugin. Claude Code windows also agree among themselves through $.store (claim, above), which
+// can ask "Move it here?"; the file below keeps the other clients out. Same format as lock.js:
+// ~/.duet/<hash>.lock holding { v: 2, client, token, pid, cwd, at }, rewritten every 20 s, held while
+// `at` is under a minute old (a bare pid, from older clients, while that process lives).
+
+async function readFileLock($, path) {
+	let text;
+	try {
+		text = String(await $.fs.read(path)).trim();
+	} catch {
+		return null;
+	}
+	if (/^\d+$/.test(text)) return { v: 1, pid: Number(text) };
+	try {
+		const l = JSON.parse(text);
+		return l && typeof l === "object" ? l : null;
+	} catch {
+		return null;
+	}
+}
+
+async function pidAlive($, pid) {
+	try {
+		return (await $.process.run(["kill", "-0", String(pid)], { timeoutMs: 3000 })).exitCode === 0;
+	} catch {
+		return false;
+	}
+}
+
+async function fileLockHeld($, l) {
+	if (!l || l.released) return false;
+	if (l.v === 1) return !!l.pid && (await pidAlive($, l.pid));
+	if (l.pid && !(await pidAlive($, l.pid))) return false;
+	return Date.now() - (Number(l.at) || 0) < LOCK_STALE_MS;
+}
+
+async function writeFileLock($, path, released) {
+	try {
+		await $.fs.write(path, JSON.stringify({ v: 2, client: "claude-code", token, cwd, at: released ? 0 : Date.now(), ...(released ? { released: true } : {}) }) + "\n");
+	} catch (err) {
+		$.ui.log(`couldn't write the shared lock ${path}: ${String(err?.message ?? err)}`, { to: "debug" });
+	}
+}
+
+const describeClient = (l) => ({ pi: "pi", codex: "Codex", mcp: "a duet MCP server", "claude-code": "another Claude Code" })[l?.client] ?? "another duet window";
+
 // Runs detached from the command or button that asked for it, so its waits count against no hook.
 async function join($, code, nameArg, mode, quiet, relayArg) {
 	if (!isRoomCode(code)) {
@@ -561,10 +610,13 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	const key = `${relay} ${code} ${name}`;
 	const fromId = (await sha256hex(`${installId} ${key}`)).slice(0, 32);
 	const topic = await topicFor(code);
-	const lockKey = "owner:" + (await sha256hex(key)).slice(0, 16);
+	const hash16 = (await sha256hex(key)).slice(0, 16);
+	const lockKey = "owner:" + hash16;
+	const fileLock = `${duetDir}/${hash16}.lock`;
 
 	const held = await claim($, lockKey);
 	if (held && quiet) return; // another window has it: a quiet rejoin leaves it there
+	let moved = false;
 	if (held) {
 		let answer = "Cancel";
 		try {
@@ -581,13 +633,27 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 		// No answer in 10 s: that window is gone or stuck; take the room anyway, and say so.
 		if (!released) $.ui.log("the other window didn't answer; taking the room over");
 		await $.store.set(lockKey, { token, cwd, at: Date.now(), released: false });
+		moved = true;
 	}
+	// Another client (pi, Codex), or a Claude Code with its own config, in this room under this name.
+	const other = await readFileLock($, fileLock);
+	if (other && other.token !== token && !(moved && other.client === "claude-code") && (await fileLockHeld($, other))) {
+		const cur = await $.store.get(lockKey);
+		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
+		if (!quiet) {
+			const where = other.cwd ? ` (${other.cwd})` : other.pid ? ` (pid ${other.pid})` : "";
+			$.ui.log(`${name} is already in room ${code} on this computer, in ${describeClient(other)}${where}: use that one, close it, or join under another name.`);
+			$.ui.toast(`duet: ${name} is already in this room from ${describeClient(other)}`);
+		}
+		return;
+	}
+	await writeFileLock($, fileLock);
 
 	// No saved place in this room: listen from just before joining, so the others' answers to our
 	// join (sent within a second or two) aren't missed while the stream is still opening.
 	const saved = await $.store.get("cursor:" + key);
 	const cursor = saved ?? { id: "", time: Math.floor(Date.now() / 1000) - 2 };
-	const r = { code, name, key, fromId, topic, lockKey, server: relay, mode: mode === "auto" ? "auto" : "ask", cursor };
+	const r = { code, name, key, fromId, topic, lockKey, fileLock, server: relay, mode: mode === "auto" ? "auto" : "ask", cursor };
 	try {
 		// The first network request: if the relay can't be reached, or this session's policy refuses
 		// network requests from mods, duet doesn't join.
@@ -596,6 +662,7 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	} catch (err) {
 		const cur = await $.store.get(lockKey);
 		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
+		await writeFileLock($, fileLock, true);
 		$.ui.log(`couldn't reach the relay ${relay}: ${String(err?.message ?? err)}. Not joined.`);
 		$.ui.toast("duet: couldn't reach the relay — not joined");
 		return;
@@ -604,6 +671,7 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 		// /duet off came while this join was on its way: don't join after all.
 		const cur = await $.store.get(lockKey);
 		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
+		await writeFileLock($, fileLock, true);
 		return;
 	}
 	room = r;
@@ -684,6 +752,16 @@ async function beat($) {
 	}
 	if (Date.now() - lastBeat > 20_000) {
 		lastBeat = Date.now();
+		// Someone else holds the shared lock: another client found this window stale and took over.
+		const shared = await readFileLock($, r.fileLock);
+		if (room !== r) return;
+		if (shared && shared.token !== token && shared.client !== "claude-code" && (await fileLockHeld($, shared))) {
+			await leave($, null, false, true);
+			$.ui.log(`room ${r.code} is now open as ${r.name} in ${describeClient(shared)} on this computer${shared.cwd ? ` (${shared.cwd})` : ""}: this window left it`);
+			$.ui.toast(`duet: the room moved to ${describeClient(shared)}`);
+			return;
+		}
+		await writeFileLock($, r.fileLock);
 		await $.store.set(r.lockKey, { token, cwd, at: lastBeat, released: false });
 		await $.store.set("room:" + cwd, { code: r.code, name: r.name, relay: r.server, at: lastBeat });
 	}
@@ -715,6 +793,7 @@ async function leave($, note, forget, lost) {
 	if (!lost) {
 		const cur = await $.store.get(r.lockKey);
 		if (cur?.token === token) await $.store.set(r.lockKey, { ...cur, released: true });
+		if ((await readFileLock($, r.fileLock))?.token === token) await writeFileLock($, r.fileLock, true);
 	}
 	await $.store.delete("active:" + sessionId);
 	if (forget) await $.store.delete("room:" + cwd);
@@ -1029,6 +1108,7 @@ export function register(on) {
 	on("session.start", async ($, e, next) => {
 		cwd = e.cwd || (await $.session.cwd());
 		home = (await $.env.get("HOME")) || (await $.env.get("USERPROFILE")) || "";
+		duetDir = ((await $.env.get("DUET_HOME")) || `${home.replace(/[\\/]+$/, "")}/.duet`).replace(/\\/g, "/");
 		const relay = (await $.env.get("DUET_SERVER")) || "";
 		if (relay && isRelayUrl(relay)) server = relay.replace(/\/+$/, "");
 		installId = (await $.store.get("install")) || "";
@@ -1148,6 +1228,7 @@ export function register(on) {
 			// All session.end hooks share 1.5 s: best effort, and nothing on a crash.
 			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "note", note: "left" })).catch(() => {});
 			void $.store.set(r.lockKey, { token, cwd, at: 0, released: true });
+			if (r.fileLock) void writeFileLock($, r.fileLock, true);
 			void $.store.delete("active:" + sessionId);
 		}
 		if (e.reason !== "clear" && e.reason !== "resume") void $.store.delete("turn:" + sessionId);

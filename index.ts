@@ -1,10 +1,11 @@
 // pi-duet: two pi sessions on two computers talk through a shared room.
 // Incoming messages become new turns in this session; the agent replies with duet_send.
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import { LOCK_BEAT_MS, describeHolder, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeLock } from "./lock.js";
 import { envelope, firstLine, fitName, isForMe, isPlaceholderName, isRelayUrl, placeFor, publish, subscribe, topicFor } from "./transport.js";
 
 const RECENT_MS = 30 * 60_000; // a peer counts as "here" if seen this recently
@@ -38,19 +39,6 @@ function updateConfig(change: (config: Config) => void): Config {
 	return config;
 }
 
-// Only one pi process per agent dir may be in the room, or every open window would answer
-// every message. The lock holds the owner's pid; a dead owner's lock is ignored.
-function lockOwner(): number | undefined {
-	try {
-		const pid = Number(readFileSync(file("duet.lock"), "utf8"));
-		if (pid === process.pid) return undefined;
-		process.kill(pid, 0); // throws if that process is gone
-		return pid;
-	} catch {
-		return undefined;
-	}
-}
-
 export default function (pi: ExtensionAPI) {
 	// Only a first run writes (to persist this install's id); later starts just read.
 	let saved = loadConfig();
@@ -82,8 +70,18 @@ export default function (pi: ExtensionAPI) {
 	let announced = false; // an env join says hello once per process, not on every /reload
 
 	const notify = (text: string, level: "info" | "warning" | "error" = "info") => ui?.notify(text, level);
-	// Said wherever the lock stops this window; a crashed owner whose pid got reused needs the hint.
-	const heldBy = (pid: number) => `another pi on this computer (pid ${pid}) has the room — use that one, or if it is gone delete ${file("duet.lock")}`;
+	// One window on this computer owns the room under a name, whatever the client (pi, Codex, Claude
+	// Code): otherwise every open window would answer every message. See lock.js.
+	const me = { client: "pi", token: randomUUID(), cwd: process.cwd() };
+	let beat: ReturnType<typeof setInterval> | undefined;
+	const lockFile = () => lockPath(server, room!, name!);
+	const lockOwner = () => {
+		if (!room || !name) return undefined;
+		const l = readLock(lockFile());
+		return l && l.token !== me.token && lockHeld(l) ? l : undefined;
+	};
+	// Said wherever the lock stops this window.
+	const heldBy = (l: any) => `${describeHolder(l)} has the room as ${name} on this computer — use that one, or another name; if it is gone, delete ${lockFile()}`;
 	const setStatus = (text: string) => {
 		status = text;
 		ui?.setStatus("duet", room ? `duet: ${name}${text && ` (${text})`}` : undefined);
@@ -118,11 +116,21 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	function joinRoom() {
+	async function joinRoom() {
 		leave();
 		const owner = lockOwner();
-		if (owner) return setStatus(`off: pi pid ${owner} has the room`);
-		writeFileSync(file("duet.lock"), String(process.pid));
+		if (owner) return setStatus(`off: ${describeHolder(owner)} has the room`);
+		const took = await takeLock(lockFile(), me);
+		if (!took.ok) return setStatus(`off: ${describeHolder(took.holder)} has the room`);
+		const held = lockFile();
+		beat = setInterval(() => {
+			if (refreshLock(held, me)) return;
+			const by = readLock(held);
+			leave(false);
+			setStatus(`off: ${describeHolder(by)} has the room`);
+			notify(`duet: ${describeHolder(by)} took the room over (same name on this computer)`, "warning");
+		}, LOCK_BEAT_MS);
+		beat.unref?.();
 		const key = cursorKey();
 		setStatus("connecting…");
 		sub = subscribe({
@@ -136,20 +144,20 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	function leave() {
+	function leave(release = true) {
+		if (beat) clearInterval(beat);
+		beat = undefined;
 		if (!sub) return;
 		sub.stop();
 		sub = undefined;
-		try {
-			if (readFileSync(file("duet.lock"), "utf8") === String(process.pid)) rmSync(file("duet.lock"));
-		} catch {}
+		if (release && room && name) releaseLock(lockFile(), me);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		// No UI means `pi -p` or similar one-shot: it must not grab the room or eat its messages.
 		if (!ui || !room || !name) return;
-		joinRoom();
+		await joinRoom();
 		// A join from the environment (the site's "start fresh" command) says hello like /duet does.
 		if (sub && process.env.DUET_ROOM && !announced) {
 			announced = true;
@@ -178,7 +186,7 @@ export default function (pi: ExtensionAPI) {
 				if (!room) return notify("duet: not in a room. Use /duet <room> <name>");
 				const seen = [...peers].map(([p, at]) => `${p} (${at.toLocaleTimeString()})`).join(", ") || "none yet";
 				const owner = !sub && lockOwner(); // re-checked: the owner may have gone since this window started
-				if (!sub) setStatus(owner ? `off: pi pid ${owner} has the room` : "off: /duet <room> <name> to join here");
+				if (!sub) setStatus(owner ? `off: ${describeHolder(owner)} has the room` : "off: /duet <room> <name> to join here");
 				const state = sub ? status || "connected" : owner ? heldBy(owner) : "off here — /duet <room> <name> to join";
 				return notify(`duet: ${name} in room "${room}" via ${server} — ${state}; peers seen: ${seen}`);
 			}
@@ -195,12 +203,14 @@ export default function (pi: ExtensionAPI) {
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
 			if (isPlaceholderName(parts[1])) return notify(`duet: "${parts[1]}" is the website's placeholder: use your own name`, "error");
 			if (parts[2] && !isRelayUrl(parts[2].replace(/\/+$/, ""))) return notify("duet: the server must be an http(s) URL", "error");
-			const owner = lockOwner();
-			if (owner) return notify(`duet: ${heldBy(owner)}`, "error");
+				leave();
 			[room, name] = [parts[0], fitName(parts[1])];
 			server = (parts[2] || process.env.DUET_SERVER || DEFAULT_SERVER).replace(/\/+$/, "");
+			const owner = lockOwner();
+			if (owner) return notify(`duet: ${heldBy(owner)}`, "error");
 			updateConfig((c) => Object.assign(c, { room, name, server: parts[2] ? server : undefined }));
-			joinRoom();
+			await joinRoom();
+			if (!sub) return notify(`duet: ${status}`, "error");
 			try {
 				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place: placeFor(process.cwd(), topicFor(room)) }));
 				notify(`duet: joined as ${name}`);

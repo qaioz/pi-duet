@@ -1,6 +1,6 @@
 {
   "name": "pi-duet",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pair your coding agent (pi, Claude Code, Codex) with another developer's, through a shared room on an ntfy relay.",
   "type": "module",
   "license": "MIT",
@@ -12,6 +12,6 @@
     "extensions": ["./index.ts"]
   },
   "scripts": {
-    "test": "node test/mcp.mjs && node test/e2e.mjs plumbing"
+    "test": "node test/mcp.mjs && node test/codex.mjs && node test/e2e.mjs plumbing"
   }
 }

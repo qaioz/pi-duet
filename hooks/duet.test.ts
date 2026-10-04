@@ -6,7 +6,7 @@ const CWD = "/work/repo";
 
 // Everything session.start calls, answered in Claude Code's place. Returns what the mod did.
 function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean; env?: Record<string, string>; answer?: (q: string) => string | undefined; store?: Record<string, unknown> } = {}) {
-	const did = { files: new Map<string, string>(), asks: [] as string[], logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], spawned: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, unasked: false, checkThrows: false, nextAgent: "sub-1", userTurn: null as null | ((text: string) => Promise<void>), seq: 0, push: (env: any, attachmentUrl?: string) => {} };
+	const did = { files: new Map<string, string>(), asks: [] as string[], logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], spawned: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, fs: new Map<string, string>(), unasked: false, checkThrows: false, nextAgent: "sub-1", userTurn: null as null | ((text: string) => Promise<void>), seq: 0, push: (env: any, attachmentUrl?: string) => {} };
 	const clock = mock.clock(on, { now: 1_000_000 });
 	on("session.start", () => ({ cwd: CWD }));
 	const env: Record<string, string | undefined> = { HOME: "/home/g", ...(opts.env ?? {}) };
@@ -116,6 +116,15 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 	on("agent.spawn", () => ({ model: "haiku", agentId: did.nextAgent }));
 	on("classic.PostToolUse", () => ({}));
 	on("classic.PermissionRequest", () => ({}));
+	// The file system, for the lock all duet clients share (~/.duet).
+	on("fs.read", ($: any, e: any) => {
+		if (!did.fs.has(e.path)) throw new Error("ENOENT: " + e.path);
+		return { value: did.fs.get(e.path) };
+	});
+	on("fs.write", ($: any, e: any) => {
+		did.fs.set(e.path, e.text);
+		return { value: undefined };
+	});
 	const start = () => ({ surface: opts.interactive === false ? null : "terminal", isInteractive: opts.interactive !== false, cwd: CWD });
 	return { did, clock, start };
 }
@@ -1084,5 +1093,52 @@ test("review: a subagent keeps the guard of the request that started it, not a l
 	expect(String(subCall.deny ?? subCall.result)).toMatch(/permission mode changed/);
 	const mainCall: any = await $.tool.call({ tool: "Read", file_path: CWD + "/a.txt" });
 	expect(mainCall.result).toBe("ran");
+	did.feeding = false;
+});
+
+// The shared lock's file for a room, as lock.js names it: ~/.duet/<sha256("<relay> <room> <name>")[:16]>.lock
+async function lockFileFor(room: string, name: string, relay = "https://duet.gaioz.online") {
+	const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${relay} ${room} ${name}`)));
+	return `/home/g/.duet/${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16)}.lock`;
+}
+
+test("F21: joining writes the shared lock; leaving releases it", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await join($, clock, "test-room-60 gaioz");
+	const path = await lockFileFor("test-room-60", "gaioz");
+	const lock = JSON.parse(did.fs.get(path) ?? "{}");
+	expect(lock).toMatchObject({ v: 2, client: "claude-code", cwd: CWD });
+	expect(Date.now() - lock.at).toBeLessThan(60_000);
+	await $.command.run({ command: "duet", args: "off" });
+	await settle(clock, 10);
+	expect(JSON.parse(did.fs.get(path) ?? "{}")).toMatchObject({ released: true, at: 0 });
+});
+
+test("F21: a live Codex (or pi) in the room under this name keeps it; a stale one doesn't", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	const path = await lockFileFor("test-room-61", "gaioz");
+	did.fs.set(path, JSON.stringify({ v: 2, client: "codex", token: "codex-1", pid: 4242, cwd: "/work/codex", at: Date.now() }));
+	await join($, clock, "test-room-61 gaioz");
+	expect(did.logs.join("\n")).toMatch(/gaioz is already in room test-room-61 on this computer, in Codex \(\/work\/codex\)/);
+	expect(did.posts.length).toBe(0);
+	did.fs.set(path, JSON.stringify({ v: 2, client: "codex", token: "codex-1", pid: 4242, cwd: "/work/codex", at: Date.now() - 120_000 }));
+	await join($, clock, "test-room-61 gaioz");
+	expect(did.posts.at(-1)?.body).toMatchObject({ kind: "join", from: "gaioz" });
+	expect(JSON.parse(did.fs.get(path)!).client).toBe("claude-code");
+});
+
+test("F21: when another client takes the shared lock over, this window leaves the room", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-62 gaioz");
+	const path = await lockFileFor("test-room-62", "gaioz");
+	did.fs.set(path, JSON.stringify({ v: 2, client: "pi", token: "pi-1", pid: 77, cwd: "/work/pi", at: Date.now() }));
+	await clock.advance(2100);
+	await settle(clock, 5);
+	expect(did.logs.join("\n")).toMatch(/now open as gaioz in pi on this computer \(\/work\/pi\): this window left it/);
+	const status: any = await $.command.run({ command: "duet", args: "status" });
+	expect(did.logs.at(-1)).toBe("not in a room");
 	did.feeding = false;
 });

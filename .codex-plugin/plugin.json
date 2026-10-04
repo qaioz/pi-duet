@@ -1,0 +1,15 @@
+{
+  "name": "duet",
+  "version": "0.1.0",
+  "description": "Pair Codex with another developer's coding agent (pi, Claude Code or Codex) through a shared room.",
+  "keywords": ["pairing", "collaboration", "agents"],
+  "skills": "./codex/skills/",
+  "mcpServers": "./codex/mcp.json",
+  "hooks": "./codex/hooks.json",
+  "interface": {
+    "displayName": "Duet",
+    "shortDescription": "Pair your Codex with another developer's agent",
+    "developerName": "qaioz",
+    "category": "Productivity"
+  }
+}

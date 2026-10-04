@@ -243,3 +243,41 @@ test("long-message URLs: only a real upload on this very relay", () => {
 test("transport.js publish refuses more than 200,000 characters (receivers would drop it)", async () => {
 	await assert.rejects(transport.publish("http://127.0.0.1:9", "t", wire.envelope({ fromId: "x", from: "a", kind: "msg", text: "é".repeat(200_001) })), /limit is 200000/);
 });
+
+test("lock.js: one lock per room and name for every client; stale or dead owners don't count", async () => {
+	const { mkdtempSync, writeFileSync, existsSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const lock = await import("../lock.js");
+	const dir = mkdtempSync(join(tmpdir(), "duet-lock-"));
+	const path = lock.lockPath("https://duet.gaioz.online", "room-1", "gaioz", dir);
+	// The plugin names the same file (hooks/duet.js: sha256 of "<relay> <room> <name>", 16 hex).
+	assert.equal(path, join(dir, (await wire.sha256hex("https://duet.gaioz.online room-1 gaioz")).slice(0, 16) + ".lock"));
+	const a = { client: "codex", token: "a", cwd: "/w/a" };
+	const b = { client: "pi", token: "b", cwd: "/w/b" };
+	assert.deepEqual(await lock.takeLock(path, a), { ok: true });
+	const refused = await lock.takeLock(path, b);
+	assert.equal(refused.ok, false);
+	assert.match(lock.describeHolder(refused.holder), /^Codex \(pid \d+, \/w\/a\)$/);
+	// A Claude Code window's lock (no pid) counts while its beat is fresh.
+	writeFileSync(path, JSON.stringify({ v: 2, client: "claude-code", token: "cc", cwd: "/w/c", at: Date.now() }));
+	assert.equal((await lock.takeLock(path, b)).ok, false);
+	writeFileSync(path, JSON.stringify({ v: 2, client: "claude-code", token: "cc", cwd: "/w/c", at: Date.now() - 61_000 }));
+	assert.equal((await lock.takeLock(path, b)).ok, true);
+	// The old owner's beat sees another token and lets go; the new one's beat keeps it.
+	assert.equal(lock.refreshLock(path, a), false);
+	assert.equal(lock.refreshLock(path, b), true);
+	// A version-1 lock is a bare pid: held while that process lives.
+	writeFileSync(path, String(process.pid));
+	assert.equal(lock.lockHeld(lock.readLock(path)), true);
+	writeFileSync(path, "999999999");
+	assert.equal(lock.lockHeld(lock.readLock(path)), false);
+	// A released lock is free; release removes only one's own.
+	writeFileSync(path, JSON.stringify({ v: 2, client: "claude-code", token: "cc", at: 0, released: true }));
+	assert.equal(lock.lockHeld(lock.readLock(path)), false);
+	await lock.takeLock(path, a);
+	lock.releaseLock(path, b);
+	assert.equal(existsSync(path), true);
+	lock.releaseLock(path, a);
+	assert.equal(existsSync(path), false);
+});

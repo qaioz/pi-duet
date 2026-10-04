@@ -345,7 +345,9 @@ async function printModeStaysOut(fake) {
 	const args = ["-p", "say hi", ...modelArgs(agentDir, fake), "-e", EXT];
 	// A join, however brief, takes the lock: watch for it rather than rely on the connection racing exit.
 	const lockEvents = [];
-	const watcher = watch(agentDir, (_type, f) => f === "duet.lock" && lockEvents.push(f));
+	const lockDir = join(agentDir, "home", ".duet"); // the shared lock lives in ~/.duet (lock.js)
+	mkdirSync(lockDir, { recursive: true });
+	const watcher = watch(lockDir, (_type, f) => String(f).endsWith(".lock") && lockEvents.push(f));
 	const out = await new Promise((r) => {
 		const env = isoEnv(join(agentDir, "home"), { PI_CODING_AGENT_DIR: agentDir, DUET_ROOM: room, DUET_NAME: "carol", ...extraEnv });
 		// stdin "ignore": with a pipe, pi -p waits for EOF on it before running.

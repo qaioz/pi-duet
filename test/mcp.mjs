@@ -127,7 +127,7 @@ async function main() {
 	const list = await a.request("tools/list");
 	check(
 		"initialize + tools/list",
-		init.serverInfo.name === "duet" && list.result.tools.map((t) => t.name).join() === "duet_send,duet_inbox,duet_status",
+		init.serverInfo.name === "duet" && list.result.tools.map((t) => t.name).join() === "duet_send,duet_inbox,duet_status,duet_join,duet_leave,duet_mode,duet_history",
 		`server ${init.serverInfo.name} ${init.serverInfo.version}, protocol ${init.protocolVersion}, tools ${list.result.tools.map((t) => t.name).join(", ")}`,
 	);
 	await Promise.all([waitConnected(a), waitConnected(b)]);
@@ -256,7 +256,7 @@ async function main() {
 	await gil.stop();
 	check(
 		"only Claude Code gets the channel",
-		channel(f).length === 0 && plainInit.result.tools.length === 3 && !gInit.capabilities.experimental,
+		channel(f).length === 0 && plainInit.result.tools.length === 7 && !gInit.capabilities.experimental,
 		`frank (client "test"): ${channel(f).length} channel events; client "claude-ai": capabilities ${JSON.stringify(gInit.capabilities)}`,
 	);
 
@@ -349,7 +349,7 @@ async function main() {
 	chmodSync(fakeCodex, 0o755);
 	const queued = () => (existsSync(qlog) ? readFileSync(qlog, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
 	const cRoom = freshRoom();
-	const g = startServer("gina", cRoom, { env: { DUET_CODEX_BIN: fakeCodex, DUET_MAX_AUTO: "2" } });
+	const g = startServer("gina", cRoom, { env: { DUET_MODE: "auto", DUET_CODEX_BIN: fakeCodex, DUET_MAX_AUTO: "2" } });
 	const h = startServer("hal", cRoom);
 	await g.init("codex-mcp-client");
 	await h.init();
@@ -409,7 +409,7 @@ async function main() {
 	writeFileSync(slowCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nawait new Promise((r) => setTimeout(r, 2000));\nappendFileSync(${JSON.stringify(slowLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`);
 	chmodSync(slowCodex, 0o755);
 	const rRoom = freshRoom();
-	const r1 = startServer("rita", rRoom, { env: { DUET_CODEX_BIN: slowCodex } });
+	const r1 = startServer("rita", rRoom, { env: { DUET_MODE: "auto", DUET_CODEX_BIN: slowCodex } });
 	const r2 = startServer("rob", rRoom);
 	await r1.init("codex-mcp-client");
 	await r2.init();
@@ -436,7 +436,7 @@ async function main() {
 	const winCodex = join(ROOT, "win-codex.mjs");
 	writeFileSync(winCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(wlog)}, "called\\n");\n`);
 	chmodSync(winCodex, 0o755);
-	const w1 = startServer("wim", wRoom, { env: { DUET_CODEX_BIN: winCodex, DUET_TEST_PLATFORM: "win32" } });
+	const w1 = startServer("wim", wRoom, { env: { DUET_MODE: "auto", DUET_CODEX_BIN: winCodex, DUET_TEST_PLATFORM: "win32" } });
 	const w2 = startServer("wes", wRoom);
 	await w1.init("codex-mcp-client");
 	await w2.init();
@@ -446,7 +446,7 @@ async function main() {
 	await sleep(2000);
 	const winInbox = await w1.call("duet_inbox", {}, meta("user"));
 	const winCalled = existsSync(wlog);
-	const c1 = startServer("cal", wRoom, { env: { DUET_CODEX_BIN: winCodex } });
+	const c1 = startServer("cal", wRoom, { env: { DUET_MODE: "auto", DUET_CODEX_BIN: winCodex } });
 	await c1.init("codex-mcp-client");
 	await waitConnected(c1);
 	await c1.call("duet_status", {}, meta("user"));
@@ -506,7 +506,7 @@ async function main() {
 	writeFileSync(nulCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(nlog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`);
 	chmodSync(nulCodex, 0o755);
 	const nulWindow = windows[windows.push(spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" })) - 1];
-	const n1 = startServer("nell", nRoom, { env: { DUET_CODEX_BIN: nulCodex } });
+	const n1 = startServer("nell", nRoom, { env: { DUET_MODE: "auto", DUET_CODEX_BIN: nulCodex } });
 	await n1.init("codex-mcp-client");
 	await waitConnected(n1);
 	await n1.call("duet_status", {}, meta("user"));
@@ -572,7 +572,7 @@ async function main() {
 	const failCalls = () => (existsSync(failLog) ? readFileSync(failLog, "utf8").split("\n").filter(Boolean).length : 0);
 	chmodSync(failCodex, 0o755);
 	const failWindow = windows[windows.push(spawn(join(ROOT, "bin/codex"), ["600"], { cwd: process.cwd(), stdio: "ignore" })) - 1];
-	const f1 = startServer("fay", fRoom, { env: { DUET_CODEX_BIN: failCodex, DUET_PUSH_PAUSE_MS: "4000" } });
+	const f1 = startServer("fay", fRoom, { env: { DUET_MODE: "auto", DUET_CODEX_BIN: failCodex, DUET_PUSH_PAUSE_MS: "4000" } });
 	const f2 = startServer("finn", fRoom);
 	await f1.init("codex-mcp-client");
 	await f2.init();
@@ -604,7 +604,7 @@ async function main() {
 	const shapeCodex = join(ROOT, "shape-codex.mjs");
 	writeFileSync(shapeCodex, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(wqlog)}, "x\\n");\n`);
 	chmodSync(shapeCodex, 0o755);
-	const s3 = startServer("sid", wRoom2, { env: { DUET_CODEX_BIN: shapeCodex } });
+	const s3 = startServer("sid", wRoom2, { env: { DUET_MODE: "auto", DUET_CODEX_BIN: shapeCodex } });
 	const s4 = startServer("sol", wRoom2);
 	await s3.init("codex-mcp-client");
 	await s4.init();
@@ -753,7 +753,7 @@ async function main() {
 	const n = startServer("nobody", "", { args: [] });
 	await n.init();
 	const noRoom = await n.call("duet_send", { text: "x" });
-	check("no room: clear error", noRoom.isError && noRoom.text.includes("--room"), noRoom.text);
+	check("no room: clear error", noRoom.isError && noRoom.text.includes("duet_join"), noRoom.text);
 
 	// Clean exit gives the lock back.
 	for (const s of [...live]) await s.stop();

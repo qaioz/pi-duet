@@ -1,0 +1,52 @@
+// What Codex may do while it works on a request from the other person's agent (a "peer turn"),
+// checked by duet's PreToolUse hook (mcp.js, duet_hook). Pure. The path rules are the Claude Code
+// plugin's (hooks/guard.js).
+//
+// This is a guardrail, not a sandbox, and Codex runs it as a hook that fails open: if duet's server
+// is slow, gone or errors, the tool runs (Codex: "a PreToolUse callback error, timeout, or malformed
+// response can fail the hook without blocking the tool"). Codex's own sandbox and approvals still
+// apply. Shell commands are only checked for background and scheduled work; what a command reads or
+// writes is the sandbox's business.
+import { inside, protectedPart } from "./hooks/guard.js";
+
+// Work that outlives the request: background jobs, schedulers, detached terminals.
+const BACKGROUND = /(^|[\s;&|(`$])(nohup|setsid|disown|crontab|at|batch|systemd-run|launchctl|schtasks|tmux|screen)(\s|$)|(^|[^&])&\s*($|[;)\n])/;
+// Tools that reach past this session: other agents, plugins, extra permissions.
+const OFF = /agent|plugin|permission/i;
+
+/** Every file an apply_patch touches. */
+export function patchPaths(patch) {
+	const out = [];
+	for (const m of String(patch ?? "").matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)) out.push(m[1].trim());
+	return out;
+}
+
+/**
+ * @param {{ tool: string, input: any }} call   the hook's tool_name and tool_input
+ * @param {{ folder: string, home: string, peer: string, ownServer?: string }} ctx
+ * @returns {string | null} why the call is refused, or null
+ */
+export function checkCodexTool(call, { folder, home, peer, ownServer = "duet" }) {
+	const tool = String(call.tool ?? "");
+	const input = call.input && typeof call.input === "object" ? call.input : {};
+	const ask = `If it's needed, tell ${peer} that your own user has to do it or ask you for it.`;
+	if (tool.startsWith("mcp__")) {
+		if (tool.startsWith(`mcp__${ownServer}__`)) return null;
+		return `duet: while working on ${peer}'s request, your user's other tools (${tool}) are off. ${ask}`;
+	}
+	if (OFF.test(tool)) return `duet: while working on ${peer}'s request, ${tool} is off. ${ask}`;
+	if (tool === "Bash") {
+		const command = Array.isArray(input.command) ? input.command.join(" ") : String(input.command ?? input.cmd ?? "");
+		if (BACKGROUND.test(command)) return `duet: background and scheduled commands are off while working on ${peer}'s request; run it in the foreground. ${ask}`;
+		return null;
+	}
+	const paths = tool === "apply_patch" ? patchPaths(input.command ?? input.patch ?? input.input) : [input.path, input.file_path].filter((p) => typeof p === "string" && p);
+	if (!folder) return paths.length ? `duet: duet doesn't know this session's folder yet, so ${peer}'s request may not change files. ${ask}` : null;
+	for (const path of paths) {
+		const rel = inside(path, folder, home);
+		if (rel === null) return `duet: while working on ${peer}'s request, only files under ${folder} may be used; ${path} is outside it. ${ask}`;
+		const hit = tool === "apply_patch" ? protectedPart(rel) : undefined;
+		if (hit) return `duet: ${peer}'s request may not change ${rel}: ${hit} controls what runs on this computer later. ${ask}`;
+	}
+	return null;
+}
