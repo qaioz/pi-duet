@@ -124,7 +124,8 @@ async function main() {
 	const list = await a.request("tools/list");
 	check(
 		"initialize + tools/list",
-		init.serverInfo.name === "duet" && list.result.tools.map((t) => t.name).join() === "duet_send,duet_inbox,duet_status,duet_join,duet_leave,duet_mode,duet_history",
+		init.serverInfo.name === "duet" && // a host that may draw MCP Apps also gets the panel (test/panel.mjs tests it)
+			list.result.tools.map((t) => t.name).join() === "duet_send,duet_inbox,duet_status,duet_join,duet_leave,duet_mode,duet_history,duet_room,duet_room_state,duet_room_join,duet_room_leave,duet_take,duet_ignore",
 		`server ${init.serverInfo.name} ${init.serverInfo.version}, protocol ${init.protocolVersion}, tools ${list.result.tools.map((t) => t.name).join(", ")}`,
 	);
 	await Promise.all([waitConnected(a), waitConnected(b)]);

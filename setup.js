@@ -1,5 +1,7 @@
 // `npx -y github:qaioz/pi-duet setup codex --room <room> --name <name> [--server <url>] [--mode auto]`
 // `npx -y github:qaioz/pi-duet setup codex --off` removes it again. (Claude Code has the plugin.)
+// `npx -y github:qaioz/pi-duet setup claude-desktop [--room <room> --name <name>]` adds duet (and its
+//   panel) to the Claude Desktop app's chat; `--off` removes it. See setupClaudeDesktop below.
 //
 // Writes the duet MCP server into Codex's config.toml. `codex mcp add` can't set the timeouts
 //   or the tool approval, and `-c` flags would cut the session off from `codex queue` (our push).
@@ -28,8 +30,11 @@ const fail = (msg) => {
 };
 
 const target = argv[0];
-if (target !== "codex") {
-	fail("usage: setup codex --room <room> --name <name> [--server <url>] [--mode auto] | setup codex --off (Claude Code: install the duet plugin)");
+if (target !== "codex" && target !== "claude-desktop") {
+	fail(
+		"usage: setup codex --room <room> --name <name> [--server <url>] [--mode auto] | setup codex --off | " +
+			"setup claude-desktop [--room <room> --name <name>] [--server <url>] | setup claude-desktop --off (Claude Code: install the duet plugin)",
+	);
 }
 const off = argv.includes("--off");
 const room = opt("--room");
@@ -38,17 +43,60 @@ const server = opt("--server");
 const mode = opt("--mode");
 const pkg = opt("--package") || "github:qaioz/pi-duet";
 if (!off) {
-	if (!room || !name) fail("--room and --name are required");
-	if (!/^[A-Za-z0-9._-]{1,64}$/.test(room)) fail("--room may only use a-z, A-Z, 0-9, . _ - (at most 64)");
-	if (isPlaceholderName(name)) fail(`--name is still the placeholder "${name}": use your own name`);
-	if (!isName(name)) fail("--name may only use letters, digits, . _ -, must start with a letter or digit, at most 40");
+	if (target === "codex" && (!room || !name)) fail("--room and --name are required");
+	if (!room !== !name) fail("--room and --name go together (or leave both out and join from the duet panel)");
+	if (room && !/^[A-Za-z0-9._-]{1,64}$/.test(room)) fail("--room may only use a-z, A-Z, 0-9, . _ - (at most 64)");
+	if (name && isPlaceholderName(name)) fail(`--name is still the placeholder "${name}": use your own name`);
+	if (name && !isName(name)) fail("--name may only use letters, digits, . _ -, must start with a letter or digit, at most 40");
 	if (server && !isRelayUrl(server)) fail("--server must be an http(s) URL like https://ntfy.example.com");
 	if (mode && mode !== "ask" && mode !== "auto") fail("--mode is ask or auto");
 }
-const run = ["-y", pkg, "--room", room, "--name", name, ...(server ? ["--server", server] : []), ...(mode === "auto" ? ["--mode", "auto"] : [])];
+const run = ["-y", pkg, ...(room ? ["--room", room, "--name", name] : []), ...(server ? ["--server", server] : []), ...(mode === "auto" ? ["--mode", "auto"] : [])];
 const [command, args] = process.platform === "win32" ? ["cmd", ["/c", "npx", ...run]] : ["npx", run];
 
-setupCodex();
+if (target === "codex") setupCodex();
+else setupClaudeDesktop();
+
+// Claude Desktop's chat (not its Code tab): an MCP server in claude_desktop_config.json, with the duet
+// panel. Started by the app, which doesn't read your shell profile: so npx by its full path, with
+// node's own folder on PATH (nvm and friends aren't on the app's PATH). No folder: the chat has none.
+function setupClaudeDesktop() {
+	const dir =
+		process.platform === "darwin"
+			? join(homedir(), "Library", "Application Support", "Claude")
+			: process.platform === "win32"
+				? join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "Claude")
+				: join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "Claude");
+	const path = join(dir, "claude_desktop_config.json");
+	let config = {};
+	if (existsSync(path)) {
+		try {
+			config = JSON.parse(readFileSync(path, "utf8") || "{}");
+		} catch (err) {
+			fail(`${path} isn't valid JSON (${err.message}); fix it first, then run setup again`);
+		}
+	}
+	config.mcpServers ??= {};
+	if (off) delete config.mcpServers.duet;
+	else {
+		const nodeDir = dirname(process.execPath);
+		const npx = join(nodeDir, process.platform === "win32" ? "npx.cmd" : "npx");
+		config.mcpServers.duet =
+			process.platform === "win32"
+				? { command: "cmd", args: ["/c", "npx", ...run, "--folder="] }
+				: { command: existsSync(npx) ? npx : "npx", args: [...run, "--folder="], env: { PATH: `${nodeDir}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin` } };
+	}
+	mkdirSync(dir, { recursive: true });
+	if (existsSync(path) && !existsSync(`${path}.before-duet`)) copyFileSync(path, `${path}.before-duet`); // the original, once
+	writeFileSync(`${path}.tmp`, JSON.stringify(config, null, 2) + "\n");
+	renameSync(`${path}.tmp`, path);
+	console.log(
+		off
+			? `duet removed from ${path}. Quit and reopen Claude Desktop.`
+			: `duet added to ${path}${room ? ` (room ${room.slice(0, 4)}…, name ${name})` : ""}. Quit and reopen Claude Desktop, then ask in a chat: "open duet". ` +
+					"The duet panel shows the room; a request reaches Claude only when you click Hand to agent (Claude Desktop puts it in your message box: press Enter).",
+	);
+}
 
 // codex/hooks.json as TOML tables. JSON strings are valid TOML basic strings.
 function hooksToml() {
