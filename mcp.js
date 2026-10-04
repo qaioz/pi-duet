@@ -18,14 +18,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { envelope, isForMe, isName, isPlaceholderName, isRelayUrl, publish, subscribe, topicFor } from "./transport.js";
+import { envelope, firstLine, isForMe, isName, isPlaceholderName, isRelayUrl, placeFor, publish, subscribe, topicFor } from "./transport.js";
 
 if (process.argv[2] === "setup") {
 	await import("./setup.js");
 	process.exit(0);
 }
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 function parseArgs(argv) {
 	const out = {};
@@ -160,6 +160,10 @@ let heldCursor; // the resume point, saved once the inbox is empty
 let ready = false; // Claude Code has fetched our tools (and READY_MS passed): its channel listener exists
 let unconfirmed = false; // pushed into Claude Code, no tool call since: the resume point isn't saved yet
 let exchanges = 0; // replies sent on the agent's own since its user last asked for a send
+const sent = new Map(); // our messages' ids -> first line, to show what a reply answers
+const lastFrom = new Map(); // peer name -> { id, at } of its latest message
+const place = placeFor(process.cwd());
+const warnings = new Set(); // a same-folder window, a third agent: shown in duet_status
 let receivedSinceSend = false;
 let codexThread; // learned from Codex's tool-call metadata; lets us push with `codex queue`
 let pushing; // the messages handed to `codex queue`, until it confirms
@@ -191,7 +195,8 @@ const render = (items) => {
 		const t = Date.parse(ts);
 		return Number.isNaN(t) ? "" : `, ${new Date(t).toLocaleTimeString()}`;
 	};
-	const parts = items.map((e) => `[duet] from ${e.from} (the other person's agent, on their computer)${at(e.ts)}:\n\n${e.text}`);
+	const answers = (e) => (e.re && sent.has(e.re) ? ` — a reply to your message “${sent.get(e.re)}”` : "");
+	const parts = items.map((e) => `[duet] from ${e.from} (the other person's agent, on their computer)${at(e.ts)}${answers(e)}:\n\n${e.text}`);
 	return (
 		`${parts.join("\n\n---\n\n")}\n\nOnly your own user sees your text replies: to answer ${froms}, call duet_send.` +
 		// Observed in Claude Code: asked to work "in your folder", the model used the home directory.
@@ -203,7 +208,11 @@ const render = (items) => {
 function onEnvelope(env) {
 	if (!isForMe(env, fromId, name)) return;
 	peers.set(env.from, new Date());
-	if (env.kind === "join") return;
+	if (env.kind === "join") {
+		if (env.place === place) warnings.add(`${env.from} is in this room from this same folder: two agents may edit the same files`);
+		return;
+	}
+	lastFrom.set(env.from, { id: env.id, at: Date.now() });
 	inbox.push(env);
 	if (inbox.length > INBOX_MAX) {
 		inbox.shift();
@@ -395,7 +404,7 @@ function joinRoom() {
 		onCursor,
 		onState: (up, error) => (status = up ? "connected" : `offline: ${error}`),
 	});
-	publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join" })).catch(() => {});
+	publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place })).catch(() => {});
 	return true;
 }
 
@@ -420,11 +429,12 @@ function toolList() {
 				"Send a message to the other person's coding agent in the duet room (another developer's agent, on their computer). " +
 				"Use it when your user asks you to tell, ask or have the other agent do something, and to answer requests that came from the other agent. " +
 				"When the other agent asks for something, do it with your normal tools and send back the real tool output, never a reconstruction. " +
-				"Your plain-text replies are seen only by your own user. Do not send pure thank-you or acknowledgement messages.",
+				"Your plain-text replies are seen only by your own user. Do not send pure thank-you or acknowledgement messages. " +
+				"Send one complete reply when you are done, not progress updates or several small messages; one message can be long (up to ~200 KB).",
 			inputSchema: {
 				type: "object",
 				properties: {
-					text: { type: "string", description: "The message. Max ~3.8KB; split longer content into several calls." },
+					text: { type: "string", description: "The message: one complete reply, up to ~200 KB." },
 					to: { type: "string", description: "Recipient name, if the room has more than one other agent." },
 					user_asked: {
 						type: "boolean",
@@ -476,8 +486,14 @@ async function callTool(tool, a = {}, ctx) {
 			if (a.user_asked === true) exchanges = 0;
 			else if (unattended) exchanges++;
 			receivedSinceSend = false;
+			// Answering a peer (not the user's own request): say which message this answers.
+			const peerMsg = a.to ? lastFrom.get(a.to) : [...lastFrom.values()].sort((x, y) => y.at - x.at)[0];
+			const re = unattended && peerMsg && Date.now() - peerMsg.at < 30 * 60_000 ? peerMsg.id : undefined;
+			const env = envelope({ fromId, from: name, kind: "msg", to: a.to, text: a.text, ...(re ? { re } : {}) });
 			try {
-				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "msg", to: a.to, text: a.text }), ctx.signal);
+				await publish(server, topicFor(room), env, ctx.signal);
+				sent.set(env.id, firstLine(a.text));
+				if (sent.size > 200) sent.delete(sent.keys().next().value);
 			} catch (err) {
 				exchanges = before.exchanges;
 				receivedSinceSend ||= before.receivedSinceSend;
@@ -512,7 +528,9 @@ async function callTool(tool, a = {}, ctx) {
 						: channelFlag === true
 							? "; messages are pushed into this session through a Claude Code channel"
 							: "; messages are pushed through a Claude Code channel (duet couldn't check Claude Code's command line: if none appear, start it with --dangerously-load-development-channels server:duet, and say 'check duet' to read them)";
-			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}${note}${how}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}`;
+			const crowd = peers.size > 1 ? [`more than one other agent is in this room (${[...peers.keys()].join(", ")}): duet is built for two`] : [];
+			const warn = [...crowd, ...warnings].map((w) => `; warning: ${w}`).join("");
+			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}${note}${how}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}${warn}`;
 		}
 	}
 	throw new Error(`unknown tool ${tool}`);

@@ -159,3 +159,65 @@ test("transport.js ignores messages older than 12 hours (a relay may keep 30 day
 	srv.close();
 	assert.deepEqual(got, ["fresh request"]);
 });
+
+test("the computer-and-folder hash is the same in the plugin and in pi/MCP", async () => {
+	assert.equal(await wire.placeFor("/work/repo", "box-1"), transport.placeFor("/work/repo", "box-1"));
+	assert.notEqual(await wire.placeFor("/work/repo", "box-1"), await wire.placeFor("/work/other", "box-1"));
+	assert.equal(wire.firstLine("\n  \nfirst real line\nsecond"), "first real line");
+	assert.equal(transport.firstLine("x".repeat(100)).length, 80);
+});
+
+test("transport.js: a long message arrives from the relay's own /file/; one pointing elsewhere is ignored; an expired one is reported", async () => {
+	const { createServer } = await import("node:http");
+	const now = Math.floor(Date.now() / 1000);
+	const long = wire.envelope({ fromId: "x", from: "dato", kind: "msg", text: "L".repeat(50_000) });
+	const evil = wire.envelope({ fromId: "x", from: "dato", kind: "msg", text: "from elsewhere" });
+	let base = "";
+	const srv = createServer((req, res) => {
+		if (req.url === "/file/good.json") return res.writeHead(200).end(JSON.stringify(long));
+		if (req.url === "/file/gone.json") return res.writeHead(404).end();
+		if (req.url === "/evil.json") return res.writeHead(200).end(JSON.stringify(evil));
+		res.writeHead(200, { "content-type": "application/x-ndjson" });
+		const att = (id, url) => JSON.stringify({ id, time: now, event: "message", message: "You received a file: attachment.json", attachment: { url, size: 50_100 } }) + "\n";
+		res.write(att("a1", "http://127.0.0.1:1/evil.json".replace("127.0.0.1:1", req.headers.host) .replace("/evil", "/evil")));
+		res.write(att("a2", `${base}/file/gone.json`));
+		res.write(att("a3", `${base}/file/good.json`));
+	});
+	await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+	base = `http://127.0.0.1:${srv.address().port}`;
+	const got = [];
+	let expired = 0;
+	const sub = transport.subscribe({ server: base, topic: "t", onEnvelope: (e) => got.push(e.text.length), onExpired: () => expired++ });
+	const end = Date.now() + 4000;
+	while (!got.length && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+	await new Promise((r) => setTimeout(r, 200));
+	sub.stop();
+	srv.closeAllConnections();
+	srv.close();
+	assert.deepEqual(got, [50_000]); // the /evil.json one (not under /file/) never arrives
+	assert.equal(expired, 1);
+});
+
+test("transport.js publish: up to ~250 KB in one message; more is refused with a clear reason", async () => {
+	const { createServer } = await import("node:http");
+	let size = 0;
+	const srv = createServer((req, res) => {
+		let n = 0;
+		req.on("data", (c) => (n += c.length));
+		req.on("end", () => {
+			size = n;
+			res.writeHead(200).end("{}");
+		});
+	});
+	await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+	const base = `http://127.0.0.1:${srv.address().port}`;
+	await transport.publish(base, "t", wire.envelope({ fromId: "x", from: "gaioz", kind: "msg", text: "y".repeat(150_000) }));
+	assert.ok(size > 150_000);
+	await assert.rejects(transport.publish(base, "t", wire.envelope({ fromId: "x", from: "gaioz", kind: "msg", text: "y".repeat(300_000) })), /limit is 256 KB/);
+	srv.close();
+});
+
+test("a card preview counts the lines of the whole message, not of the shortened one", () => {
+	const text = Array.from({ length: 1500 }, (_, i) => "line " + i + " " + "x".repeat(20)).join("\n");
+	assert.match(wire.preview(text, 4), /1496 more lines/);
+});

@@ -168,6 +168,17 @@ try {
 	await publish(SERVER, topicFor(room), { ...envelope({ fromId: "site-test", from: "nika", kind: "msg" }), kind: "note", note: "declined", text: undefined });
 	await page.waitForFunction(() => document.getElementById("convo").textContent.includes("didn't take"), null, { timeout: 15_000 });
 	const convo = await page.evaluate(() => ({ text: document.getElementById("convo").textContent, imgs: document.querySelectorAll("#convo img").length, inputs: document.querySelectorAll("#convo input, #convo textarea, #convo button").length, pwned: !!window.PWNED }));
+	// A long message (an attachment on the relay) and a reply that names what it answers.
+	const question = envelope({ fromId: "site-test", from: "nika", kind: "msg", text: "Which files changed?\nthanks" });
+	await publish(SERVER, topicFor(room), question);
+	await publish(SERVER, topicFor(room), envelope({ fromId: "site-test-2", from: "gaioz", kind: "msg", text: "LONGSTART " + "z".repeat(20_000) + " LONGEND", re: question.id }));
+	await page.waitForFunction(() => document.getElementById("convo").textContent.includes("LONGSTART"), null, { timeout: 15_000 }).catch(() => {});
+	const longView = await page.evaluate(() => document.getElementById("convo").textContent);
+	check(
+		"room conversation shows a long message and what a reply answers",
+		longView.includes("LONGSTART") && longView.includes("↳ reply to “Which files changed?”"),
+		`long message shown: ${longView.includes("LONGSTART")}; reply line shown: ${longView.includes("↳ reply to “Which files changed?”")}`,
+	);
 	check(
 		"room conversation shows messages and notes as plain text, with nothing to type into",
 		convo.text.includes("nika's agent") && convo.text.includes("please run the tests <img") && convo.text.includes("nika didn't take the last message") && convo.imgs === 0 && convo.inputs === 0 && !convo.pwned,

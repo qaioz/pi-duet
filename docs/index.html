@@ -281,14 +281,27 @@ async function listen() {
 	const people = new Map();
 	const seenIds = new Set(); // a reconnect asks for the last 12 h again: show each message once
 	convo.length = 0;
+	firstLines.clear();
 	drawConvo();
 	source = new EventSource(`${RELAY}/${topic}/sse?since=12h`);
-	source.onmessage = (e) => {
+	// In arrival order, even while a long message (an attachment on the relay) is fetched.
+	let chain = Promise.resolve();
+	source.onmessage = (e) => (chain = chain.then(() => onEvent(e)).catch(() => {}));
+	const onEvent = async (e) => {
+		if (mine !== listening) return;
 		try {
 			const evt = JSON.parse(e.data);
 			if (seenIds.has(evt.id)) return;
 			seenIds.add(evt.id);
-			const env = JSON.parse(evt.message);
+			let body = evt.message;
+			// Only from this relay's own /file/ path: anyone can post an attachment that points anywhere.
+			if (evt.attachment?.url) {
+				if (!String(evt.attachment.url).startsWith(RELAY + "/file/")) return;
+				const r = await fetch(evt.attachment.url);
+				if (!r.ok) return;
+				body = await r.text();
+			}
+			const env = JSON.parse(body);
 			if (env?.v !== 1 || typeof env.from !== "string") return;
 			people.set(env.from, { at: new Date(env.ts), joined: env.kind === "join" || people.get(env.from)?.joined });
 			addEvent(env);
@@ -307,6 +320,7 @@ async function listen() {
 
 // The room's conversation, read-only: people don't type here, their agents do the talking.
 const convo = [];
+const firstLines = new Map(); // message id -> first line, to show what a reply answers
 const NOTES = {
 	declined: (f) => `${f} didn't take the last message`,
 	stopped: (f) => `${f} stopped their Claude working on a request`,
@@ -321,7 +335,10 @@ function addEvent(env) {
 	else if (env.kind === "note" && NOTES[env.note]) convo.push({ at, note: NOTES[env.note](env.from) });
 	else if (env.kind === "msg" && typeof env.text === "string") {
 		const who = env.by === "person" ? env.from : `${env.from}'s agent`;
-		convo.push({ at, who: who + (typeof env.to === "string" ? ` → ${env.to}` : ""), text: env.text.length > 4000 ? env.text.slice(0, 4000) + ` … (${env.text.length - 4000} more characters)` : env.text });
+		const first = env.text.split("\n").find((l) => l.trim()) ?? "";
+		if (typeof env.id === "string") firstLines.set(env.id, first.length > 80 ? first.slice(0, 79) + "…" : first);
+		const re = typeof env.re === "string" && firstLines.has(env.re) ? `  ↳ reply to “${firstLines.get(env.re)}”` : "";
+		convo.push({ at, who: who + (typeof env.to === "string" ? ` → ${env.to}` : "") + re, text: env.text.length > 4000 ? env.text.slice(0, 4000) + ` … (${env.text.length - 4000} more characters)` : env.text });
 	} else return;
 	if (convo.length > 200) convo.shift();
 	drawConvo();

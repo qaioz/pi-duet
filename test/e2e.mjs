@@ -14,7 +14,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { envelope, isForMe, MAX_BYTES, publish, subscribe, topicFor } from "../transport.js";
+import { envelope, isForMe, MAX_BYTES, MAX_LONG_BYTES, publish, subscribe, topicFor } from "../transport.js";
 
 const PI = process.env.PI || "pi";
 const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test-v2/pi");
@@ -199,13 +199,19 @@ async function plumbing() {
 	await until(() => got.length === 1, 15_000, "round-trip");
 	check("transport round-trip", got[0].env.text === e1.text, `received id=${got[0].env.id} text=${JSON.stringify(got[0].env.text)}`);
 
+	// A long message goes out as one: the relay keeps it as an attachment and the receiver fetches it.
+	const long = envelope({ fromId: "x", from: "alice", kind: "msg", text: "L".repeat(50_000) });
+	await publish(SERVER, topic, long);
+	await until(() => got.some((g) => g.env.id === long.id), 20_000, "long message round-trip");
+	check("long message round-trip (attachment)", got.find((g) => g.env.id === long.id)?.env.text.length === 50_000, "50,000 characters sent as one message, received whole");
+
 	let oversize;
 	try {
-		await publish(SERVER, topic, envelope({ fromId: "x", from: "a", kind: "msg", text: "x".repeat(MAX_BYTES) }));
+		await publish(SERVER, topic, envelope({ fromId: "x", from: "a", kind: "msg", text: "x".repeat(MAX_LONG_BYTES) }));
 	} catch (err) {
 		oversize = err.message;
 	}
-	check("oversize rejected before sending", /limit is 3800.*split/i.test(oversize ?? ""), oversize);
+	check("oversize rejected before sending", /limit is 256 KB/i.test(oversize ?? ""), oversize);
 
 	// Reconnect + catch-up: stop, publish while "offline", resubscribe from the last id.
 	sub.stop();
