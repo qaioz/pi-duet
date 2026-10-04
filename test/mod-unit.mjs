@@ -267,11 +267,6 @@ test("lock.js: one lock per room and name for every client; stale or dead owners
 	// The old owner's beat sees another token and lets go; the new one's beat keeps it.
 	assert.equal(lock.refreshLock(path, a), false);
 	assert.equal(lock.refreshLock(path, b), true);
-	// A version-1 lock is a bare pid: held while that process lives.
-	writeFileSync(path, String(process.pid));
-	assert.equal(lock.lockHeld(lock.readLock(path)), true);
-	writeFileSync(path, "999999999");
-	assert.equal(lock.lockHeld(lock.readLock(path)), false);
 	// A released lock is free; release removes only one's own.
 	writeFileSync(path, JSON.stringify({ v: 2, client: "claude-code", token: "cc", at: 0, released: true }));
 	assert.equal(lock.lockHeld(lock.readLock(path)), false);

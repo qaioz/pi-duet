@@ -156,7 +156,7 @@ const AGENTS = {
 				["terminal, in your project folder", "claude"],
 				["in Claude Code", "/duet {room} {name}{pi-srv}"],
 			],
-			note: "duet for Claude Code is a plugin with a mod (Claude Code 2.1.287 or newer, terminal or the Desktop app's Code tab) and uses curl to receive. Anthropic can switch mods off remotely and organisations can block them: if `claude plugin test` in an empty folder says hooks modules are turned off, use the older channel route in the README. While Claude works on the other side's request, the plugin keeps it to your project folder and refuses scheduling, background work and your other tools; your usual permission prompts still apply.",
+			note: "duet for Claude Code is a plugin with a mod (Claude Code 2.1.287 or newer, terminal or the Desktop app's Code tab) and uses curl to receive. Anthropic can switch mods off remotely and organisations can block them: if `claude plugin test` in an empty folder says hooks modules are turned off, duet can't run in Claude Code until they're back on. While Claude works on the other side's request, the plugin keeps it to your project folder and refuses scheduling, background work and your other tools; your usual permission prompts still apply.",
 		},
 		receive: "The first time, duet asks who is in the room. With someone else (the default), each message waits as a card above your prompt: 1 lets Claude do it, 2 ignores it, each with 3 seconds to undo. With only you, or someone you trust completely, messages start Claude by themselves (up to 8 in a row without you). /duet shows the room's history; /duet off leaves.",
 	},

@@ -1,7 +1,7 @@
 // The duet wire format for the Claude Code mod: pure functions, no `node:` imports, no mods API.
 // It must stay compatible with transport.js (pi, the MCP server): same topic hash, same envelope.
-// Older clients drop `kind: "note"` (their isEnvelope rejects it) and ignore the fields they don't
-// know (`via`, `by`), so everything here is safe to send to them.
+// pi and the MCP server drop `kind: "note"` (their isEnvelope rejects it) and ignore the fields they
+// don't know (`by`), so everything here is safe to send to them.
 
 export const DEFAULT_SERVER = "https://duet.gaioz.online"; // the duet relay (ntfy), run by the author
 // Longer messages still go out as one: the relay stores the body as an attachment (ntfy does that

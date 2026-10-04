@@ -46,13 +46,11 @@ export default function (pi: ExtensionAPI) {
 	const fromId = saved.fromId!;
 	// Env wins over the file, so one machine can run several test identities.
 	let room = process.env.DUET_ROOM || saved.room;
-	// Peers drop names outside the rule (letters, digits, . _ -), so an older saved name is made to fit.
+	// Peers drop names outside the rule (letters, digits, . _ -), so a name is made to fit.
 	let name = process.env.DUET_NAME || saved.name;
 	if (name) name = fitName(name);
-	// A relay is remembered only when one was typed. Versions before the default moved to
-	// duet.gaioz.online remembered https://ntfy.sh on every /duet: treat that as "the default".
-	const savedServer = saved.server && saved.server.replace(/\/+$/, "") !== "https://ntfy.sh" ? saved.server : undefined;
-	let server = (process.env.DUET_SERVER || savedServer || DEFAULT_SERVER).replace(/\/+$/, "");
+	// A relay is remembered only when one was typed.
+	let server = (process.env.DUET_SERVER || saved.server || DEFAULT_SERVER).replace(/\/+$/, "");
 	const cursorKey = () => `${server} ${room}`;
 
 	let sub: { stop(): void } | undefined;

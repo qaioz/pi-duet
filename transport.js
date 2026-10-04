@@ -89,7 +89,7 @@ export const isName = (name) => typeof name === "string" && NAME.test(name);
 // The site's stand-in before a name is typed; joining under it means the commands were copied too early.
 /** @param {unknown} name */
 export const isPlaceholderName = (name) => typeof name === "string" && /^your[-_ ]?name$/i.test(name);
-// A name that breaks the rule, made to fit it (e.g. a name saved by an older version).
+// A name that breaks the rule, made to fit it.
 /** @param {string} name */
 export const fitName = (name) =>
 	isName(name)
