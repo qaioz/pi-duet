@@ -105,7 +105,7 @@ export function isRelayUrl(url) {
 
 // Anything on the topic that isn't a well-formed envelope is someone else's noise.
 /** @returns {e is Envelope} */
-function isEnvelope(/** @type {any} */ e) {
+export function isEnvelope(/** @type {any} */ e) {
 	return (
 		e?.v === 1 &&
 		typeof e.fromId === "string" &&

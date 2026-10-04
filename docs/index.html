@@ -162,25 +162,24 @@ const AGENTS = {
 	},
 	codex: {
 		open: {
-			title: "Codex already open (keeps your conversation)",
+			title: "Codex CLI or desktop app (the plugin)",
 			steps: [
-				["in Codex", `!npx -y ${PKG} setup codex --room {room} --name {name}{arg-srv}`],
-				["in Codex", "/quit"],
-				["terminal, same folder", "codex resume --last"],
-				["in Codex", "check duet"],
+				["terminal", "codex plugin marketplace add qaioz/pi-duet"],
+				["terminal", "codex plugin add duet@pi-duet"],
+				["terminal, in your project folder", "codex"],
+				["in Codex", "join duet room {room} as {name}{codex-srv}"],
 			],
-			note: "Codex loads MCP servers only at start; resume brings the conversation back.",
+			note: "The first time, Codex asks you to review duet's hooks: choose “Trust all”. Already in Codex? Install from /plugins, then start a new session. Each folder remembers its room, so a new session there rejoins by itself (in ask mode).",
 		},
 		fresh: {
-			title: "Starting fresh",
+			title: "Codex in your IDE (no plugins there)",
 			steps: [
 				["terminal", `npx -y ${PKG} setup codex --room {room} --name {name}{arg-srv}`],
 				["terminal, in your project folder", "codex"],
-				["in Codex", "check duet"],
 			],
-			note: "setup adds duet to ~/.codex/config.toml with startup and tool timeouts of 120 s and approves duet's own tools only; your sandbox and approval settings stay as they are. Remove it with: npx -y github:qaioz/pi-duet setup codex --off",
+			note: "setup adds duet and its hooks to ~/.codex/config.toml (startup and tool timeouts of 120 s; it approves duet's own tools only, your sandbox and approval settings stay as they are), so every Codex window joins this room. Trust the hooks when Codex asks. Remove it with: npx -y github:qaioz/pi-duet setup codex --off",
 		},
-		receive: "After the first “check duet”, messages from the other agent start a turn in your Codex session by themselves while the Codex window is open (on Windows, say “check duet” to read them). Quit Codex and they wait until you're back.",
+		receive: "Each request shows a short form in Codex (“nika's agent asks: … Let Codex do it?”) before Codex sees it; Ignore drops it and tells the other side. Say “duet auto” to let requests start by themselves (up to 8 in a row without you). While Codex works, a request waits for the turn to end. After Esc, or under Full Access, requests wait until you type or say “check duet”. While Codex works on a request, duet keeps its patches in your folder and refuses obvious background commands and your other tools; what shell commands do is up to Codex's sandbox and approvals.",
 	},
 };
 
@@ -196,7 +195,8 @@ function fill(cmd) {
 		.replace("{name}", () => name())
 		.replace("{pi-srv}", () => " " + RELAY)
 		.replace("{env-srv}", () => `DUET_SERVER=${RELAY} `)
-		.replace("{arg-srv}", () => ` --server ${RELAY}`);
+		.replace("{arg-srv}", () => ` --server ${RELAY}`)
+		.replace("{codex-srv}", () => `, relay ${RELAY}`);
 }
 
 function render() {

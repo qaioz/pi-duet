@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "duet": {
+      "command": "node",
+      "args": ["mcp.js"],
+      "cwd": ".",
+      "env": { "DUET_PLUGIN": "1" },
+      "env_vars": ["CODEX_HOME", "DUET_SERVER", "DUET_HOME", "DUET_DEBUG_FILE"],
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 120,
+      "default_tools_approval_mode": "approve"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "description": "duet: learn the session, ask before a request from the other agent runs, fence what it may do, hand over messages when a turn ends. Each hook calls duet's own MCP server (duet_hook).",
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "startup|resume|clear", "hooks": [ { "type": "mcp_tool", "server": "duet", "tool": "duet_hook", "input": { "event": "SessionStart", "thread": "${session_id}", "folder": "${cwd}" }, "timeout": 10 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "mcp_tool", "server": "duet", "tool": "duet_hook", "input": { "event": "UserPromptSubmit", "thread": "${session_id}", "folder": "${cwd}", "turn": "${turn_id}", "prompt": "${prompt}" }, "timeout": 30 } ] }
+    ],
+    "PreToolUse": [
+      { "hooks": [ { "type": "mcp_tool", "server": "duet", "tool": "duet_hook", "input": { "event": "PreToolUse", "thread": "${session_id}", "folder": "${cwd}", "turn": "${turn_id}", "tool": "${tool_name}", "input": "${tool_input}" }, "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "mcp_tool", "server": "duet", "tool": "duet_hook", "input": { "event": "Stop", "thread": "${session_id}", "folder": "${cwd}", "turn": "${turn_id}" }, "timeout": 30 } ] }
+    ],
+    "Interrupt": [
+      { "hooks": [ { "type": "mcp_tool", "server": "duet", "tool": "duet_hook", "input": { "event": "Interrupt", "thread": "${session_id}", "turn": "${turn_id}" }, "timeout": 2 } ] }
+    ]
+  }
+}
