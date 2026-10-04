@@ -1096,6 +1096,10 @@ function notePermissionMode(e) {
 
 // ---------- hooks ----------
 
+// Resolved once session.start has its settings; /duet (registered before them) waits for it.
+let markReady = () => {};
+let ready = Promise.resolve();
+
 export function register(on) {
 	on("session.start", async ($, e, next) => {
 		// First: a /duet typed (or given on the command line) as Claude Code starts must find the
@@ -1103,12 +1107,18 @@ export function register(on) {
 		try {
 			await $.command.register({ name: "duet", description: "Pair with another developer's agent: /duet new, /duet <room>, /duet off", argumentHint: "[new | <room> [name] [relay] | off | trust | ask | auto | status]", immediate: true });
 		} catch {}
+		ready = new Promise((r) => (markReady = r));
 		cwd = e.cwd || (await $.session.cwd());
 		home = (await $.env.get("HOME")) || (await $.env.get("USERPROFILE")) || "";
 		duetDir = ((await $.env.get("DUET_HOME")) || `${home.replace(/[\\/]+$/, "")}/.duet`).replace(/\\/g, "/");
 		const relay = (await $.env.get("DUET_SERVER")) || "";
+		// The website's line starts Claude Code with the room in DUET_ROOM / DUET_NAME. Read once, then
+		// cleared: nothing Claude Code starts (a shell, pi, an MCP server) inherits them, and a /clear
+		// doesn't join again.
 		const envRoom = (await $.env.get("DUET_ROOM")) || "";
 		const envName = (await $.env.get("DUET_NAME")) || "";
+		if (envRoom) await $.env.set("DUET_ROOM", "");
+		if (envName) await $.env.set("DUET_NAME", "");
 		if (relay && isRelayUrl(relay)) server = relay.replace(/\/+$/, "");
 		installId = (await $.store.get("install")) || "";
 		if (!installId) {
@@ -1157,15 +1167,15 @@ export function register(on) {
 			if (active && owner?.token === active.token && !owner.released) {
 				token = active.token;
 				void join($, active.code, active.name, active.mode, true, active.relay);
-			} else if (envRoom && !(await $.env.get("DUET_ENV_JOINED"))) {
+			} else if (envRoom) {
 				// Started as DUET_ROOM=<room> DUET_NAME=<name> claude (the website's line): join as
-				// /duet <room> <name> would, whenever this module loads. Once per process: not again on /clear.
-				await $.env.set("DUET_ENV_JOINED", "1");
+				// /duet <room> <name> would, whenever this module loads.
 				void join($, envRoom, envName || undefined, "ask", false);
 			} else {
 				void autoRejoin($);
 			}
 		}
+		markReady();
 		try {
 			await $.tool.register({
 				name: "send",
@@ -1237,6 +1247,8 @@ export function register(on) {
 	});
 
 	on("command.run", { command: "duet" }, async ($, e) => {
+		// Typed while the session is still starting: wait for its settings (folder, name, relay).
+		await Promise.race([ready, wait($, 10_000)]);
 		if (!(await canDraw($))) {
 			$.ui.log("duet needs the Claude Code terminal or the Desktop app's Code tab.");
 			return {};
