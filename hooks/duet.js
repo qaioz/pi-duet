@@ -24,7 +24,7 @@
 // validator refuses `$` passed to an imported function. wire.js and guard.js are pure.
 import { checkPeerTool } from "./guard.js";
 import {
-	DEFAULT_SERVER, MAX_AUTO, MAX_BYTES, byteLength, envelope, fitName, frameForClaude, isEnvelope, isForMe,
+	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, byteLength, envelope, fitName, frameForClaude, isEnvelope, isForMe,
 	isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, preview, randomId, sanitize, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
@@ -37,6 +37,15 @@ const HISTORY_MAX = 200;
 const QUEUE_MAX = 50;
 const BATCH_MAX = 5; // messages handed to Claude in one auto turn
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex" };
+const UNDO_MS = 3000; // after "Let Claude do it" or "Ignore", time to take it back
+const REJOIN_MS = 12 * 3600_000; // rejoin quietly only within this (agents ignore older messages anyway)
+const TOAST_GAP_MS = 15_000; // one "message from …" toast per sender per burst
+// Who is in the room, asked once per room: it sets how messages are handled.
+const TRUST = {
+	me: { label: "Only me", mode: "auto", says: "my other window, or my own pi or Codex on this computer" },
+	trusted: { label: "Someone I trust completely", mode: "auto", says: "their requests start Claude by themselves" },
+	others: { label: "Someone else", mode: "ask", says: "each request waits for you; replies are shown before they're sent" },
+};
 // Permission modes in which a tool call still asks the user (or is refused) unless a rule allows it.
 const ASKING_MODES = ["default", "acceptEdits", "plan", "dontAsk"];
 
@@ -65,12 +74,11 @@ const seen = new Set();
 const peers = new Map(); // name -> { via, at, left }
 
 let queue = []; // messages waiting for the user (ask) or for Claude to be free (auto)
-let armed = ""; // "<action>:<id>" whose key was pressed once
-let noReply = null; // { peers, answer, id }: a peer turn ended without Claude trying to reply
-let rejoinOffer = null; // { code, name, relay }
+let countdown = null; // { action: "take" | "ignore", envs, timer }: a card choice that can still be undone
+const lastToast = new Map(); // sender -> time of the last "message from" toast
 let pendingPeer = null; // { envs, text, roomKey, submitted }: taken, waiting for Claude to be idle
 let expected = []; // [{ text, froms, roomKey, at }]: submitted frames whose turn hasn't started yet
-let peerTurn = null; // { froms, roomKey, turnId, attempted (a send was tried), waitNoted }
+let peerTurn = null; // { froms, roomKey, turnId, waitNoted }
 let lastPeer = null; // { froms, roomKey }: the peer turn that just ended (an empty-text continuation is still its)
 let runningTurn = ""; // the main loop's turn in progress, "" while Claude is idle
 let userPromptSince = false; // the user's own prompt entered since duet's last submission
@@ -78,9 +86,7 @@ let peerAgents = []; // subagents started from a peer turn (they may outlive it)
 let autoTurns = 0;
 let paused = false;
 
-let history = []; // { at, who, text, out, note }
-let paneTab = "room";
-let replyTo = "";
+let history = []; // { at, who, text, note }: the room as the pane shows it, read-only
 
 const viaLabel = (via) => VIA[via] ?? "";
 const peerNames = () => (peerTurn ? peerTurn.froms.join(", ") : "the other person");
@@ -93,16 +99,6 @@ const busyWithPeer = () => !!(pendingPeer || peerTurn || expected.length);
 function remember(entry) {
 	history.push({ at: new Date().toISOString(), ...entry });
 	if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
-}
-
-// Two presses for anything that acts for someone else: a stray digit in an empty prompt is easy.
-function confirmPress(key) {
-	if (armed === key) {
-		armed = "";
-		return true;
-	}
-	armed = key;
-	return false;
 }
 
 // ---------- small helpers that use $ ----------
@@ -293,7 +289,7 @@ function onEnvelope($, r, env) {
 		if (isNew) {
 			const via = viaLabel(env.via);
 			$.ui.toast(`${env.from} joined${via ? " (" + via + ")" : ""}`);
-			remember({ who: env.from, text: "joined the room", note: true });
+			remember({ who: "", text: `${env.from} joined${via ? " (" + via + ")" : ""}`, note: true });
 			// Answer once, so a newcomer learns who is here (older clients don't answer joins).
 			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code" })).catch(() => {});
 		}
@@ -310,7 +306,7 @@ function onEnvelope($, r, env) {
 			moved: `${env.from} moved to another window`,
 		}[env.note];
 		if (env.note === "left") peers.set(env.from, { ...peers.get(env.from), left: true });
-		remember({ who: env.from, text, note: true });
+		remember({ who: "", text, note: true });
 		$.ui.log(text);
 		$.ui.toast(text);
 		redraw($);
@@ -319,10 +315,12 @@ function onEnvelope($, r, env) {
 	remember({ who: env.from + (env.by === "person" ? "" : "'s agent"), text: env.text });
 	if (queue.length >= QUEUE_MAX) {
 		queue.shift();
-		$.ui.toast(`duet: more than ${QUEUE_MAX} messages waiting — the oldest was dropped (it is in /duet → Talk)`);
+		$.ui.toast(`duet: more than ${QUEUE_MAX} messages waiting — the oldest was dropped (it is in /duet)`);
 	}
 	queue.push(env);
-	$.ui.toast(`message from ${env.from}${env.by === "person" ? "" : "'s agent"}`);
+	const now = Date.now();
+	if (now - (lastToast.get(env.from) ?? 0) > TOAST_GAP_MS) $.ui.toast(`message from ${env.from}${env.by === "person" ? "" : "'s agent"}`);
+	lastToast.set(env.from, now);
 	void deliver($);
 	redraw($);
 }
@@ -343,7 +341,6 @@ async function deliver($) {
 
 async function startPeerTurn($, envs) {
 	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false };
-	noReply = null;
 	await saveTurn($);
 	redraw($);
 	await submitWhenIdle($);
@@ -414,7 +411,7 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	const relay = (relayArg || server).replace(/\/+$/, "");
 	const name = fitName(nameArg || defaultName || "anon");
 	if (room) {
-		if (room.code === code && room.name === name && room.server === relay) return openPane($, "room");
+		if (room.code === code && room.name === name && room.server === relay) return openPane($);
 		await leave($, "left", false);
 	}
 	try {
@@ -471,17 +468,44 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	autoTurns = 0;
 	paused = false;
 	heldCursor = null;
-	rejoinOffer = null;
-	await $.store.set("room:" + cwd, { code, name, relay });
+	countdown = null;
+	await $.store.set("room:" + cwd, { code, name, relay, at: Date.now() });
 	await $.store.set("name", name);
 	await $.store.set("active:" + sessionId, { lockKey, token, code, name, mode: r.mode, relay });
 	defaultName = name;
 	heartbeat?.cancel?.();
 	heartbeat = $.clock.every(2000, () => void beat($));
 	wakeSupervisor?.();
-	remember({ who: "you", text: `joined ${code} as ${name}`, note: true });
-	if (!quiet) $.ui.log(`joined room ${code} as ${name} (${r.mode} mode). Give the other person this room code: ${code}`);
+	remember({ who: "", text: `you joined ${code} as ${name}`, note: true });
+	// Who's in the room decides ask or auto: asked once per room, then remembered.
+	let trust = await $.store.get("trust:" + key);
+	if (!TRUST[trust]) trust = quiet ? "others" : await askTrust($, code);
+	await applyTrust($, trust, quiet);
+	if (!quiet) $.ui.log(`joined room ${code} as ${name}. Give the other person this room code: ${code}`);
 	redraw($);
+}
+
+// One question when joining a room for the first time. Anything but a clear answer means "someone else".
+async function askTrust($, code) {
+	const order = ["others", "trusted", "me"];
+	let answer = "";
+	try {
+		answer = await $.ui.ask(
+			`Who is in duet room ${code} with you? ` +
+				order.map((t) => `${TRUST[t].label}: ${TRUST[t].says}.`).join(" ") +
+				" Claude stays fenced to this folder either way.",
+			{ header: "duet", options: order.map((t) => TRUST[t].label + (t === "others" ? " (recommended)" : "")) },
+		);
+	} catch {}
+	return order.find((t) => answer.startsWith(TRUST[t].label)) ?? "others";
+}
+
+async function applyTrust($, trust, quiet) {
+	if (!room) return;
+	room.trust = trust;
+	await $.store.set("trust:" + room.key, trust);
+	if (trust === "me") riskOk = true;
+	await setMode($, TRUST[trust].mode, quiet);
 }
 
 // Every 2 s: notice another window taking the room, hand it over when asked, refresh the lock.
@@ -512,6 +536,7 @@ async function beat($) {
 	if (Date.now() - lastBeat > 20_000) {
 		lastBeat = Date.now();
 		await $.store.set(r.lockKey, { token, cwd, at: lastBeat, released: false });
+		await $.store.set("room:" + cwd, { code: r.code, name: r.name, relay: r.server, at: lastBeat });
 	}
 }
 
@@ -535,8 +560,8 @@ async function leave($, note, forget, lost) {
 	child = null;
 	connected = false;
 	queue = [];
-	armed = "";
-	noReply = null;
+	countdown?.timer?.cancel?.();
+	countdown = null;
 	heldCursor = null;
 	if (!lost) {
 		const cur = await $.store.get(r.lockKey);
@@ -547,7 +572,7 @@ async function leave($, note, forget, lost) {
 	redraw($);
 }
 
-async function setMode($, mode) {
+async function setMode($, mode, quiet) {
 	if (!room) {
 		$.ui.log("not in a room: /duet new, or /duet <room code>");
 		return;
@@ -560,13 +585,24 @@ async function setMode($, mode) {
 					? `This session runs in ${permissionMode} mode`
 					: "duet can't tell yet whether this session asks before running commands";
 		let answer = "Keep ask";
+		if (quiet) {
+			// A quiet rejoin never asks: it waits as ask until the user confirms auto again.
+			room.mode = "ask";
+			$.ui.toast("duet: auto is waiting for you to confirm it — /duet auto");
+			redraw($);
+			return;
+		}
 		try {
 			answer = await $.ui.ask(
 				`${why}: in auto mode the other person's agent may be able to run commands on this computer without asking you. Turn auto on?`,
 				["Turn auto on", "Keep ask"],
 			);
 		} catch {}
-		if (answer !== "Turn auto on") return;
+		if (answer !== "Turn auto on") {
+			room.mode = "ask";
+			redraw($);
+			return;
+		}
 		riskOk = true;
 	}
 	room.mode = mode;
@@ -574,91 +610,66 @@ async function setMode($, mode) {
 	paused = false;
 	const active = await $.store.get("active:" + sessionId);
 	if (active) await $.store.set("active:" + sessionId, { ...active, mode });
-	$.ui.log(mode === "auto" ? `auto: messages start a turn by themselves, up to ${MAX_AUTO} in a row without you` : "ask: each message waits above the prompt for you");
+	if (!quiet) $.ui.log(mode === "auto" ? `auto: messages start a turn by themselves, up to ${MAX_AUTO} in a row without you` : "ask: each message waits above the prompt for you");
 	redraw($);
 	void deliver($);
 }
 
 // ---------- what the user does with a card ----------
 
-async function take($, env) {
-	if (busyWithPeer()) {
+// The card shows, and acts on, the waiting messages from one sender together (up to a batch).
+function firstGroup() {
+	if (!queue.length) return [];
+	const from = queue[0].from;
+	return queue.filter((e) => e.from === from).slice(0, BATCH_MAX);
+}
+
+// One press, then a few seconds to take it back: a stray digit in an empty prompt is easy.
+function choose($, action) {
+	const envs = firstGroup();
+	if (!envs.length || countdown) return;
+	if (action === "take" && busyWithPeer()) {
 		$.ui.toast("Claude is still on the last duet request — this one can start after it");
 		return;
 	}
-	if (!confirmPress("take:" + env.id)) return redraw($);
-	queue = queue.filter((e) => e !== env);
-	await startPeerTurn($, [env]);
-}
-
-async function putInPrompt($, env) {
-	const who = env.by === "person" ? env.from : `${env.from}'s agent`;
-	const r = await $.prompt.suggest({ text: `${who} asks (via duet): "${sanitize(env.text, 4000)}"` });
-	if (!r?.isShown) {
-		$.ui.toast("duet can only suggest into an empty prompt while Claude is idle — try again then");
-		return;
-	}
-	queue = queue.filter((e) => e !== env);
-	armed = "";
+	const timer = $.clock.after(UNDO_MS, () => void settle($));
+	countdown = { action, envs, timer };
 	redraw($);
-	await saveCursor($);
 }
 
-async function replyMyself($, env) {
-	queue = queue.filter((e) => e !== env);
-	armed = "";
-	replyTo = env.from;
-	await saveCursor($);
-	await openPane($, "talk");
-}
-
-async function ignore($, env) {
-	if (!confirmPress("ignore:" + env.id)) return redraw($);
-	queue = queue.filter((e) => e !== env);
-	sendNote($, "declined", env.from);
+function undo($) {
+	countdown?.timer?.cancel?.();
+	countdown = null;
 	redraw($);
-	await saveCursor($);
 }
 
-async function sendAnswer($) {
-	const offer = noReply;
-	if (!offer || !confirmPress("answer:" + offer.id)) return redraw($);
-	noReply = null;
-	redraw($);
-	if (!room || !offer.answer.trim()) return;
-	try {
-		for (const to of offer.peers) {
-			await publish($, room.server, room.topic, envelope({ fromId: room.fromId, from: room.name, kind: "msg", text: offer.answer, by: "agent", to }));
-		}
-		remember({ who: "you → " + offer.peers.join(", "), text: offer.answer, out: true });
-		$.ui.toast("sent Claude's answer");
-	} catch (err) {
-		$.ui.toast("not sent: " + String(err?.message ?? err));
+async function settle($) {
+	const c = countdown;
+	countdown = null;
+	if (!c || !room) return redraw($);
+	queue = queue.filter((e) => !c.envs.includes(e));
+	if (c.action === "take") {
+		await startPeerTurn($, c.envs);
+	} else {
+		sendNote($, "declined", c.envs[0].from);
+		redraw($);
+		await saveCursor($);
 	}
 }
 
-async function sayDirect($, text) {
-	if (!room || !text.trim()) return;
-	const to = replyTo && peers.has(replyTo) ? replyTo : undefined;
-	try {
-		await publish($, room.server, room.topic, envelope({ fromId: room.fromId, from: room.name, kind: "msg", text: text.trim(), by: "person", ...(to ? { to } : {}) }));
-		remember({ who: "you" + (to ? " → " + to : ""), text: text.trim(), out: true });
-	} catch (err) {
-		$.ui.toast("not sent: " + String(err?.message ?? err));
-	}
-	redraw($);
-}
-
-async function openPane($, tab) {
-	paneTab = tab;
+async function openPane($) {
 	await $.ui.open({ id: PANE, title: "duet", focus: true, closeOnEscape: true });
 	redraw($);
 }
 
-async function offerRejoin($) {
-	if (room || rejoinOffer || !(await canDraw($))) return;
-	rejoinOffer = (await $.store.get("room:" + cwd)) ?? null;
-	if (rejoinOffer) redraw($);
+// Back in the room after a restart, without asking: only if the window was in it when it closed,
+// recently. /duet off forgets the room, so nothing comes back after leaving on purpose.
+async function autoRejoin($) {
+	if (room || !(await canDraw($))) return;
+	const rec = await $.store.get("room:" + cwd);
+	if (!rec?.code || Date.now() - (rec.at ?? 0) > REJOIN_MS) return;
+	await join($, rec.code, rec.name, "ask", true, rec.relay);
+	if (room) $.ui.toast(`duet: rejoined ${room.code} · /duet off to leave`);
 }
 
 // ---------- the send tool ----------
@@ -672,7 +683,6 @@ async function sendTool($, e) {
 	if (fromPeer && (!peerTurn || peerTurn.roomKey !== room.key)) {
 		return { result: "Not sent: the request you're working on came from a room this window has left, or has ended. Tell your user instead." };
 	}
-	if (peerTurn && fromPeer) peerTurn.attempted = true;
 	// In ask mode the user sees what leaves the computer during a peer's request.
 	if (fromPeer && !autoActive()) {
 		let answer = "Don't send";
@@ -686,7 +696,7 @@ async function sendTool($, e) {
 	} catch (err) {
 		return { result: "Not sent: " + String(err?.message ?? err) };
 	}
-	remember({ who: "Claude → " + (to ?? (livePeers().map(([n]) => n).join(", ") || "room")), text, out: true });
+	remember({ who: "your Claude → " + (to ?? (livePeers().map(([n]) => n).join(", ") || "the room")), text });
 	redraw($);
 	return { result: `Sent to ${to ?? "the room"}.` };
 }
@@ -706,19 +716,21 @@ function drawCard($, e) {
 				Box({ flexDirection: "row", columnGap: 3, flexWrap: "wrap", children: buttons }),
 			],
 		});
-	const twice = (key, label, again) => (armed === key ? `Press ${again} again to ${label[0].toLowerCase()}${label.slice(1)}` : label);
-	if (rejoinOffer && !room) {
-		const o = rejoinOffer;
-		// Always back in ask mode: auto is switched on again on purpose, never by one key.
-		return frame(`duet · rejoin ${o.code} as ${o.name}?`, [], [
-			Button({ key: "rejoin-yes", label: "Rejoin", hotkey: "1", plain: true, onPress: () => void join($, o.code, o.name, "ask", false, o.relay) }),
-			Button({ key: "rejoin-no", label: "Not now", hotkey: "2", plain: true, onPress: () => { rejoinOffer = null; redraw($); } }),
-		]);
-	}
 	if (!room) return null;
+	if (countdown) {
+		const c = countdown;
+		const who = c.envs[0].from;
+		return c.action === "take"
+			? frame(`duet · starting ${who}'s request in ${UNDO_MS / 1000} s…`, [], [
+					Button({ key: "undo", label: "Cancel", hotkey: "2", plain: true, onPress: () => undo($) }),
+				])
+			: frame(`duet · ignoring ${who}'s message in ${UNDO_MS / 1000} s…`, [], [
+					Button({ key: "undo", label: "Undo", hotkey: "1", plain: true, onPress: () => undo($) }),
+				]);
+	}
 	if (pendingPeer && !pendingPeer.submitted) {
 		const p = pendingPeer;
-		return frame(`duet · ${p.envs.map((x) => x.from).join(", ")}'s request starts when Claude is free`, [], [
+		return frame(`duet · ${p.envs[0].from}'s request starts when Claude is free`, [], [
 			Button({ key: "cancel-waiting", label: "Cancel", hotkey: "2", plain: true, onPress: () => void cancelWaiting($) }),
 		]);
 	}
@@ -727,102 +739,64 @@ function drawCard($, e) {
 	}
 	if (queue.length && autoActive()) {
 		const froms = [...new Set(queue.map((x) => x.from))].join(", ");
-		return frame(`duet · ${queue.length} message${queue.length > 1 ? "s" : ""} from ${froms} start${queue.length > 1 ? "" : "s"} when Claude is free (auto)`, [], [
-			Button({ key: "to-ask", label: "Switch to ask", hotkey: "1", plain: true, onPress: () => void setMode($, "ask") }),
-		]);
+		return frame(`duet · ${queue.length} message${queue.length > 1 ? "s" : ""} from ${froms} start${queue.length > 1 ? "" : "s"} when Claude is free (auto)`, [], []);
 	}
 	if (queue.length) {
-		const env = queue[0];
+		const group = firstGroup();
+		const env = group[0];
 		const who = env.by === "person" ? `${env.from} (in person)` : `${env.from}'s agent`;
 		const via = viaLabel(peers.get(env.from)?.via);
-		const more = queue.length > 1 ? `   +${queue.length - 1} more` : "";
-		return frame(`duet · from ${who}${via ? " (" + via + ")" : ""} · ${timeOf(env.ts)}${more}${paused ? "   (auto paused)" : ""}`, [Text({ children: [preview(env.text)] })], [
-			Button({ key: "take", label: twice("take:" + env.id, "Let Claude do it", 1), hotkey: "1", plain: true, onPress: () => void take($, env) }),
-			Button({ key: "suggest", label: "Put it in my prompt", hotkey: "2", plain: true, onPress: () => void putInPrompt($, env) }),
-			Button({ key: "reply", label: "Reply myself", hotkey: "3", plain: true, onPress: () => void replyMyself($, env) }),
-			Button({ key: "ignore", label: twice("ignore:" + env.id, "Ignore", 4), hotkey: "4", plain: true, onPress: () => void ignore($, env) }),
-		]);
-	}
-	if (noReply) {
-		const n = noReply;
-		return frame(`duet · Claude finished ${n.peers.join(", ")}'s request without replying`, [Text({ dimColor: true, children: [preview(n.answer, 2, 140)] })], [
-			Button({ key: "send-answer", label: twice("answer:" + n.id, "Send its answer", 1), hotkey: "1", plain: true, onPress: () => void sendAnswer($) }),
-			Button({ key: "skip-answer", label: "Skip", hotkey: "2", plain: true, onPress: () => { noReply = null; redraw($); } }),
+		const count = group.length > 1 ? ` · ${group.length} messages` : "";
+		const others = queue.length - group.length;
+		const more = others > 0 ? `   +${others} more after` : "";
+		const body = group.length > 1 ? group.map((g) => Text({ children: ["• " + preview(g.text, 2, 150)] })) : [Text({ children: [preview(env.text)] })];
+		return frame(`duet · from ${who}${via ? " (" + via + ")" : ""}${count} · ${timeOf(env.ts)}${more}${paused ? "   (auto paused)" : ""}`, body, [
+			Button({ key: "take", label: "Let Claude do it", hotkey: "1", plain: true, onPress: () => choose($, "take") }),
+			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => choose($, "ignore") }),
 		]);
 	}
 	return null;
 }
 
+// Read-only: what was said in the room. People don't type here; their Claude does the talking.
 function drawPane($, e) {
-	const { Box, Text, Button, Input } = $.ui.resolve(e);
-	const tabs = Box({
-		flexDirection: "row",
-		columnGap: 3,
-		children: [
-			Button({ key: "tab-room", label: "Room", hotkey: "1", plain: true, dimColor: paneTab !== "room", onPress: () => { paneTab = "room"; redraw($); } }),
-			Button({ key: "tab-talk", label: "Talk", hotkey: "2", plain: true, dimColor: paneTab !== "talk", onPress: () => { paneTab = "talk"; redraw($); } }),
-		],
-	});
+	const { Box, Text } = $.ui.resolve(e);
 	const blank = Text({ children: [" "] });
-	let body;
-	if (paneTab === "talk") {
-		const shown = history.slice(-30);
-		body = [
-			...(shown.length
-				? shown.map((h, i) =>
-						Box({
+	if (!room) {
+		return Box({
+			flexDirection: "column",
+			children: [
+				Text({ children: ["Not in a duet room."] }),
+				Text({ dimColor: true, children: ["/duet new makes a room · /duet <room code> joins one"] }),
+			],
+		});
+	}
+	const ps = livePeers();
+	const head = [
+		Text({ bold: true, children: [`Room ${room.code}`] }),
+		Text({
+			dimColor: true,
+			children: [
+				`${ps.length ? "With " + ps.map(([n, p]) => n + (p.via ? ` (${viaLabel(p.via)})` : "")).join(", ") : "No one else seen yet"} · ` +
+					`${TRUST[room.trust]?.label ?? "Someone else"} · ${room.mode}${paused ? " (paused)" : ""} · ` +
+					`relay ${connected ? "connected" : connError ? "not connected: " + connError : "connecting…"}`,
+			],
+		}),
+		Text({ dimColor: true, children: ["/duet off leaves · /duet trust changes who's in the room · Esc closes"] }),
+	];
+	const shown = history.slice(-40);
+	const lines = shown.length
+		? shown.map((h, i) =>
+				h.note
+					? Box({ key: "h" + i, children: [Text({ dimColor: true, children: [`${timeOf(h.at)}  ${sanitize(h.text, 300)}`] })] })
+					: Box({
 							key: "h" + i,
 							flexDirection: "column",
-							children: [
-								Text({ bold: !h.note, dimColor: !!h.note, children: [`${timeOf(h.at)}  ${h.who}${h.note ? " " + sanitize(h.text, 300) : ""}`] }),
-								...(h.note ? [] : [Text({ children: [sanitize(h.text, 1500)] })]),
-							],
+							children: [Text({ bold: true, children: [`${timeOf(h.at)}  ${h.who}`] }), Text({ children: [sanitize(h.text, 1500)] })],
 						}),
-					)
-				: [Text({ dimColor: true, children: ["Nothing yet."] })]),
-			blank,
-			room
-				? Input({ key: "say", label: `You → ${replyTo || "everyone"}`, placeholder: "type to the other person directly (your Claude doesn't see this)", value: "", submitLabel: "send", autoFocus: true, onSubmit: (v) => void sayDirect($, v) })
-				: Text({ dimColor: true, children: ["Join a room first."] }),
-		];
-	} else if (!room) {
-		body = [
-			Text({ children: ["Pair this Claude Code with another developer's agent (pi, Claude Code or Codex)."] }),
-			blank,
-			Input({ key: "name", label: "Your name", placeholder: "letters, digits, . _ -", value: defaultName, submitLabel: "save", onSubmit: (v) => { if (v.trim()) defaultName = fitName(v.trim()); redraw($); } }),
-			Input({ key: "code", label: "Room code", placeholder: "paste the code you were given", value: "", submitLabel: "join", autoFocus: true, onSubmit: (v) => void join($, v.trim(), defaultName, "ask") }),
-			Button({ key: "new", label: "New room (makes a code to share)", onPress: () => void join($, newRoomCode(), defaultName, "ask") }),
-			blank,
-			Text({ dimColor: true, children: ["Tab moves between fields · Esc closes · or type /duet new"] }),
-		];
-	} else {
-		const ps = livePeers();
-		body = [
-			Text({ bold: true, children: [`Room ${room.code}`] }),
-			Text({ dimColor: true, children: ["Share this code with the other person. Anyone who has it can read and send messages here."] }),
-			Text({ children: [`You: ${room.name} · relay ${connected ? "connected" : connError ? "not connected: " + connError : "connecting…"}`] }),
-			Text({
-				children: [
-					room.mode === "auto"
-						? `Mode: auto — messages start Claude by themselves (up to ${MAX_AUTO} in a row without you)${paused ? " · paused" : ""}`
-						: "Mode: ask — each message waits above the prompt for you to decide",
-				],
-			}),
-			Text({ children: [ps.length ? "Here: " + ps.map(([n, p]) => n + (p.via ? ` (${viaLabel(p.via)})` : "")).join(", ") : "No one else seen yet (older pi and Codex show up once they send something)."] }),
-			blank,
-			Box({
-				flexDirection: "row",
-				columnGap: 2,
-				flexWrap: "wrap",
-				children: [
-					Button({ key: "copy", label: "Copy code", onPress: () => void $.ui.copy({ text: room?.code ?? "" }).then((c) => $.ui.toast(c?.isCopied === false ? "couldn't copy — select the code above" : "room code copied")) }),
-					Button({ key: "mode", label: room.mode === "auto" ? "Switch to ask" : "Switch to auto", onPress: () => void setMode($, room?.mode === "auto" ? "ask" : "auto") }),
-					Button({ key: "leave", label: "Leave room", onPress: () => void leave($, "left", true) }),
-				],
-			}),
-		];
-	}
-	return Box({ flexDirection: "column", children: [tabs, blank, ...body] });
+			)
+		: [Text({ dimColor: true, children: ["Nothing said yet."] })];
+	return Box({ flexDirection: "column", children: [...head, blank, ...lines] });
 }
 
 function modeLabel() {
@@ -895,7 +869,7 @@ export function register(on) {
 				token = active.token;
 				void join($, active.code, active.name, active.mode, true, active.relay);
 			} else {
-				await offerRejoin($);
+				void autoRejoin($);
 			}
 		}
 		try {
@@ -904,7 +878,8 @@ export function register(on) {
 				description:
 					"Send a message to the other agent(s) in your duet room (another developer's coding agent on their computer). " +
 					"Use it to answer a duet request, or when your user asks you to tell the other side something. " +
-					"Your text replies are seen only by your own user; this tool is the only way to reach the other side. Max ~3.5KB per message.",
+					"Your text replies are seen only by your own user; this tool is the only way to reach the other side. " +
+					"Send one complete reply when you're done, not progress updates or several small messages; split only if it is over ~3.5 KB.",
 				inputSchema: {
 					type: "object",
 					properties: {
@@ -916,15 +891,15 @@ export function register(on) {
 			});
 		} catch {}
 		try {
-			await $.command.register({ name: "duet", description: "Pair with another developer's agent: /duet new, /duet <room>, /duet leave", argumentHint: "[new | <room> [name] [relay] | ask | auto | leave | status]", immediate: true });
+			await $.command.register({ name: "duet", description: "Pair with another developer's agent: /duet new, /duet <room>, /duet off", argumentHint: "[new | <room> [name] [relay] | off | trust | ask | auto | status]", immediate: true });
 		} catch {}
 		return next(e);
 	});
 
-	// The Desktop app may attach after the session started: offer to rejoin then.
+	// The Desktop app may attach after the session started: rejoin then.
 	on("session.attach", async ($, e, next) => {
 		const result = await next(e);
-		void offerRejoin($);
+		void autoRejoin($);
 		return result;
 	});
 
@@ -973,15 +948,21 @@ export function register(on) {
 		const arg = first.toLowerCase();
 		// Joining and moving wait on the relay and the other window: run them detached, so the
 		// command returns at once and no hook time limit applies.
-		if (!first) void openPane($, room ? "talk" : "room");
+		if (!first) void openPane($);
 		else if (arg === "new") void join($, newRoomCode(), second, "ask");
-		else if (arg === "leave") {
+		else if (LEAVE_WORDS.includes(arg)) {
 			if (room) void leave($, "left", true);
+			else {
+				await $.store.delete("room:" + cwd);
+				$.ui.log("not in a room");
+			}
+		} else if (arg === "trust") {
+			if (room) void askTrust($, room.code).then((t) => applyTrust($, t));
 			else $.ui.log("not in a room");
 		} else if (arg === "ask" || arg === "auto") void setMode($, arg);
 		else if (arg === "status") $.ui.log(room ? `${modeLabel()} · you are ${room.name}` : "not in a room");
 		else if (isRoomCode(first)) void join($, first, second, "ask", false, third);
-		else $.ui.log("usage: /duet new · /duet <room code> [your name] [relay URL] · /duet ask|auto · /duet leave · /duet (pane)");
+		else $.ui.log("usage: /duet new · /duet <room code> [your name] [relay URL] · /duet off · /duet trust · /duet ask|auto · /duet (the room's history)");
 		return {};
 	});
 
@@ -1034,18 +1015,18 @@ export function register(on) {
 		if (i >= 0) {
 			const x = expected[i];
 			expected = expected.filter((_, j) => j !== i);
-			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, attempted: false, waitNoted: false };
+			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, waitNoted: false };
 			lastPeer = null;
 		} else if (expected.length && !userPromptSince) {
 			// duet's request is pending and no prompt of the user's explains this turn: its text may
 			// have been changed on the way. Fence it rather than risk running the request unfenced.
 			const x = expected[0];
-			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, attempted: false, waitNoted: false };
+			peerTurn = { froms: x.froms, roomKey: x.roomKey, turnId: e.turnId, waitNoted: false };
 			lastPeer = null;
 			$.ui.log("a turn started while duet's request was pending and its text didn't match: treating it as the other side's", { to: "debug" });
 		} else if (!e.text && lastPeer) {
 			// A continuation of the peer's turn (a Stop hook asked for more): still the peer's request.
-			peerTurn = { ...lastPeer, turnId: e.turnId, attempted: false, waitNoted: false };
+			peerTurn = { ...lastPeer, turnId: e.turnId, waitNoted: false };
 		} else {
 			lastPeer = null;
 		}
@@ -1063,7 +1044,6 @@ export function register(on) {
 			lastPeer = e.isAborted ? null : { froms: t.froms, roomKey: t.roomKey };
 			if (e.isAborted) for (const p of t.froms) sendNote($, "stopped", p);
 			else if (e.reason === "error" || e.reason === "refusal") for (const p of t.froms) sendNote($, "failed", p);
-			else if (!t.attempted && room && String(e.answer ?? "").trim()) noReply = { peers: t.froms, answer: String(e.answer), id: randomId() };
 			redraw($);
 		}
 		if (!e.agentId) await saveTurn($);
