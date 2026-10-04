@@ -82,6 +82,7 @@ export function checkPeerTool(e, { cwd, home, peer, sendTool }) {
 	if (e.tool === "Bash" && e.run_in_background) return `duet: background commands are off while working on ${peer}'s request; run it in the foreground. ${ask}`;
 	if (e.tool === "Agent") {
 		if (e.isolation === "remote") return `duet: remote agents are off while working on ${peer}'s request. ${ask}`;
+		if (e.run_in_background) return `duet: background agents are off while working on ${peer}'s request; run it in the foreground. ${ask}`;
 		if (e.subagent_type && !AGENT_TYPES.has(e.subagent_type)) return `duet: only the built-in agent types are on while working on ${peer}'s request, not ${e.subagent_type}. ${ask}`;
 	}
 	for (const path of pathsOf(e)) {

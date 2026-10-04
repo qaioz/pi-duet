@@ -114,6 +114,9 @@ test("guard: what a peer turn may do", () => {
 	no({ tool: "ScheduleWakeup" }, /off/);
 	no({ tool: "mcp__github__create_pull_request" }, /off/);
 	no({ tool: "Agent", prompt: "x", isolation: "remote" }, /remote/);
+	no({ tool: "Agent", prompt: "x", run_in_background: true }, /background agents/);
+	no({ tool: "WebFetch", url: "https://example.com/?d=secret", prompt: "x" }, /WebFetch is off/);
+	ok({ tool: "WebSearch", query: "x" });
 	no({ tool: "Grep", pattern: "x", path: "/etc" }, /outside/);
 	// Review findings: every segment, any case, Windows spellings, other path fields, skills, agents.
 	no({ tool: "Write", file_path: "src/CLAUDE.md" }, /controls what runs/);

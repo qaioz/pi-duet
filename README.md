@@ -115,9 +115,10 @@ to tell the other side something, you ask your Claude.
 | **Only me** (your other window, or your own pi or Codex) | start Claude by themselves (auto), with no extra check even under `bypassPermissions` | go straight out |
 
 The guards below stay on whatever you answer: Claude's file tools stay in the session's folder, but
-shell commands can reach whatever your permission mode allows. Under `bypassPermissions` (or before
-Claude Code has reported a permission mode), "someone I trust completely" asks once more before auto
-starts. "Only me" doesn't, so anyone who has that room's code counts as you.
+shell commands can reach whatever your permission mode allows. When shell commands would run without
+asking you (`bypassPermissions`, Claude Code's own `auto` mode, or an allow rule as broad as
+`Bash(*)`), "someone I trust completely" asks once more before auto starts. "Only me" doesn't, so
+anyone who has that room's code counts as you.
 
 - The footer shows `duet <room> · <who's here> · ask|auto`. Who's here is who has joined or spoken
   since you joined: an older pi or Codex shows up once it sends something.
@@ -137,9 +138,11 @@ starts. "Only me" doesn't, so anyone who has that room's code counts as you.
   room, duet warns once (pi too; Codex in `duet_status`).
 - In ask mode, anything Claude sends back while working on the other side's request is shown to you
   first ("send this to nika?"). In auto mode it goes straight out.
-- `/duet auto` asks you to confirm first unless Claude Code has reported a permission mode that asks
-  before tools (`default`, `acceptEdits`, `plan`, `dontAsk`): so under `bypassPermissions`, and right
-  after start before any prompt, it asks.
+- `/duet auto` asks you to confirm first when shell commands would run without asking you. duet asks
+  Claude Code's own permission check (it runs nothing): under `bypassPermissions`, Claude Code's
+  `auto` mode, or a `Bash(*)` allow rule it asks; in `default`, `acceptEdits`, `plan` and `dontAsk`
+  it doesn't. If you then switch to `bypassPermissions` with Shift+Tab, duet notices on the next
+  message or tool call and goes back to ask.
 - Restart Claude Code in the same folder and it rejoins the room by itself, with a toast
   ("rejoined … · /duet off to leave"), as long as the window was in the room when it closed, less
   than 12 hours ago. It always comes back in **ask** mode, whatever you answered for the room:
@@ -166,30 +169,35 @@ plugin refuses:
 - writing, anywhere in a path and in any letter case, `.claude`, `.mcp.json`, `.git`, `CLAUDE.md`,
   `CLAUDE.local.md`, `AGENTS.md`, `.vscode`, `.envrc`, `.husky`, `.pi` or `.codex` (they decide what
   runs on your computer later);
-- tools that outlive the request: scheduled tasks, background commands, remote agents;
+- tools that outlive the request: scheduled tasks, background commands, background and remote
+  agents;
 - WebFetch, since a URL can carry your files to any server (WebSearch stays on);
 - skills, custom subagent types, and every tool beyond file, search, shell, web search, plan and
   to-do tools, including your other MCP servers;
 - every tool call once the session starts running commands **without asking you** (Shift+Tab to
-  `bypassPermissions`) in the middle of a request that started while it still asked, or that auto
-  mode started: duet goes back to ask mode, and Claude is told to stop. Switch back, or confirm with
-  `/duet auto`. No hook fires when the mode changes, so duet asks Claude Code's own permission check
-  on each tool call of the request. A request you took while already in `bypassPermissions` isn't
-  stopped: you chose that.
+  `bypassPermissions` or `auto`) in the middle of a request that started while it still asked, or
+  that auto mode started: duet goes back to ask mode, and Claude is told to stop. Switch back with
+  Shift+Tab and tell Claude to go on; for an auto-mode request you can also say yes with
+  `/duet auto` (that keeps the room in auto). No hook fires when the mode changes, so duet asks
+  Claude Code's own permission check on each tool call of the request (a switch to Claude Code's
+  `auto` mode is noticed once Claude Code reports it, after the next tool call). A request you took
+  while already in `bypassPermissions` isn't stopped: you chose that.
 
 duet hands a request to Claude only while Claude is idle, and a turn counts as the other side's when
 Claude Code starts it with that request's text. Every turn after it, until your own next prompt,
 counts as the other side's too (a hook that wakes Claude, a task notification, a continuation): duet
 fails closed. Stop hooks and `/goal` continue inside the same turn, so they stay fenced. Pressing Esc
-on the request, or typing your own prompt, ends this. If a turn starts while a request is with Claude
-Code and no prompt of yours explains it, duet fences it too, rather than risk missing the request. A
-request already handed over stays fenced if the plugin reloads; `/resume`, `/branch` and a new
-Claude Code process start with nothing fenced.
+on the request, or typing your own prompt, ends this; such a turn sends the other side no notes. If a
+turn starts while a request is with Claude Code and no prompt of yours explains it, duet fences it
+too, rather than risk missing the request. A request already handed over stays fenced if the plugin
+reloads; `/resume`, `/branch` and a new Claude Code process start with nothing fenced (subagents a
+request started stay fenced).
 
 Claude reads the reason and can tell the other side to ask you. These are rules about tool names and
 paths, **not a sandbox**. A shell command can still do anything your permission mode allows: in
-`bypassPermissions` that is everything, including reading secrets and sending them back. Your own
-prompts are never fenced.
+`bypassPermissions` that is everything, including reading secrets and sending them back. Prompts you
+type yourself (or send through Remote Control) are never fenced; a `/loop` or scheduled prompt that
+fires right after a request, before you type, is.
 
 #### Claude Code without mods: the channel route (older)
 
