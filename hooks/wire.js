@@ -3,7 +3,7 @@
 // Older clients drop `kind: "note"` (their isEnvelope rejects it) and ignore the fields they don't
 // know (`via`, `by`), so everything here is safe to send to them.
 
-export const DEFAULT_SERVER = "https://ntfy.sh";
+export const DEFAULT_SERVER = "https://duet.gaioz.online"; // the duet relay (ntfy), run by the author
 // ntfy.sh turns bodies over 4096 bytes into attachments; transport.js stays under 3800.
 export const MAX_BYTES = 3800;
 // Unattended peer-started turns allowed in auto mode before duet falls back to asking.

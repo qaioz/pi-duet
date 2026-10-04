@@ -1,7 +1,7 @@
 {
   "name": "pi-duet",
   "version": "0.2.0",
-  "description": "Pair your coding agent (pi, Claude Code, Codex) with another developer's, through a shared room (ntfy.sh).",
+  "description": "Pair your coding agent (pi, Claude Code, Codex) with another developer's, through a shared room on an ntfy relay.",
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "mcp", "claude-code", "codex"],

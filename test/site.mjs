@@ -34,7 +34,7 @@ if (!site) {
 	await new Promise((r) => local.listen(0, "127.0.0.1", r));
 	site = `http://127.0.0.1:${local.address().port}/pi-duet/`;
 }
-const relayQuery = SERVER === "https://ntfy.sh" ? "" : `?relay=${encodeURIComponent(SERVER)}`;
+const relayQuery = SERVER === "https://duet.gaioz.online" ? "" : `?relay=${encodeURIComponent(SERVER)}`;
 const start = site + relayQuery;
 
 // Every command on every agent tab, as shown.
@@ -145,7 +145,8 @@ try {
 		await evil.waitForSelector("#room:not(.hidden)");
 		const all = await allCommands(evil);
 		const note = await evil.textContent("#relay");
-		if (/PWNED|\$\(|`|"q|u:p@|javascript|\$&|--server|DUET_SERVER/.test(all) || !/ignored/.test(note)) leaks.push(relay);
+		// The commands always name a relay: a hostile one must give way to the default, untouched.
+		if (/PWNED|\$\(|`|"q|u:p@|javascript|\$&/.test(all) || !all.includes("--server https://duet.gaioz.online") || !/ignored/.test(note)) leaks.push(relay);
 	}
 	await evil.goto(`${site}?relay=${encodeURIComponent("https://ntfy.example.com/")}#${room}`);
 	await evil.waitForSelector("#room:not(.hidden)");

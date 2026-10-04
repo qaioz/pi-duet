@@ -10,7 +10,7 @@ import type { Cursor, Envelope } from "./transport.js";
 
 type Config = { room?: string; name?: string; server?: string; fromId?: string; cursors: Record<string, Cursor> };
 
-const DEFAULT_SERVER = "https://ntfy.sh";
+const DEFAULT_SERVER = "https://duet.gaioz.online"; // the duet relay (ntfy), run by the author
 const MAX_AUTO = Number(process.env.DUET_MAX_AUTO) || 8;
 
 const file = (name: string) => join(getAgentDir(), name);
@@ -59,7 +59,10 @@ export default function (pi: ExtensionAPI) {
 	// Peers drop names outside the rule (letters, digits, . _ -), so an older saved name is made to fit.
 	let name = process.env.DUET_NAME || saved.name;
 	if (name) name = fitName(name);
-	let server = (process.env.DUET_SERVER || saved.server || DEFAULT_SERVER).replace(/\/+$/, "");
+	// A relay is remembered only when one was typed. Versions before the default moved to
+	// duet.gaioz.online remembered https://ntfy.sh on every /duet: treat that as "the default".
+	const savedServer = saved.server && saved.server.replace(/\/+$/, "") !== "https://ntfy.sh" ? saved.server : undefined;
+	let server = (process.env.DUET_SERVER || savedServer || DEFAULT_SERVER).replace(/\/+$/, "");
 	const cursorKey = () => `${server} ${room}`;
 
 	let sub: { stop(): void } | undefined;
@@ -171,8 +174,8 @@ export default function (pi: ExtensionAPI) {
 			const owner = lockOwner();
 			if (owner) return notify(`duet: ${heldBy(owner)}`, "error");
 			[room, name] = [parts[0], fitName(parts[1])];
-			if (parts[2]) server = parts[2].replace(/\/+$/, "");
-			updateConfig((c) => Object.assign(c, { room, name, server }));
+			server = (parts[2] || process.env.DUET_SERVER || DEFAULT_SERVER).replace(/\/+$/, "");
+			updateConfig((c) => Object.assign(c, { room, name, server: parts[2] ? server : undefined }));
 			joinRoom();
 			try {
 				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join" }));

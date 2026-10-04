@@ -270,7 +270,8 @@ async function handleLine($, r, gen, line, live, floor) {
 	try {
 		env = JSON.parse(evt.message);
 	} catch {}
-	if (isEnvelope(env)) {
+	// Never act on anything older than 12 h (the relay may keep 30 days, for its logs).
+	if (isEnvelope(env) && !(evt.time < Date.now() / 1000 - 12 * 3600)) {
 		// Where to resume so this message comes again if it is still open at a restart or a move.
 		// A first message has no previous id: resume from just before its second (ntfy takes a time).
 		env._prev = r.cursor ?? { id: "", time: evt.time - 1 };
@@ -407,7 +408,7 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 		return;
 	}
 	if (relayArg && !isRelayUrl(relayArg)) {
-		$.ui.log(`the relay must be a plain http(s) URL like https://ntfy.sh, got ${sanitize(relayArg, 100)}`);
+		$.ui.log(`the relay must be a plain http(s) URL like https://duet.gaioz.online, got ${sanitize(relayArg, 100)}`);
 		return;
 	}
 	const relay = (relayArg || server).replace(/\/+$/, "");
@@ -458,7 +459,6 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 		$.ui.toast("duet: couldn't reach the relay — not joined");
 		return;
 	}
-	server = relay;
 	room = r;
 	generation++;
 	queue = [];

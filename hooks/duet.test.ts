@@ -43,7 +43,7 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 	});
 	did.push = (env: any) => {
 		did.seq++;
-		feed.push(JSON.stringify({ id: "m" + did.seq, time: 2 + did.seq, event: "message", message: JSON.stringify(env) }) + "\n");
+		feed.push(JSON.stringify({ id: "m" + did.seq, time: Math.floor(Date.now() / 1000) + did.seq, event: "message", message: JSON.stringify(env) }) + "\n");
 		wake?.();
 	};
 	on("settings.read", () => ({ value: { permissions: { defaultMode: "default" } } }));
@@ -132,7 +132,7 @@ test("joining announces itself, labels the footer, and sending publishes to the 
 	expect(did.posts[0].body).toMatchObject({ v: 1, kind: "join", from: "gaioz", via: "claude-code" });
 	expect(did.posts[0].url).toMatch(/\/duet_[0-9a-f]{40}$/);
 	expect(did.logs.join("\n")).toMatch(/joined room test-room-1 as gaioz \(ask mode\)/);
-	expect(did.store.get("room:" + CWD)).toEqual({ code: "test-room-1", name: "gaioz", relay: "https://ntfy.sh" });
+	expect(did.store.get("room:" + CWD)).toEqual({ code: "test-room-1", name: "gaioz", relay: "https://duet.gaioz.online" });
 
 	const footer = await $.ui.mount({ plugin: "duet", component: "SessionMode", surface: "terminal", props: { modes: [] } } as any);
 	await footer.unmount();
