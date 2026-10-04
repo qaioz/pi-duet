@@ -40,7 +40,7 @@ const start = site + relayQuery;
 // Every command on every agent tab, as shown.
 async function allCommands(page) {
 	const out = [];
-	for (const agent of ["pi", "claude", "codex"]) {
+	for (const agent of ["pi", "claude", "codex", "chat"]) {
 		await page.click(`.tabs button[data-agent="${agent}"]`);
 		out.push(...(await page.$$eval(".cmd code", (cs) => cs.map((c) => c.textContent))));
 	}
@@ -105,10 +105,10 @@ try {
 	const unfilled = [];
 	const copyMismatch = [];
 	let total = 0;
-	for (const agent of ["pi", "claude", "codex"]) {
+	for (const agent of ["pi", "claude", "codex", "chat"]) {
 		await friend.click(`.tabs button[data-agent="${agent}"]`);
 		commands[agent] = {};
-		for (const kase of ["open", "fresh"]) {
+		for (const kase of await friend.$$eval(".case", (cs) => cs.map((c) => c.dataset.case))) {
 			const rows = await friend.$$(`.case[data-case="${kase}"] .cmd`);
 			commands[agent][kase] = [];
 			for (const row of rows) {
@@ -116,7 +116,7 @@ try {
 				const where = await row.$eval(".where", (w) => w.textContent);
 				commands[agent][kase].push({ where, cmd: shown });
 				total++;
-				const placeholder = /YOUR_NAME|[{}]/.test(shown);
+				const placeholder = /YOUR_NAME|\{[a-z-]+\}/.test(shown);
 				const joins = /--room|DUET_ROOM|^\/duet /.test(shown);
 				if (placeholder || (joins && !(shown.includes(room) && shown.includes("nika")))) unfilled.push(shown);
 				await row.$eval("button", (b) => b.click());
@@ -126,14 +126,14 @@ try {
 		}
 	}
 	const withRoom = Object.values(commands).flatMap((a) => Object.values(a).flat()).filter((c) => c.cmd.includes(room)).length;
-	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 6, `name field cleaned to "${typed}"; ${total} commands on 3 tabs, ${withRoom} carry the room and name, unfilled: ${JSON.stringify(unfilled)}`);
+	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 11, `name field cleaned to "${typed}"; ${total} commands on 4 tabs, ${withRoom} carry the room, unfilled: ${JSON.stringify(unfilled)}`);
 	check("copy buttons copy exactly what is shown", copyMismatch.length === 0 && total > 0, `${total} copy buttons checked; mismatches: ${JSON.stringify(copyMismatch)}`);
-	// Tabs: Claude Code, Codex, pi, Claude Code first; each starts with one line for a terminal.
+	// Tabs: Claude Code, Codex, pi, then chat apps; each agent tab starts with one line for a terminal.
 	const tabOrder = await friend.$$eval(".tabs button", (bs) => bs.map((b) => b.dataset.agent).join());
 	const fresh = (agent) => commands[agent].fresh.map((c) => c.cmd);
 	check(
-		"tabs: Claude Code, Codex, pi; each opens with one line to paste in a terminal",
-		tabOrder === "claude,codex,pi" &&
+		"tabs: Claude Code, Codex, pi, Claude chat / ChatGPT; each agent opens with one line to paste in a terminal",
+		tabOrder === "claude,codex,pi,chat" &&
 			fresh("claude").length === 1 && fresh("claude")[0] === `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude "/duet ${room} nika ${SERVER}"` &&
 			fresh("pi").length === 1 && fresh("pi")[0].startsWith("pi install git:github.com/qaioz/pi-duet && ") && fresh("pi")[0].endsWith(`DUET_ROOM=${room} DUET_NAME=nika pi`),
 		`order ${tabOrder}; ${JSON.stringify([fresh("claude")[0], fresh("pi")[0]].map((c) => c.replace(room, "<room>")))}`,
@@ -145,6 +145,26 @@ try {
 		cx.some((c) => c.startsWith(`codex plugin marketplace add qaioz/pi-duet && codex plugin add duet@pi-duet && codex "join duet room ${room} as nika, relay `)) &&
 			cx.some((c) => c.includes("setup codex --room") && c.includes(room)) && !cx.includes("check duet"),
 		JSON.stringify(cx.map((c) => c.replace(room, "<room>"))),
+	);
+	// Chat apps: a line per host, the hosted connector URL, the room typed into the panel, and the plain
+	// truth: a message needs a click and nothing is guarded.
+	const chat = commands.chat;
+	await friend.click('.tabs button[data-agent="chat"]');
+	const chatText = await friend.$eval("#commands", (c) => c.textContent);
+	const mcpb = await friend.$eval('#commands a[href="duet.mcpb"]', (a) => a.getAttribute("href")).catch(() => null);
+	let vscodeJson = null;
+	try {
+		vscodeJson = JSON.parse(chat.vscode[0].cmd.match(/^code --add-mcp '(.*)'$/)[1]);
+	} catch {}
+	check(
+		"Claude chat / ChatGPT tab: Claude Desktop, claude.ai, ChatGPT, VS Code, Goose; a click is needed, nothing is guarded",
+		Object.keys(chat).join() === "desktop,web,chatgpt,vscode,goose" &&
+			chat.desktop[0].cmd === `npx -y github:qaioz/pi-duet setup claude-desktop --room ${room} --name nika --server ${SERVER}` && mcpb === "duet.mcpb" &&
+			chat.web[0].cmd === "https://mcp-duet.gaioz.online/mcp" && chat.web[1].cmd === room && chat.chatgpt[0].cmd === "https://mcp-duet.gaioz.online/mcp" &&
+			vscodeJson?.name === "duet" && vscodeJson.args.join(" ") === `-y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}` &&
+			chat.goose[0].cmd === `goose session --with-extension "npx -y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}"` &&
+			/Nothing reaches your agent by itself/.test(chatText) && /Nothing guards what your agent does next/.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && /Developer mode/.test(chatText),
+		JSON.stringify(Object.fromEntries(Object.entries(chat).map(([k, v]) => [k, v.map((c) => c.cmd.replace(room, "<room>"))]))).slice(0, 400),
 	);
 	await friend.click('[data-copy="invite"]');
 	await friend.fill("#name", "__-nika");
@@ -171,7 +191,7 @@ try {
 	const kept = await allCommands(evil);
 	check(
 		"crafted ?relay= can't inject into the commands",
-		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 2 && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 4 && kept.includes("DUET_SERVER=https://ntfy.example.com "),
+		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 4 && kept.includes('"--server","https://ntfy.example.com"') && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 4 && kept.includes("DUET_SERVER=https://ntfy.example.com "),
 		`${attempts.length} hostile relays ignored with a note (failures: ${JSON.stringify(leaks)}); a plain https relay is carried into the commands`,
 	);
 	await evilCtx.close();
