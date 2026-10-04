@@ -1,5 +1,5 @@
 // One owner per room and name on this computer, shared by every duet client: pi, the MCP server
-// (Codex, and Claude Code's channel route) and the Claude Code plugin (hooks/duet.js, through $.fs).
+// (Codex) and the Claude Code plugin (hooks/duet.js, through $.fs).
 // Without it a Claude Code window and a Codex window in the same room under the same name would both
 // answer every message.
 //
@@ -7,8 +7,7 @@
 // characters of sha256("<relay> <room> <name>"). It holds JSON:
 //   { v: 2, client: "pi" | "codex" | "mcp" | "claude-code", token, pid, cwd, at }
 // The owner rewrites `at` every LOCK_BEAT_MS. A lock is held while `at` is under LOCK_FRESH_MS old,
-// unless its pid is known to be gone. Version 1, written by older pi and MCP servers, was a bare pid,
-// held while that process lives. Owners read the lock back at every beat: another token there means
+// unless its pid is known to be gone. Owners read the lock back at every beat: another token there means
 // the room was taken over (the other client found this one stale), and this one leaves. An empty or
 // released lock is free.
 import { createHash } from "node:crypto";
@@ -34,7 +33,6 @@ export function readLock(path) {
 	} catch {
 		return undefined;
 	}
-	if (/^\d+$/.test(text)) return { v: 1, pid: Number(text) };
 	try {
 		const l = JSON.parse(text);
 		return l && typeof l === "object" ? l : undefined;
@@ -55,14 +53,13 @@ const pidAlive = (pid) => {
 /** Is this lock held by someone (anyone, this process included)? */
 export function lockHeld(l, now = Date.now()) {
 	if (!l || l.released) return false;
-	if (l.v === 1) return !!l.pid && pidAlive(l.pid);
 	if (l.pid && l.pid !== process.pid && !pidAlive(l.pid)) return false;
 	return now - (Number(l.at) || 0) < LOCK_FRESH_MS;
 }
 
 /** Who holds it, said for a person: "Codex (pid 123, /work/repo)". */
 export function describeHolder(l) {
-	const who = { pi: "pi", codex: "Codex", mcp: "a duet MCP server", "claude-code": "Claude Code" }[l?.client] ?? (l?.v === 1 ? "another duet window" : "another duet client");
+	const who = { pi: "pi", codex: "Codex", mcp: "a duet MCP server", "claude-code": "Claude Code" }[l?.client] ?? "another duet client";
 	const bits = [l?.pid ? `pid ${l.pid}` : "", l?.cwd ?? ""].filter(Boolean).join(", ");
 	return bits ? `${who} (${bits})` : who;
 }

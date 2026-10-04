@@ -61,7 +61,6 @@ let server = DEFAULT_SERVER;
 let defaultName = "";
 let permissionMode = ""; // "" until Claude Code reports it (classic.* events; not at startup, not to tool.call)
 let lastUnasked; // runsUnasked's latest answer, fresher than permissionMode after a Shift+Tab
-let oldMcp = false; // the old MCP-server setup of duet is active in this session too
 
 let room = null; // { code, name, key, fromId, topic, lockKey, fileLock, mode, cursor, server }
 let generation = 0; // bumped on every join and leave; loops of an older room stop
@@ -537,7 +536,7 @@ async function claim($, lockKey) {
 // this plugin. Claude Code windows also agree among themselves through $.store (claim, above), which
 // can ask "Move it here?"; the file below keeps the other clients out. Same format as lock.js:
 // ~/.duet/<hash>.lock holding { v: 2, client, token, pid, cwd, at }, rewritten every 20 s, held while
-// `at` is under a minute old (a bare pid, from older clients, while that process lives).
+// `at` is under a minute old.
 
 async function readFileLock($, path) {
 	let text;
@@ -546,7 +545,6 @@ async function readFileLock($, path) {
 	} catch {
 		return null;
 	}
-	if (/^\d+$/.test(text)) return { v: 1, pid: Number(text) };
 	try {
 		const l = JSON.parse(text);
 		return l && typeof l === "object" ? l : null;
@@ -566,7 +564,6 @@ async function pidAlive($, pid) {
 
 async function fileLockHeld($, l) {
 	if (!l || l.released) return false;
-	if (l.v === 1) return !!l.pid && (await pidAlive($, l.pid)) !== false;
 	if (l.pid && (await pidAlive($, l.pid)) === false) return false;
 	return Date.now() - (Number(l.at) || 0) < LOCK_STALE_MS;
 }
@@ -601,12 +598,6 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	if (room) {
 		if (room.code === code && room.name === name && room.server === relay) return openPane($);
 		await leave($, "left", false);
-	}
-	try {
-		oldMcp = oldMcp || (await $.tool.list()).some((t) => /^mcp__duet__duet_/.test(t.name));
-	} catch {}
-	if (oldMcp) {
-		$.ui.log("the older duet setup (an MCP server named duet) is also active here, so every message would arrive twice. In your shell run: npx -y github:qaioz/pi-duet setup claude --off");
 	}
 	const key = `${relay} ${code} ${name}`;
 	const fromId = (await sha256hex(`${installId} ${key}`)).slice(0, 32);
@@ -1265,10 +1256,6 @@ export function register(on) {
 	});
 
 	on("tool.describe", { tool: SEND_TOOL }, async ($, e) => ({ description: e.description, isDeferred: false }));
-	on("tool.describe", { tool: /^mcp__duet__duet_/ }, async ($, e, next) => {
-		oldMcp = true;
-		return next(e);
-	});
 
 	on("tool.call", async ($, e, next) => {
 		if (e.tool === SEND_TOOL) return sendTool($, e);

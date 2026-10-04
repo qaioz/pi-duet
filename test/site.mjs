@@ -128,11 +128,21 @@ try {
 	const withRoom = Object.values(commands).flatMap((a) => Object.values(a).flat()).filter((c) => c.cmd.includes(room)).length;
 	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 6, `name field cleaned to "${typed}"; ${total} commands on 3 tabs, ${withRoom} carry the room and name, unfilled: ${JSON.stringify(unfilled)}`);
 	check("copy buttons copy exactly what is shown", copyMismatch.length === 0 && total > 0, `${total} copy buttons checked; mismatches: ${JSON.stringify(copyMismatch)}`);
+	// Tabs: Claude Code, Codex, pi, Claude Code first; each starts with one line for a terminal.
+	const tabOrder = await friend.$$eval(".tabs button", (bs) => bs.map((b) => b.dataset.agent).join());
+	const fresh = (agent) => commands[agent].fresh.map((c) => c.cmd);
+	check(
+		"tabs: Claude Code, Codex, pi; each opens with one line to paste in a terminal",
+		tabOrder === "claude,codex,pi" &&
+			fresh("claude").length === 1 && fresh("claude")[0] === `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude "/duet ${room} nika ${SERVER}"` &&
+			fresh("pi").length === 1 && fresh("pi")[0].startsWith("pi install git:github.com/qaioz/pi-duet && ") && fresh("pi")[0].endsWith(`DUET_ROOM=${room} DUET_NAME=nika pi`),
+		`order ${tabOrder}; ${JSON.stringify([fresh("claude")[0], fresh("pi")[0]].map((c) => c.replace(room, "<room>")))}`,
+	);
 	// Codex: the plugin, joined from inside Codex; `setup codex` (with its hooks) for the IDE extension.
 	const cx = Object.values(commands.codex).flat().map((c) => c.cmd);
 	check(
-		"Codex tab: plugin install, join from inside Codex; setup codex for the IDE",
-		cx.includes("codex plugin marketplace add qaioz/pi-duet") && cx.includes("codex plugin add duet@pi-duet") && cx.some((c) => c.startsWith(`join duet room ${room} as nika, relay `)) &&
+		"Codex tab: one line installs the plugin and starts Codex joining; setup codex for the IDE",
+		cx.some((c) => c.startsWith(`codex plugin marketplace add qaioz/pi-duet && codex plugin add duet@pi-duet && codex "join duet room ${room} as nika, relay `)) &&
 			cx.some((c) => c.includes("setup codex --room") && c.includes(room)) && !cx.includes("check duet"),
 		JSON.stringify(cx.map((c) => c.replace(room, "<room>"))),
 	);

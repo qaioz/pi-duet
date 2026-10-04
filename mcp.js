@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// duet MCP server: puts Codex, Claude Code (the older channel route) or any other MCP host in a duet
-// room, next to pi agents and the Claude Code plugin. Plain JavaScript with no dependencies: npx runs
+// duet MCP server: puts Codex (or any other MCP host) in a duet room, next to pi agents and the
+// Claude Code plugin. Plain JavaScript with no dependencies: npx runs
 // it straight from GitHub, and Node won't strip TypeScript inside node_modules. Speaks MCP over stdio
 // (newline-delimited JSON-RPC).
 //
@@ -9,8 +9,6 @@
 //   the Codex plugin (.codex-plugin, codex/): no room on the command line; join with duet_join
 //
 // How a message reaches the model, by host:
-//   Claude Code: a channel. The server declares `claude/channel` and pushes each message as a
-//                notifications/claude/channel event (needs --dangerously-load-development-channels).
 //   Codex:       the server runs `codex queue`, which starts a turn in the open session, or, while a
 //                turn runs, hands the messages over when it ends (the Stop hook). With duet's hooks
 //                (codex/hooks.json, or written by setup codex) duet also learns the session at once,
@@ -33,7 +31,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -69,10 +67,6 @@ const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2
 const MAX_AUTO = Math.max(1, Number(process.env.DUET_MAX_AUTO) || 8);
 const CODEX = process.env.DUET_CODEX_BIN || "codex";
 const INBOX_MAX = 200;
-const RECENT_MAX = 20; // messages already pushed into Claude Code, for "check duet"
-// Claude Code registers its channel listener only after it has fetched our tools, and drops events
-// sent before that. Push this long after the first tools/list.
-const READY_MS = Number(process.env.DUET_READY_MS ?? 2000);
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]; // newest first
 const WINDOWS = (process.env.DUET_TEST_PLATFORM || process.platform) === "win32"; // overridable for tests
 // Started by the Codex plugin: our cwd is the plugin's folder; the session's folder comes from Codex.
@@ -130,24 +124,16 @@ function saveCursor(cursor) {
 
 // ---------- the room ----------
 
-let host = ""; // clientInfo.name from initialize: "claude-code", "codex-mcp-client", …
+let host = ""; // clientInfo.name from initialize: "codex-mcp-client", …
 let clientCaps = {}; // initialize capabilities: does the host take elicitations (forms for the user)?
-const isClaude = () => host === "claude-code";
 const isCodex = () => /codex/i.test(host);
-// Was Claude Code started with the channel flag naming duet? true / false / undefined (can't tell,
-// e.g. on Windows). Without it Claude Code drops every channel event silently, so we don't push.
-let channelFlag;
-const pushesToClaude = () => isClaude() && channelFlag !== false;
 let sub;
 let status = "not connected";
 const peers = new Map();
 const peerVia = new Map(); // name -> client label from their join
 const inbox = []; // received, not yet shown to the model
-const recent = []; // pushed into Claude Code through the channel (no delivery receipt exists)
 const history = []; // the room as seen since this server joined: for the session's catch-up
 let heldCursor; // the resume point, saved once the inbox is empty
-let ready = false; // Claude Code has fetched our tools (and READY_MS passed): its channel listener exists
-let unconfirmed = false; // pushed into Claude Code, no tool call since: the resume point isn't saved yet
 let exchanges = 0; // replies sent on the agent's own since its user last asked for a send
 const sent = new Map(); // our messages' ids -> first line, to show what a reply answers
 const lastFrom = new Map(); // peer name -> { id, at } of its latest message
@@ -197,7 +183,7 @@ function take(count = inbox.length) {
 }
 // Once nothing received is still waiting or on its way into the session, a restart may skip it all.
 function consumed() {
-	if (!inbox.length && !pushing && !unconfirmed && !askingStop && heldCursor) {
+	if (!inbox.length && !pushing && !askingStop && heldCursor) {
 		saveCursor(heldCursor);
 		heldCursor = undefined;
 	}
@@ -251,32 +237,14 @@ function onEnvelope(env) {
 	deliver();
 }
 
-// Push waiting messages into the session: a channel event for Claude Code, `codex queue` for Codex.
+// Push waiting messages into the session (`codex queue`); other hosts read them with duet_inbox.
 function deliver() {
-	if (!inbox.length) return;
-	if (isClaude()) pushToClaude();
-	else pushToCodex();
+	if (inbox.length && isCodex()) pushToCodex();
 }
 
-// Claude Code: one channel event per message. Claude Code queues events while a turn runs and
-// delivers them in order. Past the loop cap they stay in the inbox until the user asks for a send
-// (or says "check duet"). Claude Code sends no receipt, and drops events silently when it wasn't
-// started with the channel flag, so pushed messages are also kept in `recent` for duet_inbox.
-function pushToClaude() {
-	if (!pushesToClaude() || !ready || !inbox.length || exchanges >= MAX_AUTO) return;
-	// No receipt exists: keep the resume point until the session shows it is alive (its next tool
-	// call). A restart before that pushes these again: a duplicate beats a loss.
-	unconfirmed = true;
-	const items = take();
-	for (const e of items) {
-		send({ method: "notifications/claude/channel", params: { content: render([e]), meta: { from: e.from } } });
-	}
-	recent.push(...items);
-	recent.splice(0, Math.max(0, recent.length - RECENT_MAX));
-}
 
 function onCursor(cursor) {
-	if (inbox.length || pushing || unconfirmed) heldCursor = cursor; // not consumed yet: a restart must see it again
+	if (inbox.length || pushing) heldCursor = cursor; // not consumed yet: a restart must see it again
 	else saveCursor(cursor);
 }
 
@@ -388,7 +356,7 @@ function codexWindowOpen() {
 	return false;
 }
 
-// The host's command line, walking up from our parent (Claude Code may start us through npx and a
+// The host's command lines, walking up from our parent (Codex may start us through npx and a
 // shell). Linux reads /proc, macOS asks ps; elsewhere the answer is "can't tell".
 function ancestorArgs() {
 	const out = [];
@@ -426,26 +394,6 @@ function oneOffRun() {
 	return oneOff;
 }
 
-// The nearest Claude Code process up the tree decides: did it get --dangerously-load-development-
-// channels with server:duet? (--channels takes only approved plugins, so a bare server there is
-// refused by Claude Code.) No Claude Code process found: can't tell.
-function detectChannelFlag() {
-	if (process.env.DUET_CHANNEL_FLAG) return process.env.DUET_CHANNEL_FLAG === "on"; // tests
-	const chain = ancestorArgs();
-	if (!chain) return undefined;
-	for (const args of chain) {
-		if (!args.some((a) => /(^|[\/\\])claude(\.exe)?$/.test(a) || a.includes("@anthropic-ai/claude-code"))) continue;
-		for (let i = 0; i < args.length; i++) {
-			const [flag, inline] = args[i].split("=", 2);
-			if (flag !== "--dangerously-load-development-channels") continue;
-			const values = inline ? [inline] : [];
-			for (let j = i + 1; j < args.length && !args[j].startsWith("-"); j++) values.push(args[j]);
-			if (values.join(" ").split(/[\s,]+/).includes("server:duet")) return true;
-		}
-		return false;
-	}
-	return undefined;
-}
 
 // One window per room and name on this computer, whatever the client (lock.js). A Codex session in
 // the same folder that holds it is this person's older session (a /new in the same window, or a
@@ -494,7 +442,7 @@ async function joinRoom({ steal = false } = {}) {
 			}
 		}, LOCK_CHECK_MS);
 		lockTimer.unref();
-		publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", via: isClaude() ? "claude-code" : host ? "codex" : undefined, place: placeFor(folder || process.cwd(), topicFor(room)) })).catch(() => {});
+		publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", via: isCodex() ? "codex" : undefined, place: placeFor(folder || process.cwd(), topicFor(room)) })).catch(() => {});
 		return true;
 	})();
 	try {
@@ -737,12 +685,9 @@ async function onHook(a = {}) {
 // ---------- tools ----------
 
 function toolList() {
-	// Claude Code: load duet's tools up front even if duet was added by hand without alwaysLoad.
-	const meta = isClaude() ? { _meta: { "anthropic/alwaysLoad": true } } : {};
-	const tools = [
+	return [
 		{
 			name: "duet_send",
-			...meta,
 			description:
 				"Send a message to the other person's coding agent in the duet room (another developer's agent, on their computer). " +
 				"Use it when your user asks you to tell, ask or have the other agent do something, and to answer requests that came from the other agent. " +
@@ -764,24 +709,16 @@ function toolList() {
 		},
 		{
 			name: "duet_inbox",
-			...meta,
-			description: pushesToClaude()
-				? "Messages from the other agent are pushed into this session by themselves. Call this only when your user says 'check duet': " +
-					"it shows any held back (after the auto-reply limit) and the latest ones already pushed."
-				: "Read messages from the other agent that are waiting. Returns at once. Call it when your user says 'check duet' or similar, " +
-					"then handle each message: do what was asked and answer with duet_send.",
+			description:
+				"Read messages from the other agent that are waiting. Returns at once. Call it when your user says 'check duet' or similar, " +
+				"then handle each message: do what was asked and answer with duet_send.",
 			inputSchema: { type: "object", properties: {} },
 		},
 		{
 			name: "duet_status",
-			...meta,
 			description: "Show the duet room status: your name, connected or not, peers seen, messages waiting.",
 			inputSchema: { type: "object", properties: {} },
 		},
-	];
-	if (isClaude()) return tools;
-	return [
-		...tools,
 		{
 			name: "duet_join",
 			description:
@@ -828,7 +765,7 @@ function toolList() {
 }
 
 async function needRoom() {
-	if (!room || !name) throw new Error(isClaude() ? "No duet room configured: the server needs --room <room> --name <name>." : "Not in a duet room. Ask your user for the room code and their name, then call duet_join.");
+	if (!room || !name) throw new Error("Not in a duet room. Ask your user for the room code and their name, then call duet_join.");
 	if (!sub && !(await joinRoom())) throw new Error(`Not in the room: ${status.replace(/^off: /, "")}.`);
 }
 // Things only the user may ask for: never while working on the other side's request.
@@ -905,16 +842,11 @@ async function callTool(tool, a = {}, ctx) {
 		case "duet_inbox": {
 			await needRoom();
 			// In ask mode a request reaches the model only with the user's yes: not from inside another request.
-			if (ctx.peerTurn && mode === "ask" && !isClaude()) return "Messages wait for your user: they say 'check duet' themselves.";
-			if (!inbox.length) {
-				if (!pushesToClaude() || !recent.length) return "No new duet messages.";
-				return "No new duet messages. The latest ones, already pushed into this session (act on them only if you haven't yet):\n\n" + render(recent);
-			}
-			if (!isClaude()) {
-				holdForUser = false; // the user asked: they're here
-				// The other side's requests are now in this turn: the rest of it is fenced like theirs.
-				markPeerTurn(ctx.turnId);
-			}
+			if (ctx.peerTurn && mode === "ask") return "Messages wait for your user: they say 'check duet' themselves.";
+			if (!inbox.length) return "No new duet messages.";
+			holdForUser = false; // the user asked: they're here
+			// The other side's requests are now in this turn: the rest of it is fenced like theirs.
+			markPeerTurn(ctx.turnId);
 			const text = render(inbox); // before taking: nothing leaves the inbox unless shown
 			take();
 			return text;
@@ -926,19 +858,11 @@ async function callTool(tool, a = {}, ctx) {
 			const shown = room ? `"${room.slice(0, 4)}…"` : "(none)";
 			const lost = dropped ? `; ${dropped} older message(s) dropped (inbox full)` : "";
 			const note = pushNote && sub ? `; ${pushNote}` : "";
-			const how = !isClaude()
-				? `; mode: ${mode}; ${promptHookSeen ? "duet's hooks are on" : hooksSeen ? "duet's prompt hook hasn't run yet (type a prompt; if it never runs, check /hooks)" : "duet's hooks haven't run in this session"}`
-				: channelFlag === false
-					? "; Claude Code was not started with --dangerously-load-development-channels server:duet, so messages are NOT pushed: they wait here until your user says 'check duet'. To get them pushed, restart with: claude --continue --dangerously-load-development-channels server:duet --allowedTools mcp__duet"
-					: exchanges >= MAX_AUTO
-						? "; auto-reply limit reached: new messages wait until your user asks for a send (say 'check duet' to read them)"
-						: channelFlag === true
-							? "; messages are pushed into this session through a Claude Code channel"
-							: "; messages are pushed through a Claude Code channel (duet couldn't check Claude Code's command line: if none appear, start it with --dangerously-load-development-channels server:duet, and say 'check duet' to read them)";
+			const how = `; mode: ${mode}; ${promptHookSeen ? "duet's hooks are on" : hooksSeen ? "duet's prompt hook hasn't run yet (type a prompt; if it never runs, check /hooks)" : "duet's hooks haven't run in this session"}${exchanges >= MAX_AUTO ? "; auto-reply limit reached: new messages wait until your user types or says 'check duet'" : ""}`;
 			const recentPeers = [...peers].filter(([, at]) => Date.now() - at.getTime() < RECENT_MS).map(([n]) => n);
 			const crowd = recentPeers.length > 1 ? [`more than one other agent is in this room (${recentPeers.join(", ")}): duet is built for two`] : [];
 			const warn = [...crowd, ...warnings].map((w) => `; warning: ${w}`).join("");
-			if (!room) return `duet: not in a room${isClaude() ? "" : " — your user can join one: tell you the room code and their name (duet_join)"}`;
+			if (!room) return "duet: not in a room — your user can join one: tell you the room code and their name (duet_join)";
 			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}${note}${how}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}${warn}`;
 		}
 		case "duet_join": {
@@ -1019,13 +943,9 @@ const instructions = () =>
 	"duet connects you with another developer's coding agent through a shared room. " +
 	"Messages from it are shown as [duet] from <name>. When it asks for something, do it with your normal tools, then answer with duet_send, sending real tool output. " +
 	"Your plain-text replies reach only your own user. " +
-	(pushesToClaude()
-		? 'Messages from it arrive by themselves as <channel source="duet" from="NAME"> events. Handle each one: do what it asks, then answer with duet_send. Never wait or poll for messages.'
-		: isClaude()
-			? "Claude Code was started without the duet channel, so messages wait in duet_inbox: read it when your user says 'check duet'."
-			: /codex/i.test(host) && !WINDOWS
-				? "Requests from the other agent are delivered into this session as prompts; duet_inbox shows any that are waiting. If your user wants to join a duet room, use duet_join with the code they give."
-				: "Messages wait in duet_inbox: check it when your user says 'check duet'.");
+	(isCodex() && !WINDOWS
+		? "Requests from the other agent are delivered into this session as prompts; duet_inbox shows any that are waiting. If your user wants to join a duet room, use duet_join with the code they give."
+		: "Messages wait in duet_inbox: check it when your user says 'check duet'.");
 
 async function handle(msg) {
 	const { id, method, params } = msg;
@@ -1044,13 +964,9 @@ async function handle(msg) {
 		if (method === "initialize") {
 			host = params?.clientInfo?.name ?? "";
 			clientCaps = params?.capabilities ?? {};
-			if (isClaude()) channelFlag = detectChannelFlag();
 			result = {
 				protocolVersion: PROTOCOLS.includes(params?.protocolVersion) ? params.protocolVersion : PROTOCOLS[0],
-				// Claude Code registers a channel listener for this. Unknown methods, such as its server/discover
-				// probe, get "method not found", which keeps it on this handshake: Claude Code doesn't register
-				// a channel that negotiates the 2026-07-28 revision.
-				capabilities: isClaude() ? { tools: {}, experimental: { "claude/channel": {} } } : { tools: {} },
+				capabilities: { tools: {} },
 				serverInfo: { name: "duet", version: VERSION },
 				instructions: instructions(),
 			};
@@ -1058,12 +974,6 @@ async function handle(msg) {
 		} else if (method === "ping") result = {};
 		else if (method === "tools/list") {
 			result = { tools: toolList() };
-			if (isClaude() && !ready) {
-				setTimeout(() => {
-					ready = true;
-					deliver(); // a catch-up that arrived before Claude Code was listening
-				}, READY_MS).unref();
-			}
 		} else if (method === "tools/call") {
 			const turn = params?._meta?.["x-codex-turn-metadata"];
 			// The model's calls always carry a callId; local hooks' calls never do (Codex 0.160.0 source).
@@ -1072,14 +982,6 @@ async function handle(msg) {
 			else if (params?._meta?.threadId) learn({ thread: params._meta.threadId });
 			if (turn?.turn_trigger === "user" && !isPeerTurn(turn.turn_id)) [exchanges, holdForUser] = [0, false]; // the user is here: lift the loop cap
 			if (fromModel && !room && folder) await rejoinFolder();
-			// Our pushes reached the session if it then answers (duet_send, with the flag seen on its command
-			// line) or reads them (duet_inbox). Anything else doesn't prove it: Claude Code drops channel
-			// events silently when channels are blocked, so keep the resume point (a duplicate beats a loss).
-			const tool = params?.name;
-			if (unconfirmed && (tool === "duet_inbox" || (tool === "duet_send" && channelFlag === true))) {
-				unconfirmed = false;
-				consumed();
-			}
 			const ctrl = new AbortController();
 			inflight.set(id, ctrl);
 			const ctx = {

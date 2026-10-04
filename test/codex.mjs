@@ -241,7 +241,7 @@ async function main() {
 	const ignored = c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-1", prompt: q1[4] });
 	const form = await c.answer("Ignore");
 	const ignoredOut = json((await ignored).text);
-	// transport.js drops notes (older clients don't know them): read the relay itself.
+	// transport.js drops notes (pi and the MCP server don't use them): read the relay itself.
 	const notes = async () =>
 		(await (await fetch(`${SERVER}/${topicFor(room)}/json?poll=1&since=5m`)).text())
 			.split("\n")
