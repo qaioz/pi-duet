@@ -97,12 +97,18 @@ export const heldResult = (hold) => ({
 // The held replies of one server. A reply waits until the user clicks, or until it expires (then it is
 // never sent). An outcome is kept a while after, so a card drawn again shows it.
 //   send(hold): publishes it; throws on failure (the reply stays held, the card says why)
-export function makeHolds({ ttlMs = Number(process.env.DUET_HOLD_MS) || 30 * 60_000, max = 200 } = {}) {
+//   onFree(chars): a held text was let go (sent, dropped, expired): the hosted server's memory budget
+export function makeHolds({ ttlMs = Number(process.env.DUET_HOLD_MS) || 30 * 60_000, max = 200, onFree = () => {} } = {}) {
 	const all = new Map(); // id -> { id, owner, to, text, at, status, why }
+	// The only way a held text ends: its status and the text go together, and the budget gets it back.
+	const end = (h, status) => {
+		if (h.text) onFree(h.text.length);
+		[h.status, h.text] = [status, ""];
+	};
 	const sweep = () => {
 		const now = Date.now();
 		for (const h of all.values()) {
-			if (h.status === "waiting" && now - h.at > ttlMs) [h.status, h.text] = ["expired", ""];
+			if (h.status === "waiting" && now - h.at > ttlMs) end(h, "expired");
 			if (h.status !== "waiting" && now - h.at > ttlMs + 6 * 3600_000) all.delete(h.id);
 		}
 		// Over the cap, only finished holds go (oldest first): a reply still waiting for its user's click
@@ -131,7 +137,7 @@ export function makeHolds({ ttlMs = Number(process.env.DUET_HOLD_MS) || 30 * 60_
 			return [...all.values()].filter((h) => h.owner === owner && h.status === "waiting");
 		},
 		drop(owner) {
-			for (const h of all.values()) if (h.owner === owner && h.status === "waiting") [h.status, h.text] = ["dropped", ""];
+			for (const h of all.values()) if (h.owner === owner && h.status === "waiting") end(h, "dropped");
 		},
 		// The user's click. Returns the card's view of it.
 		async act(id, action, send) {
@@ -140,14 +146,15 @@ export function makeHolds({ ttlMs = Number(process.env.DUET_HOLD_MS) || 30 * 60_
 			const view = () => ({ status: h.status, to: h.to, ...(h.status === "waiting" ? { text: h.text } : {}), ...(h.why ? { error: h.why } : {}) });
 			if (action === "status" || h.status !== "waiting") return view();
 			if (action === "drop") {
-				[h.status, h.text] = ["dropped", ""];
+				end(h, "dropped");
 				return view();
 			}
 			if (action !== "send") return { ...view(), error: "unknown action" };
 			h.status = "sending"; // a second click meanwhile can't send it twice
 			try {
 				await send(h);
-				[h.status, h.text, h.why] = ["sent", "", ""];
+				end(h, "sent");
+				h.why = "";
 			} catch (err) {
 				[h.status, h.why] = ["waiting", String(err?.message ?? err).slice(0, 300)];
 			}
@@ -426,7 +433,7 @@ ${STYLE}
 			<div id="handed" class="item hidden">
 				<div id="handed-note" class="row"></div>
 				<div id="fallback" class="stack hidden">
-					<span class="muted">Copy and paste it into the chat, or put it back</span>
+					<span class="muted">Paste into the chat · or Put back</span>
 					<textarea id="fallback-text" class="textarea" readonly></textarea>
 					<div class="row"><button class="btn" data-variant="outline" data-size="sm" type="button" id="copy-fallback">Copy</button><button class="btn" data-variant="outline" data-size="sm" type="button" id="put-back">Put back</button><button class="btn" data-variant="ghost" data-size="sm" type="button" id="close-fallback">Done</button></div>
 				</div>

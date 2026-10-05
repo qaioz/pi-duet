@@ -171,7 +171,9 @@ const seats = new Map(); // sha256(token) -> Seat
 const handles = new Map(); // seat handle (for the agent's duet_send) -> Seat
 let allChars = 0; // waiting text held, all seats
 let longBytes = { n: 0, reset: Date.now() + 86_400_000 }; // long messages sent today, all seats
-const holds = makeHolds(); // gate 2: replies waiting for the user's click in the duet card
+// Gate 2: replies waiting for the user's click in the duet card. Their text counts in allChars like
+// waiting requests do, and gives it back when it is sent, dropped or expires.
+const holds = makeHolds({ onFree: (n) => (allChars -= n) });
 
 class Seat {
 	constructor(key, topic, name, room, address) {
@@ -299,16 +301,20 @@ const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ..
 // sends it. Every seat exists because a panel was drawn, so this host draws the card too.
 function holdReply(a) {
 	const seat = handles.get(String(a.seat ?? ""));
-	if (!seat) return text("No duet room with that seat code: it may have closed (a panel nobody looked at for 30 minutes leaves its room). Ask your user to open the duet panel and join again.", true);
+	if (!seat) return text("Not held · no room with that seat (closed after 30 min unseen) · your user reopens the duet panel", true);
 	if (typeof a.text !== "string" || !a.text) return text("text is required", true);
-	if (a.text.length > MAX_TEXT) return text(`The message is ${a.text.length} characters; the limit is ${MAX_TEXT}.`, true);
+	if (a.text.length > MAX_TEXT) return text(`Not held · ${a.text.length} chars · limit ${MAX_TEXT}`, true);
+	// The card shows, and Send sends, the same text: no invisible or control characters.
+	const shown = cleanText(a.text);
+	if (!shown) return text("Not held · nothing visible to send", true);
 	const to = a.to ? fitName(String(a.to)) : "";
 	const shownTo = toWhom(to, [...seat.peers.keys()]); // exactly who gets it: no `to` goes to the whole room
 	const waiting = holds.waiting(seat.key);
-	if (!waiting.some((h) => h.text === a.text && h.to === shownTo) && waiting.length >= HOLDS_PER_SEAT) {
-		return text(`Not sent: ${HOLDS_PER_SEAT} replies already wait for your user's OK in duet cards.`, true);
-	}
-	const h = holds.hold(seat.key, shownTo, a.text);
+	const again = waiting.some((h) => h.text === shown && h.to === shownTo); // the same card again: nothing new held
+	if (!again && waiting.length >= HOLDS_PER_SEAT) return text(`Not sent · ${HOLDS_PER_SEAT} replies already wait in duet cards`, true);
+	if (!again && allChars + shown.length > LIMIT.allChars) return text("Not held · hosted server full · try again later", true);
+	const h = holds.hold(seat.key, shownTo, shown);
+	if (!again) allChars += shown.length;
 	h.sendTo ??= to;
 	seat.rev++;
 	return heldResult(h);

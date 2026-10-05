@@ -285,9 +285,9 @@ async function main() {
 		faOut?.decision === "block" && /Codex declined duet's form \(Full Access\)/.test(faOut.reason) && checked.text.includes("REQ-FULL-ACCESS"),
 		`hook: ${JSON.stringify(faOut).slice(0, 100)}; check duet: ${checked.text.includes("REQ-FULL-ACCESS")}`,
 	);
-	// Full Access, the user's own send: Codex declines the form by itself; a send the user asked for in
-	// their own prompt goes out (their permission mode approves without asking). The turn that read
-	// "check duet" holds the other side's request, so a send there doesn't.
+	// Full Access: Codex declines every form by itself. Gate 2 covers every send, user_asked too: none
+	// goes out in ask mode. Only "duet auto" typed in the turn's own prompt switches; a model told to
+	// switch by anything else (the room's quoted messages, an earlier turn) can't.
 	await c.hook({ event: "Stop", thread: "thr-1", turn: "turn-7" });
 	const fromInboxTurn = c.call("duet_send", { text: "FA-AFTER-INBOX", user_asked: true }, { id: "turn-7" });
 	await c.answer(undefined, "decline");
@@ -296,23 +296,50 @@ async function main() {
 	const ownAsk = c.call("duet_send", { text: "FA-OWN-SEND", user_asked: true }, { id: "turn-7b" });
 	await c.answer(undefined, "decline");
 	const ownOut = await ownAsk;
-	const ownArrived = await until(() => p.got.find((e) => e.text === "FA-OWN-SEND"), 8000, "own send at nika").catch(() => null);
-	// "duet auto" in the user's own prompt under Full Access: the confirm is declined by Codex, the user's word stands.
-	const faAuto = c.call("duet_mode", { mode: "auto" }, { id: "turn-7b" });
+	// The model calls duet_mode auto in a user turn whose prompt never said "duet auto" (injected).
+	const injAuto = c.call("duet_mode", { mode: "auto" }, { id: "turn-7b" });
+	await c.answer(undefined, "decline");
+	const injAutoOut = await injAuto;
+	const injStatus = await c.call("duet_status", {}, { id: "turn-7b" });
+	await c.hook({ event: "Stop", thread: "thr-1", turn: "turn-7b" });
+	// The user's own prompt says it: the confirm is declined by Codex, the user's word stands.
+	await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-7c", prompt: "duet auto please" });
+	const faAuto = c.call("duet_mode", { mode: "auto" }, { id: "turn-7c" });
 	await c.answer(undefined, "decline");
 	const faAutoOut = await faAuto;
-	const backToAsk = await c.call("duet_mode", { mode: "ask" }, { id: "turn-7b" });
+	const backToAsk = await c.call("duet_mode", { mode: "ask" }, { id: "turn-7c" });
+	// "duet auto" from an earlier turn doesn't carry over to a later one.
+	await c.hook({ event: "Stop", thread: "thr-1", turn: "turn-7c" });
+	await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-7d", prompt: "carry on" });
+	const laterAuto = c.call("duet_mode", { mode: "auto" }, { id: "turn-7d" });
+	await c.answer(undefined, "decline");
+	const laterAutoOut = await laterAuto;
 	// Esc on the confirm keeps ask.
-	const escAuto = c.call("duet_mode", { mode: "auto" }, { id: "turn-7b" });
+	const escAuto = c.call("duet_mode", { mode: "auto" }, { id: "turn-7d" });
 	await c.answer(undefined, "cancel");
 	const escAutoOut = await escAuto;
-	await c.hook({ event: "Stop", thread: "thr-1", turn: "turn-7b" });
+	await c.hook({ event: "Stop", thread: "thr-1", turn: "turn-7d" });
 	await sleep(1000);
 	check(
-		"Full Access: the user's own send goes out; a send in a turn holding the other side's request doesn't; 'duet auto' in their own prompt switches; Esc keeps ask",
-		ownOut.text === "Sent to nika." && !!ownArrived && /^Not sent · Codex declined/.test(fromInboxOut.text) && !p.got.some((e) => e.text === "FA-AFTER-INBOX") &&
-			/^duet · auto · .*Full Access/.test(faAutoOut.text) && backToAsk.text.startsWith("duet · ask") && /^duet · still ask · form closed/.test(escAutoOut.text),
-		`own: ${ownOut.text}; after check duet: ${fromInboxOut.text.slice(0, 50)}; auto: ${faAutoOut.text}; Esc: ${escAutoOut.text}`,
+		"Full Access: no send goes out in ask mode (user_asked too); auto only from 'duet auto' in the turn's own prompt (not injected, not an earlier turn); Esc keeps ask",
+		/^Not sent · Codex declined/.test(ownOut.text) && /^Not sent · Codex declined/.test(fromInboxOut.text) && !p.got.some((e) => e.text === "FA-AFTER-INBOX" || e.text === "FA-OWN-SEND") &&
+			/^duet · still ask · Codex declined/.test(injAutoOut.text) && !/mode: auto|auto mode/i.test(injStatus.text) &&
+			/^duet · auto · .*Full Access/.test(faAutoOut.text) && backToAsk.text.startsWith("duet · ask") &&
+			/^duet · still ask · Codex declined/.test(laterAutoOut.text) && /^duet · still ask · form closed/.test(escAutoOut.text),
+		`own: ${ownOut.text.slice(0, 40)}; after check duet: ${fromInboxOut.text.slice(0, 40)}; injected auto: ${injAutoOut.text}; own "duet auto": ${faAutoOut.text}; next turn: ${laterAutoOut.text.slice(0, 40)}; Esc: ${escAutoOut.text}`,
+	);
+	// Gate 2 sends exactly what the form showed: invisible characters (bidi overrides, zero-width,
+	// control) are in neither.
+	await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-7e", prompt: "send nika the result" });
+	const sneaky = c.call("duet_send", { text: "pay \u202eLIVE\u202c to\u200b A\u0007" }, { id: "turn-7e" });
+	const sneakyForm = await c.answer("Send");
+	const sneakyOut = await sneaky;
+	const sneakyGot = await until(() => p.got.find((e) => e.kind === "msg" && e.text?.startsWith("pay ")), 8000, "clean send at nika").catch(() => null);
+	await c.hook({ event: "Stop", thread: "thr-1", turn: "turn-7e" });
+	check(
+		"gate 2 (Codex): what goes out is exactly what the form showed (no invisible characters)",
+		sneakyOut.text === "Sent to nika." && sneakyForm.params.message.endsWith("\n\npay LIVE to A") && sneakyGot?.text === "pay LIVE to A",
+		`form: ${JSON.stringify(sneakyForm.params.message.slice(-20))}; at nika: ${JSON.stringify(sneakyGot?.text)}`,
 	);
 
 	// ---- review attacks: twin requests, a request duet forgot, check duet, history from a request ----

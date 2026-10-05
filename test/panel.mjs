@@ -369,7 +369,7 @@ async function hostedTests() {
 		`${sent.content[0].text}; at nika before the click: ${early}; click: ${clicked.status}; at nika: ${JSON.stringify(got && { from: got.from, re: !!got.re })}`,
 	);
 	const wrong = await a.model("duet_send", { seat: "nope", text: "x" });
-	check("hosted: duet_send with an unknown seat is refused", wrong.isError && /No duet room/.test(wrong.content[0].text), wrong.content[0].text.slice(0, 80));
+	check("hosted: duet_send with an unknown seat is refused", wrong.isError && /^Not held · no room/.test(wrong.content[0].text), wrong.content[0].text.slice(0, 80));
 	// Nothing leaves without a click, also 12 at once: at most 5 cards wait per panel; Don't send drops one.
 	const burst = await Promise.all(Array.from({ length: 12 }, (_, i) => a.model("duet_send", { seat, text: `auto ${i}` })));
 	const heldN = burst.filter((r) => !r.isError).length;
@@ -466,27 +466,49 @@ async function hostedTests() {
 	const gone = await p1.model("duet_send", { seat: handle, text: "after" });
 	check(
 		"hosted: panels per address, daily long-message allowance, a seat leaves when its panel stops polling",
-		r3.isError && /Too many duet panels/.test(data(r3).error) && longOk.status === "sent" && longNo.status === "waiting" && /allowance/.test(longNo.error) && gone.isError && /No duet room/.test(gone.content[0].text),
+		r3.isError && /Too many duet panels/.test(data(r3).error) && longOk.status === "sent" && longNo.status === "waiting" && /allowance/.test(longNo.error) && gone.isError && /^Not held · no room/.test(gone.content[0].text),
 		`3rd panel: ${data(r3).error}; long #1: ${longOk.status}; long #2: ${longNo.status} ${longNo.error?.slice(0, 60)}; after 6 s of sends only: ${gone.content[0].text.slice(0, 40)}`,
 	);
 	u.proc.kill();
 
-	// What the relay stores is the envelope as JSON: control characters cost 6 bytes each there, so a
+	// What the relay stores is the envelope as JSON: a quote or backslash costs 2 bytes there, so a
 	// 3000-character text of them is a long message (an attachment). And 3 rooms per address.
-	const v = await hosted({ DUET_LONG_BYTES_PER_DAY: "20000", DUET_ROOMS_PER_IP: "2" });
+	const v = await hosted({ DUET_LONG_BYTES_PER_DAY: "10000", DUET_ROOMS_PER_IP: "2" });
 	const [q1, q2, q3] = [client(v.url), client(v.url), client(v.url)];
 	const v1 = data(await q1.call("duet_room_join", { room: `t-${randomUUID()}`, name: "v1" }));
 	await q2.call("duet_room_join", { room: `t-${randomUUID()}`, name: "v2" });
 	const v3 = await q3.call("duet_room_join", { room: `t-${randomUUID()}`, name: "v3" });
 	const vh = v1.modelNote.match(/seat "([^"]+)"/)[1];
-	const ctl1 = await sendClick(q1, vh, "\u0001".repeat(3000));
-	const ctl2 = await sendClick(q1, vh, "\u0002".repeat(3000));
+	const ctl1 = await sendClick(q1, vh, '"'.repeat(3000));
+	const ctl2 = await sendClick(q1, vh, "\\".repeat(3000));
 	check(
 		"hosted: long messages are counted as the relay stores them; rooms per address are limited",
 		ctl1.status === "sent" && ctl2.status === "waiting" && /allowance/.test(ctl2.error) && v3.isError && /Too many duet rooms/.test(data(v3).error),
-		`3000 control characters: #1 ${ctl1.status}, #2 ${ctl2.status} ${ctl2.error?.slice(0, 50)}; 3rd room: ${data(v3).error}`,
+		`3000 quotes / backslashes: #1 ${ctl1.status}, #2 ${ctl2.status} ${ctl2.error?.slice(0, 50)}; 3rd room: ${data(v3).error}`,
 	);
 	v.proc.kill();
+
+	// Gate 2's held replies count in the server's memory budget (DUET_ALL_CHARS) and give it back when
+	// they go; and the card shows, and Send sends, the same text: invisible characters are gone from both.
+	const bud = await hosted({ DUET_ALL_CHARS: "1000" });
+	const x1 = client(bud.url);
+	const wj = data(await x1.call("duet_room_join", { room: `t-${randomUUID()}`, name: "w1" }));
+	const wh = wj.modelNote.match(/seat "([^"]+)"/)[1];
+	const big1 = await x1.model("duet_send", { seat: wh, text: "A".repeat(600) });
+	const big2 = await x1.model("duet_send", { seat: wh, text: "B".repeat(600) });
+	await x1.call("duet_reply", { id: big1._meta["duet/hold"], action: "drop" });
+	const big3 = await x1.model("duet_send", { seat: wh, text: "C".repeat(600) });
+	await x1.call("duet_reply", { id: big3._meta["duet/hold"], action: "drop" });
+	const sneaky = await x1.model("duet_send", { seat: wh, text: "ok\u202e\u200b\u0007 go" });
+	const blank = await x1.model("duet_send", { seat: wh, text: "\u200b\u202e" });
+	const panelSees = (data(await x1.call("duet_room_state")).outgoing ?? []).map((o) => o.text);
+	check(
+		"hosted: held replies count in the memory budget and give it back; card, panel and Send all carry the same cleaned text",
+		!big1.isError && big2.isError && /^Not held · hosted server full/.test(big2.content[0].text) && !big3.isError &&
+			sneaky.structuredContent?.text === "ok go" && JSON.stringify(panelSees) === '["ok go"]' && blank.isError && /nothing visible/.test(blank.content[0].text),
+		`600 held: ${!big1.isError}; another 600: ${big2.content[0].text}; after Don't send: ${!big3.isError}; card text ${JSON.stringify(sneaky.structuredContent?.text)}; panel ${JSON.stringify(panelSees)}; blank: ${blank.content[0].text}`,
+	);
+	bud.proc.kill();
 }
 
 // ---------- the panel in a real browser ----------

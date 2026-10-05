@@ -168,6 +168,10 @@ let busy = null; // { turn, at }: a Codex turn is running (from its hooks)
 let interrupted = false; // the user pressed Esc: requests wait for their next prompt
 let holdForUser = false; // couldn't ask the user (Full Access?): requests wait for their next prompt
 const peerTurns = []; // Codex turn ids that work on the other side's requests (most recent last)
+// Codex turn id -> the user's own prompt that started it (from duet's UserPromptSubmit hook; never a
+// request of the other side). Under Full Access, "duet auto" counts only if it is in this prompt.
+const ownPrompts = new Map();
+const saidDuetAuto = (turn) => !!turn && /\bduet\s+auto\b/i.test(ownPrompts.get(turn) ?? "");
 const queued = new Map(); // text handed to `codex queue` -> the messages in it, until its turn starts
 const lockMe = { client: "codex", token: randomUUID(), cwd: folder };
 let lockFile = "";
@@ -633,6 +637,10 @@ async function onHook(a = {}) {
 		if (!q && !looksLikeRequest(prompt)) {
 			// The user's own prompt: they are here.
 			[exchanges, interrupted, holdForUser] = [0, false, false];
+			if (turn) {
+				ownPrompts.set(turn, prompt.slice(0, 4000));
+				if (ownPrompts.size > 50) ownPrompts.delete(ownPrompts.keys().next().value);
+			}
 			return hookContext("UserPromptSubmit", first);
 		}
 		// One of duet's requests, or one duet no longer knows (a push that seemed to fail, a server that
@@ -945,9 +953,12 @@ async function callTool(tool, a, ctx) {
 			// Gate 2 in a chat app: the reply waits in the duet card until the user's click (duet_reply).
 			// Auto mode has no gates: it sends at once, like every other surface (the loop cap below).
 			if (drawsPanels(clientCaps, host) && mode === "ask") {
+				// The card shows, and Send sends, the same text: no invisible or control characters.
+				const shown = cleanText(a.text);
+				if (!shown) throw new Error("Not held · nothing visible to send");
 				const waiting = holds.waiting("me");
-				if (!waiting.some((h) => h.text === a.text && h.to === shownTo) && waiting.length >= HOLDS_MAX) throw new Error(`Not sent: ${HOLDS_MAX} replies already wait for your user's OK in duet cards.`);
-				const h = holds.hold("me", shownTo, a.text);
+				if (!waiting.some((h) => h.text === shown && h.to === shownTo) && waiting.length >= HOLDS_MAX) throw new Error(`Not sent · ${HOLDS_MAX} replies already wait in duet cards`);
+				const h = holds.hold("me", shownTo, shown);
 				h.sendTo ??= to;
 				h.unattended ??= unattended;
 				receivedSinceSend = false;
@@ -969,30 +980,36 @@ async function callTool(tool, a, ctx) {
 			if (userAsked) exchanges = 0;
 			else if (unattended) exchanges++;
 			receivedSinceSend = false;
+			let outText = a.text; // auto mode, or a host without forms: as given (publishReply checks it)
 			// Gate 2 with a form (Codex): the whole reply, Send / Don't send, in ask mode.
 			if (mode === "ask" && clientCaps?.elicitation) {
-				// The form shows the whole reply or nothing: a reply too long for it is never half-shown.
-				if (a.text.length > REPLY_FORM_MAX) {
+				// What the form shows is exactly what goes out: no invisible or control characters the
+				// user couldn't see. The form shows the whole reply or nothing: a reply too long for it is
+				// never half-shown.
+				const shown = cleanText(a.text);
+				if (!shown) {
 					giveBack();
-					return `Not sent · ${a.text.length} chars · the Send form shows up to ${REPLY_FORM_MAX} · send it in parts, each under ${REPLY_FORM_MAX}.`;
+					return "Not sent · nothing visible to send.";
 				}
-				const answer = await askToSend(shownTo, a.text);
-				// Full Access: Codex declines every form by itself, under the user's own permission mode.
-				// A send the user asked for in their own turn then goes out, as it did before gate 2; a reply
-				// to the other side's request never does (it needs a form or auto).
-				const fullAccessOwnAsk = answer === "full" && userAsked && ctx.userTurn;
-				if (answer !== "send" && !fullAccessOwnAsk) {
+				if (shown.length > REPLY_FORM_MAX) {
+					giveBack();
+					return `Not sent · ${shown.length} chars · the Send form shows up to ${REPLY_FORM_MAX} · send it in parts, each under ${REPLY_FORM_MAX}.`;
+				}
+				const answer = await askToSend(shownTo, shown);
+				// Every send waits for Send, user_asked or not. Full Access: Codex declines every form by
+				// itself, so nothing goes out in ask mode; the user's own "duet auto" is the way out.
+				if (answer !== "send") {
 					giveBack();
 					remember({ who: "", text: `your reply to ${shownTo} was not sent`, note: true });
 					if (answer === "drop") return "Not sent · your user chose Don't send. Don't send it again unless they ask.";
-					if (answer === "full")
-						return 'Not sent · Codex declined duet\'s Send form (Full Access) · replies to the other agent need your user\'s "duet auto" (they say it in their own prompt) or a Codex mode that asks.';
+					if (answer === "full") return 'Not sent · Codex declined duet\'s Send form (Full Access) · your user can say "duet auto" in their own prompt, or use a Codex mode that asks.';
 					return `Not sent · ${cantAsk(answer)}. Don't send it again unless your user asks.`;
 				}
-				exchanges = 0; // the user just answered (or asked for this send themselves): they are here
+				exchanges = 0; // the user just answered: they are here
+				outText = shown;
 			}
 			try {
-				await publishReply(a.text, to, unattended, ctx.signal);
+				await publishReply(outText, to, unattended, ctx.signal);
 			} catch (err) {
 				giveBack();
 				throw err;
@@ -1137,15 +1154,17 @@ async function callTool(tool, a, ctx) {
 				setImmediate(deliver);
 				return `duet · auto · no gates, up to ${MAX_AUTO} in a row`;
 			}
-			// Full Access declines the confirm by itself. The user said "duet auto" in their own prompt
-			// (Codex marks the turn as the user's, and no request of the other side is in it), and Full
-			// Access already approves everything without asking: that is their yes.
-			if (noAnswer(r) === "full" && ctx.userTurn) {
+			// Full Access declines the confirm by itself. Only the user's own words count as their yes:
+			// this turn's own prompt (recorded by duet's UserPromptSubmit hook, never a request of the
+			// other side) says "duet auto". A model that only read it somewhere (the room's quoted
+			// messages, an earlier turn) can't switch.
+			if (noAnswer(r) === "full" && ctx.userTurn && saidDuetAuto(ctx.turnId)) {
 				mode = "auto";
 				setImmediate(deliver);
 				return `duet · auto · no gates, up to ${MAX_AUTO} in a row · Full Access, no form`;
 			}
-			return `duet · still ask · ${r?.result?.action === "accept" ? "Keep ask" : cantAsk(noAnswer(r))}`;
+			const why = r?.result?.action === "accept" ? "Keep ask" : cantAsk(noAnswer(r));
+			return `duet · still ask · ${why}${noAnswer(r) === "full" ? ' · your user types "duet auto" in their own prompt' : ""}`;
 		}
 		case "duet_history": {
 			await needRoom();
