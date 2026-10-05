@@ -108,7 +108,7 @@ async function waitConnected(s) {
 	let last = "";
 	while (Date.now() < end) {
 		last = (await s.call("duet_status")).text;
-		if (last.includes("— connected")) return;
+		if (last.includes("· connected")) return;
 		await sleep(200);
 	}
 	throw new Error(`${s.name} never connected: ${last} ${s.stderr.slice(-300)}`);
@@ -352,7 +352,7 @@ async function main() {
 		await Promise.all(pair.map((x) => x.init()));
 		await sleep(1500);
 		const st2 = await Promise.all(pair.map((x) => x.call("duet_status")));
-		owners.push(st2.filter((x) => /— (connected|connecting)/.test(x.text)).length);
+		owners.push(st2.filter((x) => /· (connected|connecting)/.test(x.text)).length);
 		for (const x of pair) await x.stop();
 	}
 	check("simultaneous start: one owner", owners.every((n) => n === 1), `owners per try: ${owners.join(", ")}`);

@@ -206,7 +206,7 @@ async function localTests() {
 	);
 	const twice = await desk.call("duet_take", { id: st.waiting[0].id });
 	const inbox = (await desk.call("duet_inbox")).content[0].text;
-	check("stdio: a request handed over once can't be handed again (another panel, duet_inbox)", twice.isError && /isn't waiting/.test(data(twice).error) && inbox === "No new duet messages.", `${data(twice).error} / duet_inbox: ${inbox}`);
+	check("stdio: a request handed over once can't be handed again (another panel, duet_inbox)", twice.isError && /Not waiting any more/.test(data(twice).error) && inbox === "No new duet messages.", `${data(twice).error} / duet_inbox: ${inbox}`);
 
 	await nika.say("second request");
 	st = await until(async () => {
@@ -233,7 +233,7 @@ async function localTests() {
 	);
 	await desk.call("duet_ignore", { id: st.waiting[0].id });
 	const room2 = (await desk.call("duet_room")).content[0].text;
-	check("stdio: duet_room tells the model the room without its code", room2.includes("duet panel is open") && !room2.includes(room), room2);
+	check("stdio: duet_room tells the model the room without its code", room2.includes("duet panel open") && !room2.includes(room), room2);
 	const left = data(await desk.call("duet_room_leave"));
 	check("stdio: Leave", left.inRoom === false, JSON.stringify({ inRoom: left.inRoom }));
 	nika.stop();

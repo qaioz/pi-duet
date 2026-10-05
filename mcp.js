@@ -39,7 +39,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.8.0";
+const VERSION = "0.8.1";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -171,7 +171,13 @@ const peerTurns = []; // Codex turn ids that work on the other side's requests (
 // Codex turn id -> the user's own prompt that started it (from duet's UserPromptSubmit hook; never a
 // request of the other side). Under Full Access, "duet auto" counts only if it is in this prompt.
 const ownPrompts = new Map();
-const saidDuetAuto = (turn) => !!turn && /\bduet\s+auto\b/i.test(ownPrompts.get(turn) ?? "");
+// The user's own prompt is the command itself ("duet auto", "turn on duet auto please"): a sentence
+// that only mentions it ("don't turn on duet auto") doesn't count.
+const saidDuetAuto = (turn) =>
+	!!turn && /^\s*(please\s+)?((turn\s+on|switch\s+to|use|go)\s+)?duet\s+auto(\s+(mode|on|now|please))*[\s.!]*$/i.test(ownPrompts.get(turn) ?? "");
+// Codex under Full Access declines a form by itself, at once; a person takes longer. A "decline" that
+// came later may be the user's own no, so it never counts as Full Access for switching to auto.
+const AUTO_DECLINE_MS = 2000;
 const queued = new Map(); // text handed to `codex queue` -> the messages in it, until its turn starts
 const lockMe = { client: "codex", token: randomUUID(), cwd: folder };
 let lockFile = "";
@@ -264,11 +270,11 @@ function onCursor(cursor) {
 
 // Why Codex can't be handed a request right now, or "" when it can.
 function codexHold() {
-	if (exchanges >= MAX_AUTO) return `the auto-reply limit (${MAX_AUTO}) is reached: messages wait until your user types or says 'check duet'`;
-	if (interrupted) return "your user stopped Codex (Esc): messages wait for their next prompt";
-	if (holdForUser) return "duet couldn't ask your user (Codex runs with Full Access, or the form was closed): messages wait for their next prompt, or 'check duet'";
+	if (exchanges >= MAX_AUTO) return `auto-reply limit (${MAX_AUTO}) reached · waiting for your user or "check duet"`;
+	if (interrupted) return "stopped (Esc) · waiting for the next prompt";
+	if (holdForUser) return "no form (Full Access, or closed) · waiting for the next prompt or \"check duet\"";
 	// Ask mode needs duet's hooks: without them nothing would ask the user before a request runs.
-	if (mode === "ask" && !promptHookSeen) return "ask mode, and duet's prompt hook hasn't run in this session (trust duet's hooks in /hooks, then type a prompt): messages wait for 'check duet'";
+	if (mode === "ask" && !promptHookSeen) return "ask mode, duet's prompt hook not run · trust it in /hooks, type a prompt · or \"check duet\"";
 	return "";
 }
 
@@ -516,6 +522,7 @@ const asks = new Map(); // our request id -> resolve
 function elicit(message, choices) {
 	if (!clientCaps?.elicitation) return Promise.resolve({ result: { action: "unsupported" } });
 	const id = `duet-ask-${nextAsk++}`;
+	const asked = Date.now();
 	return new Promise((resolve) => {
 		const timer = setTimeout(() => {
 			asks.delete(id);
@@ -524,7 +531,7 @@ function elicit(message, choices) {
 		timer.unref();
 		asks.set(id, (msg) => {
 			clearTimeout(timer);
-			resolve(msg);
+			resolve({ ...msg, ms: Date.now() - asked });
 		});
 		send({
 			id,
@@ -802,12 +809,12 @@ function toolList() {
 }
 
 async function needRoom() {
-	if (!room || !name) throw new Error("Not in a duet room. Ask your user for the room code and their name, then call duet_join.");
-	if (!sub && !(await joinRoom())) throw new Error(`Not in the room: ${status.replace(/^off: /, "")}.`);
+	if (!room || !name) throw new Error("Not in a duet room · ask your user for the room code and name, then duet_join");
+	if (!sub && !(await joinRoom())) throw new Error(`Not in the room · ${status.replace(/^off: /, "")}`);
 }
 // Things only the user may ask for: never while working on the other side's request.
 function needUser(ctx, what) {
-	if (ctx.peerTurn) throw new Error(`duet: ${what} only when your own user asks; this turn works on the other side's request.`);
+	if (ctx.peerTurn) throw new Error(`duet · ${what} only when your own user asks · not in a request from the other side`);
 }
 
 async function history12h(since = "2h") {
@@ -937,7 +944,7 @@ async function callTool(tool, a, ctx) {
 	// tools from the model, the model can't read the room's ids or hand itself a request. duet_reply
 	// needs the hold's own random id instead (duet_send's _meta, or the room state: both out of reach).
 	if (appTools.some((t) => t.name === tool) && tool !== "duet_reply" && a.key !== panelKey) {
-		return { ...panelResult({ error: "Open the duet panel from the chat (ask for duet)", needKey: true }), isError: true };
+		return { ...panelResult({ error: "Open the duet panel first · ask for duet", needKey: true }), isError: true };
 	}
 	switch (tool) {
 		case "duet_send": {
@@ -966,8 +973,7 @@ async function callTool(tool, a, ctx) {
 			}
 			if (unattended && exchanges >= MAX_AUTO) {
 				throw new Error(
-					`Not sent: auto-reply limit. ${MAX_AUTO} replies have gone to the other agent without your user asking. ` +
-						"Stop here and ask your user whether to continue; only if they say so, send again with user_asked: true.",
+					`Not sent · auto-reply limit (${MAX_AUTO} unasked) · ask your user; only on their yes, send again with user_asked: true`,
 				);
 			}
 			// Counted before the await, so parallel sends can't slip past the cap; given back if it
@@ -989,11 +995,11 @@ async function callTool(tool, a, ctx) {
 				const shown = cleanText(a.text);
 				if (!shown) {
 					giveBack();
-					return "Not sent · nothing visible to send.";
+					return "Not sent · nothing visible";
 				}
 				if (shown.length > REPLY_FORM_MAX) {
 					giveBack();
-					return `Not sent · ${shown.length} chars · the Send form shows up to ${REPLY_FORM_MAX} · send it in parts, each under ${REPLY_FORM_MAX}.`;
+					return `Not sent · ${shown.length} chars · form max ${REPLY_FORM_MAX} · send it in parts`;
 				}
 				const answer = await askToSend(shownTo, shown);
 				// Every send waits for Send, user_asked or not. Full Access: Codex declines every form by
@@ -1001,9 +1007,9 @@ async function callTool(tool, a, ctx) {
 				if (answer !== "send") {
 					giveBack();
 					remember({ who: "", text: `your reply to ${shownTo} was not sent`, note: true });
-					if (answer === "drop") return "Not sent · your user chose Don't send. Don't send it again unless they ask.";
-					if (answer === "full") return 'Not sent · Codex declined duet\'s Send form (Full Access) · your user can say "duet auto" in their own prompt, or use a Codex mode that asks.';
-					return `Not sent · ${cantAsk(answer)}. Don't send it again unless your user asks.`;
+					if (answer === "drop") return "Not sent · your user said no · don't resend";
+					if (answer === "full") return 'Not sent · Codex declined the form (Full Access) · your user types "duet auto", or uses a mode that asks';
+					return `Not sent · ${cantAsk(answer)} · don't resend unless your user asks`;
 				}
 				exchanges = 0; // the user just answered: they are here
 				outText = shown;
@@ -1031,7 +1037,7 @@ async function callTool(tool, a, ctx) {
 		case "duet_inbox": {
 			await needRoom();
 			// In ask mode a request reaches the model only with the user's yes: not from inside another request.
-			if (ctx.peerTurn && mode === "ask") return "Messages wait for your user: they say 'check duet' themselves.";
+			if (ctx.peerTurn && mode === "ask") return 'Waiting for your user · they say "check duet"';
 			if (!inbox.length) return "No new duet messages.";
 			holdForUser = false; // the user asked: they're here
 			// The other side's requests are now in this turn: duet's own room tools (join, leave, mode) stay the user's.
@@ -1045,40 +1051,40 @@ async function callTool(tool, a, ctx) {
 			const seen = [...peers].map(([p, at]) => `${p} (${at.toLocaleTimeString()})`).join(", ") || "none yet";
 			// Only the start of the room code: the whole code would go to the model's provider.
 			const shown = room ? `"${shortRoom(room)}"` : "(none)";
-			const lost = dropped ? `; ${dropped} older message(s) dropped (inbox full)` : "";
+			const lost = dropped ? `; ${dropped} older dropped (inbox full)` : "";
 			const note = pushNote && sub ? `; ${pushNote}` : "";
-			const how = `; mode: ${mode}; ${promptHookSeen ? "duet's hooks are on" : hooksSeen ? "duet's prompt hook hasn't run yet (type a prompt; if it never runs, check /hooks)" : "duet's hooks haven't run in this session"}${exchanges >= MAX_AUTO ? "; auto-reply limit reached: new messages wait until your user types or says 'check duet'" : ""}`;
+			const how = `; mode: ${mode}; ${promptHookSeen ? "hooks on" : hooksSeen ? "prompt hook not run yet · type a prompt, else check /hooks" : "hooks not run yet"}${exchanges >= MAX_AUTO ? '; auto-reply limit reached · waiting for your user or "check duet"' : ""}`;
 			const recentPeers = [...peers].filter(([, at]) => Date.now() - at.getTime() < RECENT_MS).map(([n]) => n);
-			const crowd = recentPeers.length > 1 ? [`more than one other agent is in this room (${recentPeers.join(", ")}): duet is built for two`] : [];
+			const crowd = recentPeers.length > 1 ? [`more than one other agent here (${recentPeers.join(", ")}) · duet is built for two`] : [];
 			const warn = [...crowd, ...warnings].map((w) => `; warning: ${w}`).join("");
-			if (!room) return "duet: not in a room — your user can join one: tell you the room code and their name (duet_join)";
-			return `duet: ${name ?? "(no name)"} in room ${shown} via ${server} — ${status}${note}${how}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}${warn}`;
+			if (!room) return "duet: not in a room · your user gives you a room code and name (duet_join)";
+			return `duet: ${name ?? "(no name)"} · room ${shown} · ${server} · ${status}${note}${how}; peers seen: ${seen}; messages waiting: ${inbox.length}${lost}${warn}`;
 		}
 		case "duet_join": {
 			needUser(ctx, "joining a room happens");
 			const r = String(a.room ?? "").trim();
 			const n = fitName(String(a.name ?? "").trim());
 			const s = a.server ? String(a.server).trim().replace(/\/+$/, "") : server;
-			if (!isRoomCode(r)) throw new Error("A room code is 3-64 letters, digits, . _ - (ask your user for the exact code).");
-			if (!a.name || isPlaceholderName(a.name)) throw new Error("Ask your user for their name in the room.");
-			if (!isRelayUrl(s)) throw new Error("The relay must be a plain http(s) URL.");
-			if (sub && r === room && n === name && s === server) return `Already in room "${shortRoom(r)}" as ${n}.`;
+			if (!isRoomCode(r)) throw new Error("Room code: 3-64 letters, digits, . _ - · ask your user for the exact code");
+			if (!a.name || isPlaceholderName(a.name)) throw new Error("No name · ask your user for their name in the room");
+			if (!isRelayUrl(s)) throw new Error("Relay: a plain http(s) URL only");
+			if (sub && r === room && n === name && s === server) return `Already in "${shortRoom(r)}" as ${n}`;
 			await joinAsUser(r, n, s);
-			return `Joined duet room "${shortRoom(r)}" as ${n}, in ask mode: each request from the other side waits for your user's yes. Tell your user to give the other person the same room code.`;
+			return `Joined "${shortRoom(r)}" as ${n} · ask · your user gives the other person the same code`;
 		}
 		case "duet_leave": {
 			needUser(ctx, "leaving the room happens");
-			if (!room) return "Not in a duet room.";
+			if (!room) return "Not in a room";
 			leaveAsUser();
-			return "Left the duet room.";
+			return "Left the room";
 		}
 		// ---------- the panel (panel.js): duet_room opens it; the rest only the panel calls ----------
 		case "duet_room": {
 			if (room && name && !sub) await joinRoom();
 			const said =
 				!room || !name
-					? "The duet panel is open in the chat. Your user joins a room there: they type the room code into the panel, not into this chat."
-					: `The duet panel is open in the chat: room "${shortRoom(room)}" as ${name}, ${status}; ${inbox.length} request(s) waiting for your user's click.`;
+					? "duet panel open · your user joins there (room code in the panel, not the chat)"
+					: `duet panel open · "${shortRoom(room)}" as ${name} · ${status} · ${inbox.length} waiting for a click`;
 			return { content: [{ type: "text", text: said }], _meta: { [PANEL_KEY_META]: panelKey } };
 		}
 		case "duet_room_state": {
@@ -1088,13 +1094,13 @@ async function callTool(tool, a, ctx) {
 		}
 		case "duet_read": {
 			const e = inbox.find((m) => m.pid === String(a.id));
-			return e ? panelResult({ id: e.pid, text: cleanText(e.text) }) : panelError("That request isn't waiting any more.");
+			return e ? panelResult({ id: e.pid, text: cleanText(e.text) }) : panelError("Not waiting any more");
 		}
 		case "duet_room_join": {
 			const r = String(a.room ?? "").trim();
 			const n = String(a.name ?? "").trim();
-			if (!isRoomCode(r)) return panelError("A room code is 3-64 letters, digits, . _ -");
-			if (!isName(n) || isPlaceholderName(n)) return panelError("Your name: letters, digits, . _ - (up to 40), starting with a letter or digit.");
+			if (!isRoomCode(r)) return panelError("Room code: 3-64 letters, digits, . _ -");
+			if (!isName(n) || isPlaceholderName(n)) return panelError("Name: letters, digits, . _ - · up to 40");
 			if (!(sub && r === room && n === name)) {
 				try {
 					await joinAsUser(r, n, server);
@@ -1111,7 +1117,7 @@ async function callTool(tool, a, ctx) {
 		case "duet_take": {
 			if (a.undo === true) {
 				const back = handed.get(String(a.id));
-				if (!back || inbox.some((m) => m.pid === back.pid)) return panelError("Nothing to put back.");
+				if (!back || inbox.some((m) => m.pid === back.pid)) return panelError("Nothing to put back");
 				handed.delete(back.pid);
 				inbox.unshift(back);
 				remember({ who: "", text: `${back.from}'s request is waiting again`, note: true });
@@ -1120,7 +1126,7 @@ async function callTool(tool, a, ctx) {
 			// The user's click: the request goes into the chat as their message (ui/message). Out of the
 			// inbox first, so a second panel (or duet_inbox) can't hand it over again.
 			const i = inbox.findIndex((e) => e.pid === String(a.id));
-			if (i < 0) return panelError("That request isn't waiting any more: it was handed over or ignored already.");
+			if (i < 0) return panelError("Not waiting any more");
 			const [e] = inbox.splice(i, 1);
 			handed.set(e.pid, e);
 			if (handed.size > 10) handed.delete(handed.keys().next().value);
@@ -1131,7 +1137,7 @@ async function callTool(tool, a, ctx) {
 		}
 		case "duet_ignore": {
 			const i = inbox.findIndex((e) => e.pid === String(a.id));
-			if (i < 0) return panelError("That request isn't waiting any more: it was handed over or ignored already.");
+			if (i < 0) return panelError("Not waiting any more");
 			const [e] = inbox.splice(i, 1);
 			decline([e]);
 			consumed();
@@ -1158,7 +1164,7 @@ async function callTool(tool, a, ctx) {
 			// this turn's own prompt (recorded by duet's UserPromptSubmit hook, never a request of the
 			// other side) says "duet auto". A model that only read it somewhere (the room's quoted
 			// messages, an earlier turn) can't switch.
-			if (noAnswer(r) === "full" && ctx.userTurn && saidDuetAuto(ctx.turnId)) {
+			if (noAnswer(r) === "full" && r.ms < AUTO_DECLINE_MS && ctx.userTurn && saidDuetAuto(ctx.turnId)) {
 				mode = "auto";
 				setImmediate(deliver);
 				return `duet · auto · no gates, up to ${MAX_AUTO} in a row · Full Access, no form`;
@@ -1168,7 +1174,7 @@ async function callTool(tool, a, ctx) {
 		}
 		case "duet_history": {
 			await needRoom();
-			if (ctx.peerTurn && mode === "ask") return "The room's history is for your user: they ask for it themselves.";
+			if (ctx.peerTurn && mode === "ask") return "History is for your user · they ask for it";
 			return await history12h(a.since);
 		}
 		case "duet_hook": {

@@ -27,7 +27,7 @@ import { pathToFileURL } from "node:url";
 import { appTools, cleanText, handOver, heldResult, makeHolds, outgoingItem, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom, toWhom } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.8.0"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.8.1"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -314,7 +314,9 @@ function holdReply(a) {
 	if (!again && waiting.length >= HOLDS_PER_SEAT) return text(`Not sent · ${HOLDS_PER_SEAT} replies already wait in duet cards`, true);
 	if (!again && allChars + shown.length > LIMIT.allChars) return text("Not held · hosted server full · try again later", true);
 	const h = holds.hold(seat.key, shownTo, shown);
-	if (!again) allChars += shown.length;
+	// Counted by what hold() did, not by the check above: a matching hold that expired in between
+	// (hold() sweeps first, and gives its text back) is a new one here.
+	if (!waiting.includes(h)) allChars += shown.length;
 	h.sendTo ??= to;
 	seat.rev++;
 	return heldResult(h);
@@ -323,7 +325,7 @@ function holdReply(a) {
 // The user's Send: out to the relay, within the seat's limits.
 async function sendHeld(h) {
 	const seat = seats.get(h.owner);
-	if (!seat) throw new Error("the duet panel left the room; open it and join again");
+	if (!seat) throw new Error("Panel left the room · open it, join again");
 	const now = Date.now();
 	const peer = h.sendTo ? seat.lastFrom.get(h.sendTo) : [...seat.lastFrom.values()].sort((x, y) => y.at - x.at)[0];
 	const re = peer && now - peer.at < 30 * 60_000 ? peer.id : undefined;
@@ -332,7 +334,7 @@ async function sendHeld(h) {
 	const bytes = Buffer.byteLength(JSON.stringify(env));
 	seat.sends = seat.sends.filter((s) => now - s.at < 10 * 60_000);
 	if (seat.sends.length >= LIMIT.sendsPerSeat || seat.sends.reduce((n, s) => n + s.bytes, 0) + bytes > LIMIT.seatSendBytes) {
-		throw new Error("too many messages from this room in 10 minutes; wait a little");
+		throw new Error("Too many messages from this room · wait a few minutes");
 	}
 	const long = bytes > 4000 ? bytes : 0; // over ntfy's 4096 bytes it becomes an attachment on the relay
 	if (now >= longBytes.reset) longBytes = { n: 0, reset: now + 86_400_000 };
@@ -375,7 +377,7 @@ async function callTool(name, a, ip) {
 	}
 	// The panel's own tools: each needs the panel's token.
 	if (!appTools.some((t) => t.name === name)) return text(`unknown tool ${name}`, true);
-	if (!isToken(a.token)) return panelError("This panel has no id: reload it.");
+	if (!isToken(a.token)) return panelError("Panel has no id · reload it");
 	const key = sha(a.token);
 	let seat = seats.get(key);
 	if (seat) seat.seen = Date.now();
@@ -388,11 +390,11 @@ async function callTool(name, a, ip) {
 		case "duet_room_join": {
 			const room = String(a.room ?? "").trim();
 			const name = String(a.name ?? "").trim();
-			if (!isRoomCode(room)) return panelError("A room code is 3-64 letters, digits, . _ -");
-			if (!isName(name) || isPlaceholderName(name)) return panelError("Your name: letters, digits, . _ - (up to 40), starting with a letter or digit.");
+			if (!isRoomCode(room)) return panelError("Room code: 3-64 letters, digits, . _ -");
+			if (!isName(name) || isPlaceholderName(name)) return panelError("Name: letters, digits, . _ - · up to 40");
 			const cls = classOf(ip);
 			const address = addressKey(ip);
-			if (!allow(`join ${address}`, cls.joins, 10 * 60_000)) return panelError("Too many joins from here: wait a few minutes.");
+			if (!allow(`join ${address}`, cls.joins, 10 * 60_000)) return panelError("Too many joins from here · wait a few minutes");
 			const topic = topicFor(room); // the code itself goes no further than this line and the label
 			if (seat && seat.topic === topic && seat.name === name) return panelResult(seat.state());
 			if (seat) closeSeat(seat);
@@ -400,11 +402,11 @@ async function callTool(name, a, ip) {
 			if (seats.size >= LIMIT.seats) return panelError(full);
 			if (!rooms.has(topic) && rooms.size >= LIMIT.rooms) return panelError(full.replace("is full", "has too many rooms open"));
 			const fromHere = [...seats.values()].filter((s) => s.address === address);
-			if (fromHere.length >= cls.seats) return panelError("Too many duet panels open from here: leave one first.");
-			if (!fromHere.some((s) => s.topic === topic) && new Set(fromHere.map((s) => s.topic)).size >= cls.rooms) return panelError("Too many duet rooms open from here: leave one first.");
+			if (fromHere.length >= cls.seats) return panelError("Too many duet panels open from here · leave one first");
+			if (!fromHere.some((s) => s.topic === topic) && new Set(fromHere.map((s) => s.topic)).size >= cls.rooms) return panelError("Too many duet rooms open from here · leave one first");
 			// One panel per name in a room, as everywhere in duet: a second one would hand the same requests over again.
 			if ([...(rooms.get(topic)?.seats ?? [])].some((s) => s.name.toLowerCase() === name.toLowerCase())) {
-				return panelError(`${name} is already in this room in another chat: leave it there first, or use another name.`);
+				return panelError(`${name} already in this room in another chat · leave there, or pick another name`);
 			}
 			seat = new Seat(key, topic, name, room, address);
 			seat.longPerDay = cls.longPerDay;
@@ -420,14 +422,14 @@ async function callTool(name, a, ip) {
 		}
 		case "duet_read": {
 			const e = seat?.inbox.find((m) => m.pid === String(a.id));
-			return e ? panelResult({ id: e.pid, text: e.text }) : panelError("That request isn't waiting any more.");
+			return e ? panelResult({ id: e.pid, text: e.text }) : panelError("Not waiting any more");
 		}
 		case "duet_take":
 		case "duet_ignore": {
-			if (!seat) return panelError("Not in a room.");
+			if (!seat) return panelError("Not in a room");
 			if (name === "duet_take" && a.undo === true) {
 				const back = seat.handed.get(String(a.id));
-				if (!back) return panelError("Nothing to put back.");
+				if (!back) return panelError("Nothing to put back");
 				seat.handed.delete(back.pid);
 				allChars -= back.text.length;
 				seat.hold(back);
@@ -436,7 +438,7 @@ async function callTool(name, a, ip) {
 				return panelResult(seat.state());
 			}
 			const e = seat.inbox.find((m) => m.pid === String(a.id));
-			if (!e) return panelError("That request isn't waiting any more: it was handed over or ignored already.");
+			if (!e) return panelError("Not waiting any more");
 			seat.drop(e);
 			if (name === "duet_ignore") {
 				publish(RELAY, seat.topic, envelope({ fromId: seat.fromId, from: seat.name, kind: "note", note: "declined", to: e.from })).catch(() => {});
