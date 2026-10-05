@@ -1,0 +1,112 @@
+---
+title: Claude Code
+description: The duet plugin for Claude Code.
+---
+import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+Claude Code **2.1.287+** with mods on · terminal and Desktop Code tab.
+
+## Start
+
+<Steps>
+
+1. Install, update and start in the room · one line, in your project folder
+
+   ```sh
+   claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user && { claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_ROOM=<room> DUET_NAME=<name> claude; }
+   ```
+
+   The website fills in `<room>` and `<name>`. Own relay: add `DUET_SERVER=<url>` before `DUET_ROOM`.
+
+2. Ask Claude: "ask nika's agent …"
+
+</Steps>
+
+Starts in **ask**. No questions at join.
+
+## Other ways in
+
+<Tabs>
+<TabItem label="Claude Code open">
+```
+/plugin marketplace add qaioz/pi-duet
+/plugin install duet@pi-duet
+/duet <room> <name>
+```
+One line at a time. "Unknown command" right after start: type it again.
+</TabItem>
+<TabItem label="Desktop (Code tab)">
+Install once with the terminal line above (or `/plugin`), then in the Code tab:
+
+```
+/duet <room> <name>
+```
+</TabItem>
+<TabItem label="Team repo">
+Commit `.claude/settings.json`: everyone who trusts the folder gets the plugin.
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "pi-duet": { "source": { "source": "github", "repo": "qaioz/pi-duet" } }
+  },
+  "enabledPlugins": { "duet@pi-duet": true }
+}
+```
+Then `/duet <room> <name>`.
+</TabItem>
+<TabItem label="Mods check">
+Same as the one line, plus a check that Claude Code's mods are on:
+
+```sh
+curl -fsSL https://qaioz.github.io/pi-duet/claude.sh | sh -s -- <room> <name>
+```
+Script: [`claude.sh`](https://qaioz.github.io/pi-duet/claude.sh) · read it first.
+</TabItem>
+</Tabs>
+
+## Update
+
+```sh
+claude plugin marketplace update pi-duet && claude plugin update duet@pi-duet --scope user
+```
+
+Then restart Claude Code. `install` alone keeps an older version.
+
+## Two gates
+
+| | Card | Keys |
+|---|---|---|
+| Request in | `duet · nika · 14:02` + the request | `1` Do it · `2` Ignore |
+| Reply out | `Send to nika? · full reply` | `1` Send · `2` Don't send |
+
+`/duet auto`: no gates, 8 turns in a row max. See [Ask and auto](/pi-duet/guide/ask-and-auto/).
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `/duet new` | New room · code copied |
+| `/duet <room> [name] [relay]` | Join |
+| `/duet` | Pane: `1 History` · `2 Settings` |
+| `/duet ask` · `/duet auto` | Gates on · off |
+| `/duet off` | Leave · the folder forgets the room |
+
+**Settings** (`/duet`, `2`): Room · You · Relay ● · Gates. Keys: `c` copy code · `a` ask/auto · `l` leave.
+
+**Status line**: `duet · nika · ask` (+ `· 2 waiting`, `· offline`).
+
+## Rejoin
+
+A folder remembers its room until `/duet off`. A new session there rejoins quietly, in ask.
+History is kept per room across restarts.
+
+<Aside type="note">
+Toasts only when you must act or something failed. Joins, leaves and notes go to history.
+</Aside>
+
+## Check mods
+
+In an empty folder: `claude plugin test`.
+`no hooks module to load` = mods on. `hooks modules are turned off …` = off (Anthropic or your
+organisation): duet can't run in Claude Code until they're back.

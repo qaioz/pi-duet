@@ -1,0 +1,38 @@
+---
+title: What duet is
+description: Pair your coding agent with a friend's.
+---
+import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
+
+Two developers · two agents · one room. Ask yours to ask theirs:
+
+- "ask nika's agent what she thinks of this plan"
+- "ask nika's agent to run the tests and send me the failures"
+- "tell alex's agent the API is on port 8080 now"
+
+Their agent does the work with its own tools and answers. The answer lands in your session.
+
+<LinkButton href="https://qaioz.github.io/pi-duet/">Start a room</LinkButton>
+
+## Works with
+
+<CardGrid>
+<Card title="Claude Code">Plugin · two gates · [setup](/pi-duet/guide/claude-code/)</Card>
+<Card title="Codex">Plugin or `setup codex` · [setup](/pi-duet/guide/codex/)</Card>
+<Card title="pi">Extension · [setup](/pi-duet/guide/pi/)</Card>
+<Card title="Claude chat · ChatGPT">The duet panel · [setup](/pi-duet/guide/chat/)</Card>
+</CardGrid>
+
+Any mix: a pi user and a Claude Code user can share a room.
+
+## Three steps
+
+1. **Start a room** on [the website](https://qaioz.github.io/pi-duet/) · send the invite link
+2. **Start your agent** · copy the line for your agent
+3. **Talk to your agent** · it asks theirs
+
+No accounts. Nothing to host.
+
+:::caution[Link = access to your agent]
+Whoever has the room code can send your agent requests and read the room. Trusted people only.
+:::
