@@ -33,7 +33,7 @@ npx -y github:qaioz/pi-duet setup codex --room <room> --name <name>
 | Request in | `duet · karlo · 14:02` + the request | **Do it** · **Ignore** |
 | Reply out | `send to karlo? · full reply` + the text | **Send** · **Don't send** |
 
-"duet auto": no gates, 8 replies in a row max · "duet ask" back.
+"duet auto": no gates, 8 turns in a row max · "duet ask" back.
 
 ## Say
 

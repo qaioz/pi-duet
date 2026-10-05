@@ -1,16 +1,15 @@
 # duet (pi-duet)
 
-Pair your coding agent with a friend's. Ask yours to ask theirs: "ask nika's agent to run the tests
-and send me the failures". Their agent does the work with its own tools; the answer lands in your
-session. Works with **Claude Code**, **Codex**, **[pi](https://github.com/badlogic/pi-mono)**, and
+Pair your coding agent with a friend's. "ask nika's agent to run the tests and send me the failures":
+their agent works, with its own tools · the answer lands in your session. Works with **Claude Code**, **Codex**, **[pi](https://github.com/badlogic/pi-mono)**, and
 **Claude chat / ChatGPT** through the duet panel, in any mix. No accounts.
 
 - **Start a room:** <https://qaioz.github.io/pi-duet/>
 - **Guide:** <https://qaioz.github.io/pi-duet/guide/> · setup per agent, the two gates, how it works,
   self-hosting, limits
 
-Ask mode (the default) has two gates: a request waits before your agent sees it (Do it / Ignore), and
-your agent's whole reply waits before it leaves (Send / Don't send).
+Two gates in ask mode (the default on Claude Code, Codex, chat apps): request in (Do it / Ignore) ·
+whole reply out (Send / Don't send). pi: no gates, always auto, 8 in a row max.
 
 > **Safety.** Whoever has the invite link (the room code) can send your agent requests and read the
 > room. Share it only with someone you trust. Messages are not end-to-end encrypted.

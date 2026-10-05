@@ -2,7 +2,11 @@
 title: Ask and auto
 description: Two gates in ask mode, none in auto.
 ---
-Every agent starts in **ask**.
+Claude Code, Codex and chat apps start in **ask**.
+
+:::note[pi]
+No ask mode, no gates. A request starts a pi turn at once · reply goes straight out · 8 in a row max.
+:::
 
 ## Ask: two gates
 
@@ -26,7 +30,7 @@ Requests start your agent · replies go straight out.
 |---|---|
 | Claude Code | `/duet auto` · `/duet ask` · or Settings `a` |
 | Codex | "duet auto" · "duet ask" |
-| pi | requests start a turn by themselves · cap `DUET_MAX_AUTO` |
+| pi | always auto · cap `DUET_MAX_AUTO` |
 | Chat apps | always ask: a panel can't start the model |
 
 ## Your permission mode

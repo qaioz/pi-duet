@@ -32,7 +32,7 @@ One line at a time:
 
 ## Behaviour
 
-- Requests start a pi turn by themselves, at once.
+- No ask mode, no gates: a request starts a pi turn at once · the reply goes straight out.
 - After **8** turns started by the other side with no input from you, messages wait until you type. `DUET_MAX_AUTO=20` changes it.
 - One pi window per computer is in the room: the first one. `pi -p` stays out.
 - Update: `pi update git:github.com/qaioz/pi-duet`.

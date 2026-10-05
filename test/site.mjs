@@ -214,6 +214,34 @@ try {
 	);
 	await evilCtx.close();
 
+	// The default relay: no ?relay, or the default given explicitly. The Claude line is the brief's, word
+	// for word, and an explicit default gets no "ignored" note. The relay itself is blocked here.
+	const BRIEF_LINE = (r, n) => `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user && { claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_ROOM=${r} DUET_NAME=${n} claude; }`;
+	const defCtx = await browser.newContext();
+	await defCtx.route("https://duet.gaioz.online/**", (r) => r.abort());
+	const def = await defCtx.newPage();
+	const defSeen = [];
+	for (const q of ["", `?relay=${encodeURIComponent("https://duet.gaioz.online/")}`, `?relay=${encodeURIComponent("https://duet.gaioz.online")}`]) {
+		await def.goto(`${site}${q}#${room}`);
+		await def.waitForSelector("#room:not(.hidden)");
+		await def.fill("#name", "nika");
+		await def.click('.tabs button[data-agent="claude"]');
+		const line = await def.$eval('.case[data-case="fresh"] .cmd code', (c) => c.textContent);
+		const note = (await def.textContent("#relay")).trim();
+		const noteHidden = await def.$eval("#relay", (e) => e.classList.contains("hidden"));
+		defSeen.push({ q: q || "(none)", same: line === BRIEF_LINE(room, "nika"), note, noteHidden });
+	}
+	await defCtx.close();
+	check(
+		"default relay: the Claude Code line is the brief's exactly; an explicit default relay gets no note",
+		defSeen.every((d) => d.same && d.note === "" && d.noteHidden),
+		JSON.stringify(defSeen),
+	);
+
+	// The whole page source: no fencing, guard or countdown wording anywhere.
+	const pageSrc = readFileSync(resolve(import.meta.dirname, "../docs/index.html"), "utf8");
+	check("index.html: no fencing, guard or countdown wording; the gates claim leaves pi out", !/fenc|guard|countdown|setTimeout/i.test(pageSrc) && !/OK every request/.test(pageSrc) && /pi: always auto/.test(pageSrc) && /pi: auto, 8 in a row max/.test(pageSrc), (pageSrc.match(/.{0,30}(fenc|guard|countdown|setTimeout).{0,30}/gi) || []).join(" | ") || "none");
+
 	// Live "who's in the room": a join on the relay shows up on both pages.
 	await publish(SERVER, topicFor(room), envelope({ fromId: "site-test", from: "nika", kind: "join", via: "claude-code" }));
 	await page.waitForFunction(() => document.getElementById("people").textContent.includes("nika"), null, { timeout: 15_000 });
@@ -307,10 +335,13 @@ try {
 		if (!r.ok() || !m.h1 || m.sw > m.cw || m.fence) guideNotes.push(`${slug || "/"}: ${r.status()} "${m.h1}" ${m.sw}/${m.cw}${m.fence ? " fencing wording" : ""}`);
 	}
 	const claudePage = (await (await gp.goto(new URL("guide/claude-code/", site).href)).text());
+	// The install line as a reader copies it: one code block equal to the brief's line, <room>/<name> left in.
+	const guideBlocks = await gp.$$eval("main pre code", (cs) => cs.map((c) => c.innerText.trim()));
+	const guideLine = guideBlocks.includes(BRIEF_LINE("<room>", "<name>"));
 	await gctx.close();
 	check(
-		"guide: 9 pages, no horizontal scroll at 390 px, no fencing wording; Claude Code page has the install line",
-		guideNotes.length === 0 && claudePage.includes("claude plugin update duet@pi-duet --scope user") && claudePage.includes("extraKnownMarketplaces"),
+		"guide: 9 pages, no horizontal scroll at 390 px, no fencing wording; Claude Code page has the brief's install line exactly",
+		guideNotes.length === 0 && guideLine && claudePage.includes("extraKnownMarketplaces"),
 		guideNotes.join("; ") || `${GUIDE.length} pages ok`,
 	);
 

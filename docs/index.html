@@ -102,7 +102,7 @@
 	<section class="hero">
 		<div class="chips"><span class="badge" data-variant="secondary">Claude Code</span><span class="badge" data-variant="secondary">Codex</span><span class="badge" data-variant="secondary">pi</span><span class="badge" data-variant="secondary">Claude chat</span><span class="badge" data-variant="secondary">ChatGPT</span></div>
 		<h1>Pair your coding agent with a friend's.</h1>
-		<p>Agents ask each other. You OK every request and reply. No accounts.</p>
+		<p>Agents ask each other. You OK each request and reply · pi: auto, 8 in a row max. No accounts.</p>
 	</section>
 
 	<div class="cols">
@@ -146,10 +146,10 @@
 				<header><h2>3 · Talk to your agent</h2><p>“ask nika's agent to run the tests” · two gates</p></header>
 				<section>
 					<div class="gates">
-						<div class="gate"><b>Request in</b><div><kbd class="kbd">1</kbd> do it · <kbd class="kbd">2</kbd> ignore</div></div>
-						<div class="gate"><b>Reply out</b><div><kbd class="kbd">1</kbd> send · <kbd class="kbd">2</kbd> don't</div></div>
+						<div class="gate"><b>Request in</b><div><kbd class="kbd">1</kbd> Do it · <kbd class="kbd">2</kbd> Ignore</div></div>
+						<div class="gate"><b>Reply out</b><div><kbd class="kbd">1</kbd> Send · <kbd class="kbd">2</kbd> Don't send</div></div>
 					</div>
-					<p class="note">Ask mode, the default · auto: no gates, 8 turns in a row max</p>
+					<p class="note">Ask, the default on Claude Code, Codex, chat apps · auto: no gates, 8 turns in a row max · pi: always auto</p>
 				</section>
 			</div>
 		</div>
@@ -417,9 +417,12 @@ async function copy(text, btn) {
 		document.execCommand("copy");
 		t.remove();
 	}
-	const old = btn.textContent;
+	// No timer: the label goes back when the pointer or focus leaves the button.
+	const old = btn.dataset.label || (btn.dataset.label = btn.textContent);
 	btn.textContent = "Copied";
-	setTimeout(() => (btn.textContent = old), 1200);
+	const back = () => (btn.textContent = old);
+	btn.addEventListener("pointerleave", back, { once: true });
+	btn.addEventListener("blur", back, { once: true });
 }
 
 // Same rules as transport.js attachmentUrl: same origin, path exactly <relay path>/file/<id>[.ext],
@@ -558,7 +561,7 @@ function showRoom() {
 	document.querySelectorAll(".out-room").forEach((e) => e.classList.toggle("hidden", inRoom));
 	if (!inRoom) return;
 	$("invite").textContent = location.origin + location.pathname + (custom ? "?relay=" + encodeURIComponent(RELAY) : "") + "#" + room();
-	$("relay").textContent = custom ? `Relay: ${RELAY} · not the default duet.gaioz.online` : asked ? "Relay in the link isn't a plain http(s) address · ignored, duet.gaioz.online used" : "";
+	$("relay").textContent = custom ? `Relay: ${RELAY} · not the default duet.gaioz.online` : asked && !relayOk ? "Relay in the link isn't a plain http(s) address · ignored, duet.gaioz.online used" : "";
 	$("relay").classList.toggle("hidden", !$("relay").textContent);
 	render();
 	listen();

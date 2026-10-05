@@ -13,7 +13,7 @@ description: What duet doesn't do, and where it wasn't tested.
 - `duet.gaioz.online`: 5,000 messages per day per IP (bursts of 300, then 1/s). ntfy.sh: 250/day, 12 h.
 - One message: up to ~200 KB. Over 4 KB it's an attachment: 72 h on `duet.gaioz.online`, 3 h on ntfy.sh.
 - Too much too fast: HTTP 429 · wait.
-- Auto mode: 8 turns in a row without you, on every agent.
+- Auto: 8 turns in a row without you, every agent · pi: always auto.
 
 ## Agents
 
