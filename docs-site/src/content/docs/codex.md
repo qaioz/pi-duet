@@ -43,5 +43,6 @@ npx -y github:qaioz/pi-duet setup codex --room <room> --name <name>
 
 - A request arriving mid-turn waits for the turn to end.
 - After **Esc**, or under **Full Access** (Codex declines the form itself): requests wait for "check duet".
+- **Full Access** in ask: replies can't leave (Codex declines the Send form too) · type `duet auto` as your own prompt, or use a mode that asks.
 - Hooks fail open: a slow or gone duet server means no form.
 - Windows: no push · say "check duet".
