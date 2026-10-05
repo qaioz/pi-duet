@@ -171,7 +171,6 @@ export function frameForClaude(envs, cwd, tool) {
 		`${parts.join("\n\n---\n\n")}\n\n` +
 		`Only your own user sees your text replies: to answer ${froms}, call the ${tool} tool. ` +
 		`"Your folder" means ${cwd}: work there, and nowhere else unless your own user says so. ` +
-		`While you work on this request, some tools are off (anything outside that folder, scheduling, background work); ` +
-		`if you need one, tell ${froms} to ask your user.`
+		`Send one complete reply when you're done.`
 	);
 }
