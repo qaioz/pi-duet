@@ -1,13 +1,57 @@
 // What Codex may do while it works on a request from the other person's agent (a "peer turn"),
-// checked by duet's PreToolUse hook (mcp.js, duet_hook). Pure. The path rules are the Claude Code
-// plugin's (hooks/guard.js).
+// checked by duet's PreToolUse hook (mcp.js, duet_hook). Pure. The path rules were the Claude Code
+// plugin's (hooks/guard.js, removed in release 6); they live here until Codex's fencing goes too.
 //
 // This is a guardrail, not a sandbox, and Codex runs it as a hook that fails open: if duet's server
 // is slow, gone or errors, the tool runs (Codex: "a PreToolUse callback error, timeout, or malformed
 // response can fail the hook without blocking the tool"). Codex's own sandbox and approvals still
 // apply. Shell commands are only checked for background and scheduled work; what a command reads or
 // writes is the sandbox's business.
-import { inside, protectedPart } from "./hooks/guard.js";
+
+// ---- path rules (from the removed hooks/guard.js) ----
+const PROTECTED = [".claude", ".mcp.json", ".git", "claude.md", "claude.local.md", "agents.md", ".vscode", ".envrc", ".husky", ".pi", ".codex"];
+
+const isWin = (p) => /^[A-Za-z]:\//.test(p);
+
+// An absolute, normalised path with forward slashes; `..` and `.` resolved. Symlinks aren't followed.
+export function resolvePath(path, cwd, home) {
+	let p = String(path).replace(/\\/g, "/");
+	const base = String(cwd).replace(/\\/g, "/");
+	if (p === "~" || p.startsWith("~/")) p = String(home ?? "").replace(/\\/g, "/") + p.slice(1);
+	if (!p.startsWith("/") && !isWin(p)) p = base.replace(/\/+$/, "") + "/" + p;
+	const drive = isWin(p) ? p.slice(0, 2) : "";
+	const out = [];
+	for (const seg of p.slice(drive.length).split("/")) {
+		if (!seg || seg === ".") continue;
+		if (seg === "..") out.pop();
+		else out.push(seg);
+	}
+	return drive + "/" + out.join("/");
+}
+
+// The path relative to cwd, or null when it is outside. Case matters except on a Windows drive:
+// on a case-insensitive disk that only refuses more, never less.
+export function inside(path, cwd, home) {
+	const p = resolvePath(path, cwd, home);
+	const c = resolvePath(cwd, "/", home).replace(/\/+$/, "");
+	const win = isWin(c);
+	const same = (a, b) => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
+	if (same(p, c)) return "";
+	const prefix = c + "/";
+	return same(p.slice(0, prefix.length), prefix) ? p.slice(prefix.length) : null;
+}
+
+// A segment as Windows would open it: no trailing dots or spaces, no ":stream" suffix; any case.
+const plainName = (seg) => seg.replace(/:.*$/, "").replace(/[. ]+$/, "").toLowerCase();
+
+// The first protected name anywhere in the path (8.3 short names like CLAUDE~1.MD included).
+export function protectedPart(rel) {
+	return rel.split("/").find((seg) => {
+		const name = plainName(seg);
+		return PROTECTED.includes(name) || /^(claude|agents|git|vscode|husky|envrc|codex|pi|mcp)~\d/.test(name);
+	});
+}
+// ---- end of path rules ----
 
 // Work that outlives the request: background jobs, schedulers, detached terminals. A program counts in
 // command position (start, after ; & | ( ` $( or a quote, or after sudo/env/exec/nohup-like words),

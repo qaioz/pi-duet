@@ -2,30 +2,31 @@
 // Claude Code or Codex) through a shared room on an ntfy relay.
 //
 //   /duet new            make a room and join it        /duet <room> [name] [relay]   join a room
-//   /duet                open the duet pane              /duet ask | auto              how messages are handled
-//   /duet off            leave the room                  /duet trust                   who's in the room
+//   /duet                open the duet pane              /duet ask | auto              gates on / off
+//   /duet off            leave the room (and forget it in this folder)
 //
 // Receiving: `$.process.spawn` runs curl against the relay's JSON stream (mods have no streaming
 // network API; Node isn't guaranteed). Sending: `$.http.fetch` POST — which also means a session
 // whose policy refuses mod network requests never joins (curl is never used to go around it).
-// Delivery: in "ask" mode each message waits as a card above the prompt; in "auto" mode it starts a
-// turn by itself, up to MAX_AUTO turns without the user. Claude reads it under the engine's own
-// "The duet plugin sent a message" line. While Claude works on a peer's request, guard.js decides
-// which tool calls go ahead.
 //
-// Which turn is the peer's: a mod's own `prompt.submit` hook never sees its own submissions, and
-// `$.prompt.submit` may resolve when its prompt is only queued. But Claude Code hands turn.start the
-// prompt's text wrapped in its own lines ("The duet plugin sent a message: …", seen in 2.1.288),
-// so a turn is the peer's when its text contains a frame duet submitted, until that turn's own
-// turn.complete. duet submits only while Claude is idle, so its turn is the next one. Other turns
-// (the user's prompt, a task notification, another session's message) are not the peer's.
+// Two gates in ask mode. Gate 1: each request waits as a card above the prompt (1 Do it, 2 Ignore).
+// Gate 2: every reply Claude sends with the duet tool waits as a card showing the whole reply
+// (1 Send, 2 Don't send); the tool call holds until the press. Auto mode: no gates, up to MAX_AUTO
+// requests in a row without the user. While Claude works on a peer's request it runs under the
+// user's own permission mode, like any other turn: duet adds no checks of its own. So gate 2 holds
+// the duet tool only; it is not a fence around what leaves the computer: where commands run unasked,
+// a peer can ask Claude to post to the room's relay topic (or anywhere) with curl.
+//
+// Which turn is the peer's (for the spinner, the notes the peer gets, and which request a reply
+// answers): Claude Code hands turn.start the prompt's text wrapped in its own lines ("The duet plugin
+// sent a message: …"), so a turn is the peer's when its text contains a frame duet submitted, until
+// that turn's own turn.complete. duet submits only while Claude is idle, so its turn is the next one.
 //
 // Every function that touches `$` is declared at the top level of this file: Claude Code's
-// validator refuses `$` passed to an imported function. wire.js and guard.js are pure.
-import { checkPeerTool } from "./guard.js";
+// validator refuses `$` passed to an imported function. wire.js is pure.
 import {
 	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
-	isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, preview, randomId, sanitize, sha256hex, timeOf, topicFor,
+	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, sanitize, HIDDEN_MARK, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
 const PANE = "duet";
@@ -33,24 +34,21 @@ const SEND_TOOL = "mcp__duet__send";
 const REPAIR_POLL_MS = 10_000; // ntfy.sh writes its cache in batches; re-poll a resumed range once
 const MAX_BACKOFF_MS = 30_000;
 const LOCK_STALE_MS = 60_000;
-const HISTORY_MAX = 200;
+const HISTORY_MAX = 200; // per room, kept in $.store across restarts
+const HISTORY_TEXT_MAX = 1500; // characters of one history entry saved to $.store (memory keeps it whole)
+const HISTORY_BYTES_MAX = 512 * 1024; // one room's saved history, as JSON in UTF-8: 5 rooms stay well under $.store's 4 MiB
+const HISTORY_ROOMS = 5; // rooms whose history is kept; older ones are dropped
 const QUEUE_MAX = 50;
-const BATCH_MAX = 5; // messages handed to Claude in one auto turn
+const BATCH_MAX = 5; // messages handed to Claude in one turn
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex" };
-const UNDO_MS = 3000; // after "Let Claude do it" or "Ignore", time to take it back
-const REJOIN_MS = 12 * 3600_000; // rejoin quietly only within this (agents ignore older messages anyway)
-const TOAST_GAP_MS = 15_000; // one "message from …" toast per sender per burst
-// Who is in the room, asked once per room: it sets how messages are handled.
-const TRUST = {
-	me: { label: "Only me", mode: "auto", says: "my other window, or my own pi or Codex here; requests start Claude by themselves, with no extra check even under bypassPermissions, and anyone with the room code counts as you" },
-	trusted: { label: "Someone I trust completely", mode: "auto", says: "their requests start Claude by themselves, and replies go straight out" },
-	others: { label: "Someone else", mode: "ask", says: "each request waits for you, and replies are shown before they're sent" },
-};
-// Permission modes in which a tool call still asks the user (or is refused) unless a rule allows it.
+const TOAST_GAP_MS = 15_000; // one "new request" toast per sender per burst
+// Permission modes in which a tool call still asks the user unless a rule allows it. Only used for
+// the one confirm when the user turns auto on in a session that runs commands unasked.
 const ASKING_MODES = ["default", "acceptEdits", "plan", "dontAsk"];
 
 // ---------- state (module variables; the room and the turn in progress are also kept in $.store) ----------
 
+const moduleId = randomId(); // this module instance; a reload loads a new one (kept in DUET_MODULE)
 let token = randomId(); // this window; adopted from $.store after a module reload
 let installId = "";
 let sessionId = "";
@@ -59,10 +57,9 @@ let home = "";
 let duetDir = ""; // ~/.duet (DUET_HOME): the lock every duet client on this computer shares
 let server = DEFAULT_SERVER;
 let defaultName = "";
-let permissionMode = ""; // "" until Claude Code reports it (classic.* events; not at startup, not to tool.call)
-let lastUnasked; // runsUnasked's latest answer, fresher than permissionMode after a Shift+Tab
+let permissionMode = ""; // "" until Claude Code reports it (classic.* events)
 
-let room = null; // { code, name, key, fromId, topic, lockKey, fileLock, mode, cursor, server }
+let room = null; // { code, name, key, fromId, topic, lockKey, fileLock, mode, cursor, server, riskOk }
 let generation = 0; // bumped on every join and leave; loops of an older room stop
 let joinEpoch = 0; // bumped by /duet off: a join still in flight then gives up
 let wakeSupervisor = null;
@@ -75,64 +72,33 @@ const seen = new Set();
 const peers = new Map(); // name -> { via, at, left }
 
 let queue = []; // messages waiting for the user (ask) or for Claude to be free (auto)
-let countdown = null; // { action: "take" | "ignore", envs, timer }: a card choice that can still be undone
-const lastToast = new Map(); // sender -> time of the last "message from" toast
+const lastToast = new Map(); // sender -> time of the last "new request" toast
 let pendingPeer = null; // { envs, text, roomKey, submitted }: taken, waiting for Claude to be idle
-let expected = []; // [{ text, froms, roomKey, at }]: submitted frames whose turn hasn't started yet
-let peerTurn = null; // { froms, roomKey, turnId, waitNoted }
-let lastPeer = null; // { froms, roomKey, guard }: the peer turn that just ended; any turn before the user's own prompt is still its
-let lastGuard = null; // { auto, unaskedAtStart }: how the latest peer turn started
-let agentGuards = {}; // subagent id -> the guard of the peer turn that started it (it may outlive that turn)
+let expected = []; // [{ text, froms, roomKey, envs, at }]: submitted frames whose turn hasn't started yet
+let peerTurn = null; // { froms, roomKey, turnId, waitNoted, answers }
 let runningTurn = ""; // the main loop's turn in progress, "" while Claude is idle
 let userPromptSince = false; // the user's own prompt entered since duet's last submission
-let userPrompts = []; // [{ text, at, used }]: the user's own prompts whose submission hasn't resolved yet
-let peerAgents = []; // subagents started from a peer turn (they may outlive it)
+let outbox = []; // [{ id, text, to, decision }]: replies waiting at gate 2
 let autoTurns = 0;
 let paused = false;
 
 let history = []; // { at, who, text, note }: the room as the pane shows it, read-only
+let historySave = null; // a pending $.store write of the history
+let tab = "history"; // the pane's open tab: "history" | "settings"
+let paneNote = ""; // one terse line under Settings ("code copied")
 const sent = new Map(); // our messages' ids -> first line, to show what a reply answers
 let host = ""; // this computer's name, for the folder hash a join carries (see wire.js placeFor)
 let lineChain = Promise.resolve(); // received lines, one at a time in arrival order (stream and repair poll)
 const warnedAbout = new Set(); // warnings already given: "crowd", "place:<name>"
 
 const viaLabel = (via) => VIA[via] ?? "";
-const peerNames = () => (peerTurn ? peerTurn.froms.join(", ") : "the other person");
-const riskyMode = () => permissionMode === "auto" || (lastUnasked ?? !ASKING_MODES.includes(permissionMode));
-// Auto runs only where the session asks before tools, or where the user said yes for this room.
-const autoActive = () => !!room && room.mode === "auto" && !paused && (!riskyMode() || !!room.riskOk);
+const oneLine = (s) => sanitize(s, 200).replace(/\n/g, " "); // a name or list of names on a card, safe to draw
 const livePeers = () => [...peers.entries()].filter(([, p]) => !p.left);
-const fromPeerCall = (e) => (e.agentId ? peerAgents.includes(e.agentId) : !!peerTurn);
+const peerList = () => livePeers().map(([n]) => n).join(", ");
+const peerNames = () => (peerTurn ? peerTurn.froms.join(", ") : peerList() || "the room");
+const autoActive = () => !!room && room.mode === "auto" && !paused;
 const busyWithPeer = () => !!(pendingPeer || peerTurn || expected.length);
-// The user's own prompt that explains a turn starting now. A typed prompt's turn carries its text
-// (observed in 2.1.289): the same text, or containing it when it is long enough not to match by
-// chance. A slash command's turn carries the command's output instead ("<local-command-stdout>Goal
-// set: …"): it must name the command or carry its arguments, within 15 s. Each prompt explains one
-// turn only, and none older than 5 minutes.
-function userPromptFor(text) {
-	const now = Date.now();
-	const t = String(text ?? "");
-	const open = userPrompts.filter((x) => !x.used && now - x.at < 5 * 60_000);
-	const typed = (x) => {
-		const p = x.text.trim();
-		return !!p && !p.startsWith("/") && (t.trim() === p || (p.length >= 20 && t.includes(p)));
-	};
-	const command = (x) => {
-		const m = x.text.trim().match(/^\/([\w:.-]+)\s*([\s\S]*)$/);
-		if (!m || now - x.at > 15_000) return false;
-		const args = m[2].trim();
-		return t.includes("/" + m[1]) || (args.length >= 8 && t.includes(args));
-	};
-	const hit = open.find(typed) ?? open.find(command);
-	if (hit) hit.used = true;
-	return !!hit;
-}
-const peerTurnFrom = (x, turnId) => ({ froms: x.froms, roomKey: x.roomKey, turnId, waitNoted: false, answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })), guard: x.guard ?? null });
-
-function remember(entry) {
-	history.push({ at: new Date().toISOString(), ...entry });
-	if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
-}
+const peerTurnFrom = (x, turnId) => ({ froms: x.froms, roomKey: x.roomKey, turnId, waitNoted: false, answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })) });
 
 // ---------- small helpers that use $ ----------
 
@@ -144,6 +110,37 @@ function wait($, ms) {
 	return new Promise((resolve) => {
 		$.clock.after(ms, resolve);
 	});
+}
+
+// Simple history: name · time · text. Notes (joins, leaves) are dim lines. Saved per room.
+// The pane keeps the whole text in memory (it is where the user reads a request in full); only the
+// copy saved to $.store is cut, to HISTORY_TEXT_MAX characters an entry.
+function remember($, entry) {
+	const text = String(entry.text ?? "");
+	history.push({ at: new Date().toISOString(), who: entry.who ?? "", text, ...(entry.note ? { note: true } : {}) });
+	if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
+	if (!room || historySave) return;
+	const key = "history:" + room.key;
+	// One write per burst.
+	historySave = $.clock.after(200, () => {
+		historySave = null;
+		void $.store.set(key, fitHistory(history)).catch(() => {});
+	});
+}
+
+// The newest entries whose JSON fits HISTORY_BYTES_MAX (non-ASCII text, escapes: a character can be
+// several bytes), so a full $.store never blocks the writes of the cursor, the room and the lock.
+function fitHistory(full) {
+	const list = full.map((h) => (typeof h.text === "string" && h.text.length > HISTORY_TEXT_MAX ? { ...h, text: h.text.slice(0, HISTORY_TEXT_MAX) + "…" } : h));
+	let total = 2;
+	let i = list.length;
+	while (i > 0) {
+		const size = byteLength(JSON.stringify(list[i - 1])) + 1;
+		if (total + size > HISTORY_BYTES_MAX) break;
+		total += size;
+		i--;
+	}
+	return i ? list.slice(i) : list;
 }
 
 async function canDraw($) {
@@ -158,12 +155,12 @@ async function canDraw($) {
 async function publish($, relay, topic, env) {
 	const body = JSON.stringify(env);
 	const bytes = byteLength(body);
-	if (typeof env.text === "string" && env.text.length > MAX_TEXT) throw new Error(`the message is ${env.text.length} characters and the limit is ${MAX_TEXT}: send the most important part, or split it`);
-	if (bytes > MAX_BYTES) throw new Error(`the message is ${Math.round(bytes / 1000)} KB and the limit is ${MAX_BYTES / 1000} KB: send the most important part, or split it`);
+	if (typeof env.text === "string" && env.text.length > MAX_TEXT) throw new Error(`${env.text.length} characters, limit ${MAX_TEXT}: send the key part, or split it`);
+	if (bytes > MAX_BYTES) throw new Error(`${Math.round(bytes / 1000)} KB, limit ${MAX_BYTES / 1000} KB: send the key part, or split it`);
 	const res = await Promise.race([
 		$.http.fetch(`${relay}/${topic}`, { method: "POST", body }),
 		new Promise((_, reject) => {
-			$.clock.after(15_000, () => reject(new Error("the relay didn't answer within 15 seconds")));
+			$.clock.after(15_000, () => reject(new Error("relay timeout (15 s)")));
 		}),
 	]);
 	if (!res.ok) {
@@ -171,9 +168,9 @@ async function publish($, relay, topic, env) {
 			res.status === 429
 				? " (rate limit: wait a minute)"
 				: bytes > 4000 && (res.status === 400 || res.status === 413)
-					? " (this relay doesn't take long messages — it may not store attachments; send it in parts under 3.8 KB)"
+					? " (relay takes no long messages: split under 3.8 KB)"
 					: "";
-		throw new Error(`the relay answered HTTP ${res.status}${hint}`);
+		throw new Error(`relay HTTP ${res.status}${hint}`);
 	}
 }
 
@@ -200,17 +197,7 @@ async function saveCursor($) {
 
 // The turn in progress, kept across a module reload (which resets module variables).
 async function saveTurn($) {
-	await $.store.set("turn:" + sessionId, {
-		pendingPeer,
-		expected,
-		peerTurn,
-		lastPeer,
-		lastGuard,
-		runningTurn,
-		peerAgents,
-		agentGuards,
-		at: Date.now(),
-	});
+	await $.store.set("turn:" + sessionId, { pendingPeer, expected, peerTurn, runningTurn, at: Date.now() });
 }
 
 // ---------- receiving ----------
@@ -252,7 +239,7 @@ async function streamOnce($, r, gen) {
 			input: `url = "${r.server}/${r.topic}/json${q}"\n`,
 		});
 		child = stream;
-		if (floor) repair = $.clock.after(REPAIR_POLL_MS, () => void repairPoll($, r, gen, floor));
+		if (floor) repair = $.clock.after(REPAIR_POLL_MS, () => void repairPoll($, r, gen, floor).catch(() => {}));
 		for await (const piece of stream) {
 			if (gen !== generation) break;
 			if (piece.stream === "stderr") {
@@ -268,7 +255,7 @@ async function streamOnce($, r, gen) {
 			}
 		}
 	} catch (err) {
-		connError = /ENOENT|not found|cannot start/i.test(String(err?.message)) ? "curl is not installed (duet needs it to receive)" : String(err?.message ?? err);
+		connError = /ENOENT|not found|cannot start/i.test(String(err?.message)) ? "curl missing (needed to receive)" : String(err?.message ?? err);
 	} finally {
 		child = null;
 		repair?.cancel?.();
@@ -337,8 +324,8 @@ async function handleLine($, r, gen, line, live, floor) {
 				why = "couldn't be downloaded";
 			}
 			if (why) {
-				remember({ who: "", text: `a long message ${why} before it could be read`, note: true });
-				$.ui.toast(`duet: a long message ${why} before it could be read`);
+				remember($, { text: `long message ${why} · lost`, note: true });
+				$.ui.toast(`duet: long message ${why} · lost`);
 			}
 		}
 	}
@@ -365,24 +352,20 @@ function onEnvelope($, r, env) {
 	const before = peers.get(env.from);
 	const isNew = !before || before.left;
 	peers.set(env.from, { via: env.via ?? before?.via ?? "", at: Date.now(), left: false });
+	// Quiet: warnings, joins, leaves and notes go to the history only.
 	if (livePeers().length > 1 && !warnedAbout.has("crowd")) {
 		warnedAbout.add("crowd");
-		const text = `more than one other agent is in this room (${livePeers().map(([n]) => n).join(", ")}): duet is built for two, and a reply without "to" reaches everyone`;
-		$.ui.log(text);
-		$.ui.toast("duet: " + text);
+		remember($, { text: `more than two in the room (${peerList()}): a reply without "to" reaches everyone`, note: true });
 	}
 	if (env.kind === "join") {
 		if (env.place && env.place === r.place && !warnedAbout.has("place:" + env.from)) {
 			warnedAbout.add("place:" + env.from);
-			const text = `${env.from} is in this room from this same folder (another window): two agents may edit the same files`;
-			$.ui.log(text);
-			$.ui.toast("duet: " + text);
+			remember($, { text: `${env.from} is in this same folder (another window)`, note: true });
 		}
 		if (isNew) {
 			const via = viaLabel(env.via);
-			$.ui.toast(`${env.from} joined${via ? " (" + via + ")" : ""}`);
-			remember({ who: "", text: `${env.from} joined${via ? " (" + via + ")" : ""}`, note: true });
-			// Answer once, so a newcomer learns who is here (older clients don't answer joins).
+			remember($, { text: `${env.from} joined${via ? " · " + via : ""}`, note: true });
+			// Answer once, so a newcomer learns who is here.
 			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code", place: r.place })).catch(() => {});
 		}
 		redraw($);
@@ -390,30 +373,29 @@ function onEnvelope($, r, env) {
 	}
 	if (env.kind === "note") {
 		const text = {
-			declined: `${env.from} didn't take your last message`,
-			stopped: `${env.from} stopped Claude working on your request`,
-			failed: `${env.from}'s Claude couldn't finish your request`,
-			"approval-wait": `${env.from}'s Claude is waiting for ${env.from} to approve a step`,
-			left: `${env.from} left the room`,
+			declined: `${env.from} ignored your message`,
+			stopped: `${env.from} stopped your request`,
+			failed: `${env.from}'s agent failed on your request`,
+			"approval-wait": `${env.from} is approving a step`,
+			left: `${env.from} left`,
 			moved: `${env.from} moved to another window`,
 		}[env.note];
 		if (env.note === "left") peers.set(env.from, { ...peers.get(env.from), left: true });
-		remember({ who: "", text, note: true });
-		$.ui.log(text);
-		$.ui.toast(text);
+		remember($, { text, note: true });
 		redraw($);
 		return;
 	}
-	// A reply to one of ours: say which one (the card, the history, and what Claude reads).
+	// A reply to one of ours: say which one (the card and what Claude reads).
 	env.reLine = env.re && sent.has(env.re) ? sent.get(env.re) : undefined; // ours only: a peer can't set it
-	remember({ who: env.from + (env.by === "person" ? "" : "'s agent") + (env.reLine ? ` ↳ reply to “${env.reLine}”` : ""), text: env.text });
+	remember($, { who: env.from, text: env.text });
 	if (queue.length >= QUEUE_MAX) {
 		queue.shift();
-		$.ui.toast(`duet: more than ${QUEUE_MAX} messages waiting — the oldest was dropped (it is in /duet)`);
+		$.ui.toast(`duet: over ${QUEUE_MAX} waiting · oldest dropped`);
 	}
 	queue.push(env);
+	// The user must act only in ask mode (or auto paused): then one toast per sender per burst.
 	const now = Date.now();
-	if (now - (lastToast.get(env.from) ?? 0) > TOAST_GAP_MS) $.ui.toast(`message from ${env.from}${env.by === "person" ? "" : "'s agent"}`);
+	if (!autoActive() && now - (lastToast.get(env.from) ?? 0) > TOAST_GAP_MS) $.ui.toast(`${env.from}: new request`);
 	lastToast.set(env.from, now);
 	void deliver($).catch(() => {});
 	redraw($);
@@ -422,62 +404,33 @@ function onEnvelope($, r, env) {
 // ---------- delivery ----------
 
 async function deliver($) {
-	const ready = () => !!room && room.mode === "auto" && !paused && queue.length > 0 && !busyWithPeer();
-	if (!ready()) return;
-	// Shift+Tab fires no hook: ask Claude Code itself whether commands now run without asking.
-	const unasked = await runsUnasked($);
-	if (!ready()) return;
-	if (unasked && !room.riskOk) return backToAsk($, "");
-	if (!autoActive()) return;
+	if (!autoActive() || !queue.length || busyWithPeer()) return;
 	if (autoTurns >= MAX_AUTO) {
 		paused = true;
-		$.ui.toast(`duet: ${MAX_AUTO} requests ran without you — the rest wait for you above the prompt`);
+		$.ui.toast(`duet: ${MAX_AUTO} in a row · rest wait for you`);
 		redraw($);
 		return;
 	}
 	autoTurns++;
-	await startPeerTurn($, queue.splice(0, BATCH_MAX), { auto: true, unaskedAtStart: unasked });
+	await startPeerTurn($, queue.splice(0, BATCH_MAX));
 }
 
-// Would a shell command nobody named run without the user being asked, right now? Claude Code tells
-// a tool.call hook nothing about the permission mode, and switching it (Shift+Tab) fires no hook, but
-// its own decision for a made-up command answers it: "allow" means bypassPermissions, or a rule as
-// broad as Bash(*). It runs nothing. Claude Code's "auto" mode answers "ask" (its classifier decides
-// later, not the user), so a reported auto always counts as unasked. If the check fails, the mode
-// Claude Code last reported decides ("" counts as unasked: fail closed).
+// Would a shell command nobody named run without the user being asked, right now? Claude Code's own
+// decision for a made-up command answers it ("allow": bypassPermissions or a rule like Bash(*)); its
+// "auto" mode counts as unasked (a classifier approves, not the user). Only asked when the user turns
+// auto on, for the one confirm.
 async function runsUnasked($) {
-	return (await checkUnasked($)) ?? !ASKING_MODES.includes(permissionMode);
-}
-
-// The same answer, but undefined when Claude Code's check failed: a request's own guard treats that
-// as "can't tell" and fails closed.
-async function checkUnasked($) {
-	if (permissionMode === "auto") return (lastUnasked = true);
+	if (permissionMode === "auto") return true;
 	try {
 		const r = await $.tool.check({ tool: "Bash", input: { command: "duet-permission-check" } });
-		lastUnasked = r?.decision === "allow";
-		return lastUnasked;
+		return r?.decision === "allow";
 	} catch {
-		lastUnasked = undefined;
-		return undefined;
+		return !ASKING_MODES.includes(permissionMode);
 	}
 }
 
-// Commands run unasked now, and the user hasn't said yes to that for this room: back to cards.
-async function backToAsk($, peer) {
-	if (!room || room.mode !== "auto") return;
-	room.mode = "ask";
-	const active = await $.store.get("active:" + sessionId);
-	if (active) await $.store.set("active:" + sessionId, { ...active, mode: "ask" });
-	const text = `this session now runs commands without asking you${peer ? `, so ${peer}'s request was stopped there` : ""}: duet is back in ask mode. /duet auto turns auto on again (it asks you first)`;
-	$.ui.log(text);
-	$.ui.toast("duet: " + text);
-	redraw($);
-}
-
-// guard: { auto, unaskedAtStart } — how it started, for checkPermissionMode.
-async function startPeerTurn($, envs, guard) {
-	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false, guard };
+async function startPeerTurn($, envs) {
+	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false };
 	await saveTurn($);
 	redraw($);
 	await submitWhenIdle($);
@@ -489,7 +442,7 @@ async function submitWhenIdle($) {
 	if (!p || p.submitted || runningTurn) return;
 	p.submitted = true;
 	const froms = [...new Set(p.envs.map((x) => x.from))];
-	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, guard: p.guard, at: Date.now() }];
+	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, at: Date.now() }];
 	userPromptSince = false;
 	pendingPeer = null;
 	await saveTurn($);
@@ -505,7 +458,7 @@ async function submitWhenIdle($) {
 		if (room?.key === p.roomKey) queue.unshift(...p.envs);
 		paused = room?.mode === "auto" ? true : paused;
 		await saveTurn($);
-		$.ui.toast("duet: Claude Code didn't take the request: " + sanitize(result.drop, 200));
+		$.ui.toast("duet: Claude Code refused the request: " + sanitize(result.drop, 120));
 		redraw($);
 	}
 }
@@ -579,17 +532,19 @@ async function writeFileLock($, path, released) {
 const describeClient = (l) => ({ pi: "pi", codex: "Codex", mcp: "a duet MCP server", "claude-code": "another Claude Code" })[l?.client] ?? "another duet window";
 
 // Runs detached from the command or button that asked for it, so its waits count against no hook.
-async function join($, code, nameArg, mode, quiet, relayArg) {
+// mode: "ask" or "auto" (a module reload keeps the mode it had); quiet: a rejoin nobody typed.
+// copy: /duet new puts the fresh code on the clipboard.
+async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 	if (!isRoomCode(code)) {
-		$.ui.log("a room code is 3–64 letters, digits, - or _ — or use /duet new");
+		$.ui.log("room code: 3–64 letters, digits, - or _ · or /duet new");
 		return;
 	}
 	if (isPlaceholderName(nameArg)) {
-		$.ui.log(`"${nameArg}" is the placeholder: use your own name, as in /duet ${code} karlo`);
+		$.ui.log(`"${nameArg}" is a placeholder · /duet ${code} <your name>`);
 		return;
 	}
 	if (relayArg && !isRelayUrl(relayArg)) {
-		$.ui.log(`the relay must be a plain http(s) URL like https://duet.gaioz.online, got ${sanitize(relayArg, 100)}`);
+		$.ui.log(`bad relay ${sanitize(relayArg, 100)} · http(s) URL only, e.g. https://duet.gaioz.online`);
 		return;
 	}
 	const relay = (relayArg || server).replace(/\/+$/, "");
@@ -612,9 +567,9 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	if (held) {
 		let answer = "Cancel";
 		try {
-			answer = await $.ui.ask(`${code} is open as ${name} in another Claude Code window on this computer (${held.cwd}). Move it to this window?`, ["Move it here", "Cancel"]);
+			answer = await $.ui.ask(`duet: ${code} · ${name} · open in another window (${held.cwd}) · move here?`, ["Move here", "Cancel"]);
 		} catch {}
-		if (answer !== "Move it here") return;
+		if (answer !== "Move here") return;
 		await $.store.set(lockKey, { ...held, release: token });
 		let released = false;
 		for (let i = 0; i < 20 && !released; i++) {
@@ -622,8 +577,8 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 			const cur = await $.store.get(lockKey);
 			released = !cur || !!cur.released;
 		}
-		// No answer in 10 s: that window is gone or stuck; take the room anyway, and say so.
-		if (!released) $.ui.log("the other window didn't answer; taking the room over");
+		// No answer in 10 s: that window is gone or stuck; take the room anyway.
+		if (!released) $.ui.log("other window silent · took the room");
 		await $.store.set(lockKey, { token, cwd, at: Date.now(), released: false });
 		moved = true;
 	}
@@ -634,8 +589,8 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
 		if (!quiet) {
 			const where = other.cwd ? ` (${other.cwd})` : other.pid ? ` (pid ${other.pid})` : "";
-			$.ui.log(`${name} is already in room ${code} on this computer, in ${describeClient(other)}${where}: use that one, close it, or join under another name.`);
-			$.ui.toast(`duet: ${name} is already in this room from ${describeClient(other)}`);
+			$.ui.log(`${name} already in ${code} here · ${describeClient(other)}${where} · not joined`);
+			$.ui.toast(`duet: ${name} already in this room · ${describeClient(other)}`);
 		}
 		return;
 	}
@@ -645,7 +600,7 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	// join (sent within a second or two) aren't missed while the stream is still opening.
 	const saved = await $.store.get("cursor:" + key);
 	const cursor = saved ?? { id: "", time: Math.floor(Date.now() / 1000) - 2 };
-	const r = { code, name, key, fromId, topic, lockKey, fileLock, server: relay, mode: mode === "auto" ? "auto" : "ask", cursor };
+	const r = { code, name, key, fromId, topic, lockKey, fileLock, server: relay, mode: mode === "auto" ? "auto" : "ask", cursor, riskOk: false };
 	try {
 		// The first network request: if the relay can't be reached, or this session's policy refuses
 		// network requests from mods, duet doesn't join.
@@ -655,8 +610,8 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 		const cur = await $.store.get(lockKey);
 		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
 		await writeFileLock($, fileLock, true);
-		$.ui.log(`couldn't reach the relay ${relay}: ${String(err?.message ?? err)}. Not joined.`);
-		$.ui.toast("duet: couldn't reach the relay — not joined");
+		$.ui.log(`relay ${relay} unreachable: ${String(err?.message ?? err)} · not joined`);
+		$.ui.toast("duet: relay unreachable · not joined");
 		return;
 	}
 	if (epoch !== joinEpoch) {
@@ -669,52 +624,36 @@ async function join($, code, nameArg, mode, quiet, relayArg) {
 	room = r;
 	generation++;
 	queue = [];
+	outbox = [];
 	peers.clear();
-	history = [];
+	const stored = await $.store.get("history:" + key);
+	// Keep the histories of the last few rooms only: $.store is 4 MiB for everything.
+	try {
+		const recent = [key, ...(((await $.store.get("history-rooms")) ?? []).filter((k) => k !== key))];
+		for (const old of recent.slice(HISTORY_ROOMS)) await $.store.delete("history:" + old);
+		await $.store.set("history-rooms", recent.slice(0, HISTORY_ROOMS));
+	} catch {}
+	history = Array.isArray(stored) ? stored.slice(-HISTORY_MAX) : [];
 	autoTurns = 0;
 	paused = false;
 	heldCursor = null;
-	countdown = null;
 	await $.store.set("room:" + cwd, { code, name, relay, at: Date.now() });
 	await $.store.set("name", name);
 	await $.store.set("active:" + sessionId, { lockKey, token, code, name, mode: r.mode, relay });
 	defaultName = name;
 	heartbeat?.cancel?.();
-	heartbeat = $.clock.every(2000, () => void beat($));
+	heartbeat = $.clock.every(2000, () => void beat($).catch(() => {}));
 	wakeSupervisor?.();
-	remember({ who: "", text: `you joined ${code} as ${name}`, note: true });
-	// Who's in the room decides ask or auto: asked once per room, then remembered.
-	let trust = await $.store.get("trust:" + key);
-	if (!TRUST[trust]) trust = quiet ? "others" : await askTrust($, code);
-	// A quiet (re)join never goes above the mode it was given: a restart comes back in ask.
-	await applyTrust($, trust, quiet, quiet && mode !== "auto" ? "ask" : undefined);
-	if (!quiet) $.ui.log(`joined room ${code} as ${name}. Give the other person this room code: ${code}`);
+	if (!quiet) remember($, { text: `you joined as ${name}`, note: true });
+	let copied = false;
+	if (copy) {
+		try {
+			copied = !!(await $.ui.copy({ text: code }))?.isCopied;
+		} catch {}
+	}
+	if (!quiet) $.ui.log(`joined ${code} as ${name}${copied ? " · code copied" : ""}`);
 	redraw($);
-}
-
-// One question when joining a room for the first time. Anything but a clear answer means "someone else".
-async function askTrust($, code) {
-	const order = ["others", "trusted", "me"];
-	let answer = "";
-	try {
-		answer = await $.ui.ask(
-			`Who is in duet room ${code} with you? ` +
-				order.map((t) => `${TRUST[t].label}: ${TRUST[t].says}.`).join(" ") +
-				" Either way, Claude's file tools stay in this folder; shell commands can reach whatever your permission mode allows.",
-			{ header: "duet", options: order.map((t) => TRUST[t].label + (t === "others" ? " (recommended)" : "")) },
-		);
-	} catch {}
-	// Exactly one of the labels; anything typed under "Other" means someone else.
-	return order.find((t) => answer === TRUST[t].label || answer === TRUST[t].label + " (recommended)") ?? "others";
-}
-
-async function applyTrust($, trust, quiet, capMode) {
-	if (!room) return;
-	room.trust = trust;
-	await $.store.set("trust:" + room.key, trust);
-	// "Only me" needs no extra check, but only when the user just said so, not on a quiet rejoin.
-	room.riskOk = trust === "me" && !quiet;
-	await setMode($, capMode ?? TRUST[trust].mode, quiet);
+	void deliver($).catch(() => {});
 }
 
 // Every 2 s: notice another window taking the room, hand it over when asked, refresh the lock.
@@ -732,14 +671,13 @@ async function beat($) {
 	if (room !== r) return;
 	if (cur && cur.token !== token && !cur.released) {
 		await leave($, null, false, true);
-		$.ui.log(`room ${r.code} moved to another window (${cur.cwd})`);
-		$.ui.toast("duet: the room moved to another window");
+		$.ui.log(`${r.code} moved to another window (${cur.cwd})`);
 		return;
 	}
 	if (cur?.release && cur.release !== token) {
 		// Save where to resume (before any card still open here) before letting go of the room.
 		await leave($, "moved", false);
-		$.ui.log(`handed room ${r.code} to another window`);
+		$.ui.log(`${r.code} handed to another window`);
 		return;
 	}
 	if (Date.now() - lastBeat > 20_000) {
@@ -748,9 +686,10 @@ async function beat($) {
 		const shared = await readFileLock($, r.fileLock);
 		if (room !== r) return;
 		if (shared && shared.token !== token && shared.client !== "claude-code" && (await fileLockHeld($, shared))) {
+			// Not a failure and nothing to do: history and the transcript only (quiet).
+			remember($, { text: `room moved to ${describeClient(shared)}`, note: true });
 			await leave($, null, false, true);
-			$.ui.log(`room ${r.code} is now open as ${r.name} in ${describeClient(shared)} on this computer${shared.cwd ? ` (${shared.cwd})` : ""}: this window left it`);
-			$.ui.toast(`duet: the room moved to ${describeClient(shared)}`);
+			$.ui.log(`${r.code} is now open as ${r.name} in ${describeClient(shared)}${shared.cwd ? ` (${shared.cwd})` : ""} · left here`);
 			return;
 		}
 		await writeFileLock($, r.fileLock);
@@ -759,13 +698,18 @@ async function beat($) {
 	}
 }
 
-// A request already handed to Claude keeps running (and stays fenced) after a leave; its reply
-// can't be sent once the room is gone.
+// A request already handed to Claude keeps running after a leave; its reply can't be sent once the
+// room is gone. forget: /duet off — the folder forgets its room.
 async function leave($, note, forget, lost) {
 	if (!room) return;
 	const r = room;
 	if (note) sendNote($, note);
 	await saveCursor($);
+	if (historySave) {
+		historySave.cancel?.();
+		historySave = null;
+	}
+	await $.store.set("history:" + r.key, fitHistory(history)).catch(() => {});
 	// A request taken but not yet handed to Claude stays with the room (its resume point is saved).
 	if (pendingPeer && !pendingPeer.submitted) pendingPeer = null;
 	await saveTurn($);
@@ -779,8 +723,6 @@ async function leave($, note, forget, lost) {
 	child = null;
 	connected = false;
 	queue = [];
-	countdown?.timer?.cancel?.();
-	countdown = null;
 	heldCursor = null;
 	if (!lost) {
 		const cur = await $.store.get(r.lockKey);
@@ -792,51 +734,31 @@ async function leave($, note, forget, lost) {
 	redraw($);
 }
 
-async function setMode($, mode, quiet) {
+async function setMode($, mode) {
 	if (!room) {
-		$.ui.log("not in a room: /duet new, or /duet <room code>");
+		$.ui.log("not in a room · /duet new or /duet <code>");
 		return;
 	}
-	if (mode === "auto") await runsUnasked($); // the mode may have changed since Claude Code last said
-	if (!room) return;
-	if (mode === "auto" && riskyMode() && !room.riskOk) {
-		const why =
-			permissionMode === "auto"
-				? "This session runs in auto mode, where a classifier, not you, approves commands"
-				: lastUnasked || permissionMode === "bypassPermissions"
-				? `This session runs shell commands without asking you${permissionMode === "bypassPermissions" ? " (bypassPermissions)" : ""}`
-				: permissionMode
-					? `This session runs in ${permissionMode} mode`
-					: "duet can't tell yet whether this session asks before running commands";
+	if (mode === "auto" && !room.riskOk && (await runsUnasked($))) {
+		// The one confirm: commands run unasked here, so auto lets the other side's agent run them.
 		let answer = "Keep ask";
-		if (quiet) {
-			// A quiet rejoin never asks: it waits as ask until the user confirms auto again.
-			room.mode = "ask";
-			$.ui.toast("duet: auto is waiting for you to confirm it — /duet auto");
-			redraw($);
-			return;
-		}
 		try {
-			answer = await $.ui.ask(
-				`${why}: in auto mode the other person's agent may be able to run commands on this computer without asking you. Turn auto on?`,
-				["Turn auto on", "Keep ask"],
-			);
+			answer = await $.ui.ask("duet auto? · commands run unasked here · the other agent could run them", ["Turn auto on", "Keep ask"]);
 		} catch {}
+		if (!room) return;
 		if (answer !== "Turn auto on") {
-			room.mode = "ask";
 			redraw($);
 			return;
 		}
 		room.riskOk = true;
 	}
-	countdown?.timer?.cancel?.();
-	countdown = null;
+	if (!room) return;
 	room.mode = mode;
 	autoTurns = 0;
 	paused = false;
 	const active = await $.store.get("active:" + sessionId);
 	if (active) await $.store.set("active:" + sessionId, { ...active, mode });
-	if (!quiet) $.ui.log(mode === "auto" ? `auto: messages start a turn by themselves, up to ${MAX_AUTO} in a row without you` : "ask: each message waits above the prompt for you");
+	$.ui.log(mode === "auto" ? `auto · no gates · max ${MAX_AUTO} in a row` : "ask · both gates on");
 	redraw($);
 	void deliver($).catch(() => {});
 }
@@ -850,46 +772,91 @@ function firstGroup() {
 	return queue.filter((e) => e.from === from).slice(0, BATCH_MAX);
 }
 
-// One press, then a few seconds to take it back: a stray digit in an empty prompt is easy.
-function choose($, action) {
+// Gate 1: a press acts at once.
+async function choose($, action) {
 	const envs = firstGroup();
-	if (!envs.length || countdown) return;
+	if (!envs.length || !room) return;
 	if (action === "take" && busyWithPeer()) {
-		$.ui.toast("Claude is still on the last duet request — this one can start after it");
+		$.ui.toast("duet: busy with the last request");
 		return;
 	}
-	const timer = $.clock.after(UNDO_MS, () => void settle($).catch(() => {}));
-	countdown = { action, envs, timer };
-	redraw($);
-}
-
-function undo($) {
-	countdown?.timer?.cancel?.();
-	countdown = null;
-	redraw($);
-}
-
-async function settle($) {
-	const c = countdown;
-	countdown = null;
-	if (!c || !room) return redraw($);
-	// Whether commands ask first right now, for the request's guard (asked before anything changes).
-	const unasked = c.action === "take" ? await checkUnasked($) : undefined;
-	if (!room) return redraw($);
-	const envs = c.envs.filter((e) => queue.includes(e));
-	if (!envs.length) return redraw($);
-	if (c.action === "take" && busyWithPeer()) {
-		$.ui.toast("Claude is still on the last duet request — this one can start after it");
-		return redraw($);
-	}
 	queue = queue.filter((e) => !envs.includes(e));
-	if (c.action === "take") {
-		await startPeerTurn($, envs, { auto: false, unaskedAtStart: unasked });
+	if (action === "take") {
+		await startPeerTurn($, envs);
 	} else {
-		sendNote($, "declined", c.envs[0].from);
+		sendNote($, "declined", envs[0].from);
 		redraw($);
 		await saveCursor($);
 	}
+}
+
+// Gate 2: the press that settles a waiting reply.
+function decide($, item, decision) {
+	if (!item || item.decision) return;
+	item.decision = decision;
+	redraw($);
+}
+
+// Hold the send tool's call until the user presses Send or Don't send. The hook's time limit stops
+// while a mods API call is in flight and runs on through a promise of the mod's own (and through
+// $.clock.sleep), so the wait sits inside short blocking processes: `sleep` (macOS, Linux, Git Bash),
+// else `ping` to this computer (Windows' own, System32: about a second a round), else PowerShell's
+// Start-Sleep. A waiter that can't start is dropped for the rest of this module's life; one that
+// fails (a non-zero exit, its time limit) is dropped only after WAITER_FAILS in a row, so one hiccup
+// doesn't move the wait to a slower one. Each has a short time limit of its own: `ping -n 2` on
+// Linux/macOS never ends by itself. Only with none of them left does the wait fall back to
+// $.clock.sleep, which counts against the hook's 10 s; the hook's .catch then refuses the send
+// (fails closed).
+const WAITERS = [
+	{ argv: ["sleep", "0.25"], timeoutMs: 2000 },
+	{ argv: ["ping", "-n", "2", "127.0.0.1"], timeoutMs: 3000 },
+	{ argv: ["powershell", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Milliseconds 250"], timeoutMs: 5000 },
+];
+const WAITER_FAILS = 3;
+let waiter = 0; // the first of WAITERS not yet given up on here
+let waiterFails = 0; // failures in a row of WAITERS[waiter]
+async function awaitDecision($, item, signal) {
+	const decision = await waitForPress($, item, signal);
+	// The hook's budget may have run out (the tool already answered "Not sent: duet error") while a
+	// press came in: never send after that.
+	return signal?.aborted ? "stopped" : decision;
+}
+async function waitForPress($, item, signal) {
+	while (!item.decision) {
+		if (signal?.aborted) return "stopped";
+		if (!room) return "left";
+		// A module reload (a plugin update) while this reply waits: the new module never draws this
+		// card, so settle the call, unsent, instead of holding it until Esc.
+		let current = "";
+		try {
+			current = (await $.env.get("DUET_MODULE")) || "";
+		} catch {}
+		if (current && current !== moduleId) return "reloaded";
+		if (item.decision) break;
+		if (waiter < WAITERS.length) {
+			let missing = false;
+			try {
+				const r = await $.process.run(WAITERS[waiter].argv, { timeoutMs: WAITERS[waiter].timeoutMs });
+				if (r.exitCode === 0) {
+					waiterFails = 0;
+					continue;
+				}
+			} catch (err) {
+				missing = /ENOENT|not found|cannot find|no such file/i.test(String(err?.message ?? err));
+			}
+			if (missing || ++waiterFails >= WAITER_FAILS) {
+				waiter++;
+				waiterFails = 0;
+			}
+			continue;
+		}
+		try {
+			await $.clock.sleep(250, signal ? { signal } : undefined);
+		} catch {
+			return signal?.aborted ? "stopped" : "reloaded";
+		}
+	}
+	return item.decision;
 }
 
 async function openPane($) {
@@ -897,181 +864,254 @@ async function openPane($) {
 	redraw($);
 }
 
-// Back in the room after a restart, without asking: only if the window was in it when it closed,
-// recently. /duet off forgets the room, so nothing comes back after leaving on purpose.
+// Back in the room after a restart, without asking: the folder remembers its room until /duet off.
 async function autoRejoin($) {
 	if (room || !(await canDraw($))) return;
 	const rec = await $.store.get("room:" + cwd);
-	if (!rec?.code || Date.now() - (rec.at ?? 0) > REJOIN_MS) return;
+	if (!rec?.code) return;
 	await join($, rec.code, rec.name, "ask", true, rec.relay);
-	if (room) $.ui.toast(`duet: rejoined ${room.code} · /duet off to leave`);
 }
 
 // ---------- the send tool ----------
 
-async function sendTool($, e) {
-	if (!room) return { result: "Not sent: this session isn't in a duet room. Your user can join one with /duet." };
-	const text = String(e.text ?? "").trim();
-	if (!text) return { result: "Not sent: the message is empty." };
-	// Too long to send: say so before asking the user about it.
-	if (text.length > MAX_TEXT) return { result: `Not sent: the message is ${text.length} characters and the limit is ${MAX_TEXT}. Send the most important part, or split it.` };
+async function sendTool($, e, signal) {
+	if (!room) return { result: "Not sent: not in a duet room" };
+	const raw = String(e.text ?? "");
+	if (raw.length > MAX_TEXT) return { result: `Not sent: ${raw.length} characters, limit ${MAX_TEXT} · send the key part, or split it` };
+	// What goes out is exactly what the gate 2 card shows: no control or invisible characters.
+	const text = sanitize(raw, MAX_TEXT).trim();
+	if (!text) return { result: "Not sent: empty" };
+	if (text.length > MAX_TEXT) return { result: `Not sent: ${text.length} characters, limit ${MAX_TEXT} · send the key part, or split it` };
 	const to = typeof e.to === "string" && e.to.trim() ? e.to.trim() : undefined;
-	const fromPeer = fromPeerCall(e);
-	if (fromPeer && (!peerTurn || peerTurn.roomKey !== room.key)) {
-		return { result: "Not sent: the request you're working on came from a room this window has left, or has ended. Tell your user instead." };
-	}
-	// In ask mode the user sees what leaves the computer during a peer's request.
-	if (fromPeer && !autoActive()) {
-		let answer = "Don't send";
+	// `to` comes from the model: only the name of someone in the room (it shows on the card, the
+	// spinner and the toast, and a name nobody has would reach no one).
+	if (to !== undefined && !isName(to)) return { result: "Not sent: bad name in to" };
+	if (to !== undefined && !livePeers().some(([n]) => n === to)) return { result: `Not sent: no ${to} in the room · in it: ${peerList() || "no one yet"}` };
+	const fromPeer = !!peerTurn;
+	if (fromPeer && peerTurn.roomKey !== room.key) return { result: "Not sent: request from a room you left · tell your user" };
+	const r = room;
+	// Gate 2, in ask mode: the whole reply waits above the prompt for Send / Don't send. Without
+	// `to` a reply reaches everyone in the room, so the card names everyone.
+	if (!autoActive()) {
+		const item = { id: randomId(), text, to: to ?? (peerList() || "the room"), decision: "", agentId: e.agentId };
+		outbox = [...outbox, item];
+		$.ui.toast(`duet: reply to ${oneLine(item.to)} waiting`);
+		redraw($);
+		let decision;
 		try {
-			answer = await $.ui.ask(`duet: send this to ${to ?? peerNames()}? “${preview(text, 12, 160, "")}”`, ["Send", "Don't send"]);
-		} catch {}
-		if (answer !== "Send") return { result: "Not sent: your user chose not to send this. Don't send it again unless they ask." };
+			decision = await awaitDecision($, item, signal);
+		} finally {
+			outbox = outbox.filter((x) => x !== item);
+			redraw($);
+		}
+		if (decision === "drop") return { result: "Not sent: your user said no · don't resend" };
+		if (decision === "reloaded") return { result: "Not sent: duet restarted · send it again" };
+		if (decision !== "send") return { result: "Not sent" };
+		if (room !== r) return { result: "Not sent: left the room" };
 	}
 	try {
 		// Working on a peer's request: say which message this answers (the latest from that sender).
 		const asked = fromPeer && peerTurn?.answers ? peerTurn.answers.filter((m) => !to || m.from === to).at(-1) : undefined;
-		const env = envelope({ fromId: room.fromId, from: room.name, kind: "msg", text, by: "agent", ...(to ? { to } : {}), ...(asked ? { re: asked.id } : {}) });
-		await publish($, room.server, room.topic, env);
+		const env = envelope({ fromId: r.fromId, from: r.name, kind: "msg", text, by: "agent", ...(to ? { to } : {}), ...(asked ? { re: asked.id } : {}) });
+		await publish($, r.server, r.topic, env);
 		sent.set(env.id, firstLine(text));
 		if (sent.size > 200) sent.delete(sent.keys().next().value);
 	} catch (err) {
 		return { result: "Not sent: " + String(err?.message ?? err) };
 	}
-	remember({ who: "your Claude → " + (to ?? (livePeers().map(([n]) => n).join(", ") || "the room")), text });
+	remember($, { who: "you", text });
 	redraw($);
-	const long = byteLength(text) > 3800 ? " It went as one long message: the other side needs an up-to-date duet to read it." : "";
-	return { result: `Sent to ${to ?? "the room"}.${long}` };
+	return { result: `Sent to ${to ?? (peerList() || "the room")}${text.endsWith(HIDDEN_MARK) ? " · hidden characters removed" : ""}` };
 }
 
 // ---------- drawing ----------
 
+const AMBER = "#e9b45a";
+const BLUE = "#8eb1ff";
+
+// A long text as Text rows: every line, each under the 10,000-character limit of one Text child.
+function textRows(Text, text, keyPrefix) {
+	const rows = [];
+	sanitize(text, MAX_TEXT).split("\n").forEach((line, i) => {
+		for (let at = 0, j = 0; at < Math.max(line.length, 1); at += 5000, j++) rows.push(Text({ key: `${keyPrefix}${i}.${j}`, children: [line.slice(at, at + 5000) || " "] }));
+	});
+	return rows;
+}
+
+// About how many rows a text takes at this width, wrapped.
+function rowsFor(text, columns) {
+	const w = Math.max(columns - 4, 20);
+	return String(text).split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / w)), 0);
+}
+
 function drawCard($, e) {
 	const { Box, Text, Button } = $.ui.resolve(e);
-	const frame = (title, body, buttons) =>
-		Box({
-			flexDirection: "column",
-			borderStyle: "round",
-			paddingX: 1,
-			children: [
-				Text({ bold: true, children: [title] }),
-				...body,
-				Box({ flexDirection: "row", columnGap: 3, flexWrap: "wrap", children: buttons }),
-			],
-		});
+	const frame = (color, children) => Box({ flexDirection: "column", borderStyle: "round", borderColor: color, paddingX: 1, children });
+	const buttons = (list) => Box({ flexDirection: "row", columnGap: 3, flexWrap: "wrap", children: list });
 	if (!room) return null;
-	if (countdown) {
-		const c = countdown;
-		const who = c.envs[0].from;
-		return c.action === "take"
-			? frame(`duet · starting ${who}'s request in ${UNDO_MS / 1000} s…`, [], [
-					Button({ key: "undo", label: "Cancel", hotkey: "2", plain: true, onPress: () => undo($) }),
-				])
-			: frame(`duet · ignoring ${who}'s message in ${UNDO_MS / 1000} s…`, [], [
-					Button({ key: "undo", label: "Undo", hotkey: "1", plain: true, onPress: () => undo($) }),
-				]);
+	// Gate 2 first: Claude's tool call is waiting on it.
+	if (outbox.length) {
+		const item = outbox[0];
+		const more = outbox.length > 1 ? ` · +${outbox.length - 1}` : "";
+		const title = Text({ bold: true, children: [`Send to ${oneLine(item.to)}? · full reply${more}`] });
+		const keys = buttons([
+			Button({ key: "send", label: "Send", hotkey: "1", plain: true, onPress: () => decide($, item, "send") }),
+			Button({ key: "dont-send", label: "Don't send", hotkey: "2", plain: true, onPress: () => decide($, item, "drop") }),
+		]);
+		const body = textRows(Text, item.text, "r");
+		// A bare digit presses only Buttons inside the band's window: a reply taller than the band
+		// keeps the keys under the title, where the window starts.
+		const fits = rowsFor(item.text, e.props?.bodyColumns ?? 80) + 4 <= (e.props?.maxRows ?? 10);
+		return frame(BLUE, fits ? [title, ...body, keys] : [title, keys, ...body]);
 	}
 	if (pendingPeer && !pendingPeer.submitted) {
 		const p = pendingPeer;
-		return frame(`duet · ${p.envs[0].from}'s request starts when Claude is free`, [], [
-			Button({ key: "cancel-waiting", label: "Cancel", hotkey: "2", plain: true, onPress: () => void cancelWaiting($) }),
+		return frame(AMBER, [
+			Text({ bold: true, children: [`${p.envs[0].from} · starts when Claude is free`] }),
+			buttons([Button({ key: "cancel-waiting", label: "Cancel", hotkey: "2", plain: true, onPress: () => void cancelWaiting($).catch(() => {}) })]),
 		]);
 	}
-	if (expected.length && !peerTurn) {
-		return frame(`duet · ${expected[0].froms.join(", ")}'s request is with Claude Code, starting next`, [], []);
-	}
-	if (queue.length && autoActive()) {
-		const froms = [...new Set(queue.map((x) => x.from))].join(", ");
-		return frame(`duet · ${queue.length} message${queue.length > 1 ? "s" : ""} from ${froms} start${queue.length > 1 ? "" : "s"} when Claude is free (auto)`, [], []);
-	}
+	if (expected.length && !peerTurn) return frame(AMBER, [Text({ dimColor: true, children: [`${expected[0].froms.join(", ")} · handed to Claude`] })]);
+	if (queue.length && autoActive()) return frame(AMBER, [Text({ dimColor: true, children: [`${queue.length} waiting · auto`] })]);
 	if (queue.length) {
+		// Gate 1.
 		const group = firstGroup();
 		const env = group[0];
-		const who = env.by === "person" ? `${env.from} (in person)` : `${env.from}'s agent`;
 		const via = viaLabel(peers.get(env.from)?.via);
-		const count = group.length > 1 ? ` · ${group.length} messages` : "";
-		const others = queue.length - group.length;
-		const more = others > 0 ? `   +${others} more after` : "";
-		const reply = (g) => (g.reLine ? [Text({ dimColor: true, children: [`↳ reply to your message “${sanitize(g.reLine, 100)}”`] })] : []);
-		const body =
-			group.length > 1
-				? group.flatMap((g) => [...reply(g), Text({ children: ["• " + preview(g.text, 2, 150)] })])
-				: [...reply(env), Text({ children: [preview(env.text)] })];
-		return frame(`duet · from ${who}${via ? " (" + via + ")" : ""}${count} · ${timeOf(env.ts)}${more}${paused ? "   (auto paused)" : ""}`, body, [
-			Button({ key: "take", label: "Let Claude do it", hotkey: "1", plain: true, onPress: () => choose($, "take") }),
-			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => choose($, "ignore") }),
+		const others = queue.length - 1;
+		const reply = (g) => (g.reLine ? [Text({ dimColor: true, children: [`↳ re “${sanitize(g.reLine, 80)}”`] })] : []);
+		// Every word Claude would get on "Do it": the whole text of each message in the group, every
+		// line, wrapped, never cut to the band's width or a line count (a peer could hide an
+		// instruction past the cut).
+		const body = group.flatMap((g, i) => [...(i > 0 ? [Text({ key: `sep${i}`, dimColor: true, children: ["—"] })] : []), ...reply(g), ...textRows(Text, g.text, `q${i}.`)]);
+		const head = Box({
+			flexDirection: "row",
+			justifyContent: "space-between",
+			children: [
+				Box({ flexDirection: "row", children: [Text({ bold: true, color: AMBER, children: [env.from] }), Text({ dimColor: true, children: [`${via ? " · " + via : ""} · ${timeOf(env.ts)}${paused ? " · auto paused" : ""}`] })] }),
+				...(others > 0 ? [Text({ dimColor: true, children: [`+${others}`] })] : []),
+			],
+		});
+		const keys = buttons([
+			Button({ key: "take", label: "Do it", hotkey: "1", plain: true, onPress: () => void choose($, "take").catch(() => {}) }),
+			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
 		]);
+		// As gate 2: a request taller than the band keeps its keys under the title, inside the window.
+		const rows = group.reduce((n, g, i) => n + rowsFor(g.text, e.props?.bodyColumns ?? 80) + (g.reLine ? 1 : 0) + (i > 0 ? 1 : 0), 0);
+		const fits = rows + 4 <= (e.props?.maxRows ?? 10);
+		return frame(AMBER, fits ? [head, ...body, keys] : [head, keys, ...body]);
 	}
 	return null;
 }
 
-// Read-only: what was said in the room. People don't type here; their Claude does the talking.
+// Two tabs: 1 History (read-only) and 2 Settings (c copy code, a ask/auto, l leave).
 function drawPane($, e) {
-	const { Box, Text } = $.ui.resolve(e);
+	const { Box, Text, Button } = $.ui.resolve(e);
 	const blank = Text({ children: [" "] });
 	if (!room) {
 		return Box({
 			flexDirection: "column",
-			children: [
-				Text({ children: ["Not in a duet room."] }),
-				Text({ dimColor: true, children: ["/duet new makes a room · /duet <room code> joins one"] }),
-			],
+			children: [Text({ children: ["Not in a room"] }), Text({ dimColor: true, children: ["/duet new · /duet <code> [name]"] })],
 		});
 	}
+	const tabButton = (name, label, hotkey) =>
+		Button({
+			key: "tab-" + name,
+			label,
+			hotkey,
+			plain: true,
+			dimColor: tab !== name,
+			onPress: () => {
+				tab = name;
+				paneNote = "";
+				redraw($);
+			},
+		});
 	const ps = livePeers();
-	const head = [
-		Text({ bold: true, children: [`Room ${room.code}`] }),
-		Text({
-			dimColor: true,
-			children: [
-				`${ps.length ? "With " + ps.map(([n, p]) => n + (p.via ? ` (${viaLabel(p.via)})` : "")).join(", ") : "No one else seen yet"} · ` +
-					`${TRUST[room.trust]?.label ?? "Someone else"} · ${room.mode}${paused ? " (paused)" : ""} · ` +
-					`relay ${connected ? "connected" : connError ? "not connected: " + connError : "connecting…"}`,
-			],
-		}),
-		Text({ dimColor: true, children: ["/duet off leaves · /duet trust changes who's in the room · Esc closes"] }),
-	];
-	const shown = history.slice(-40);
-	const lines = shown.length
-		? shown.map((h, i) =>
-				h.note
-					? Box({ key: "h" + i, children: [Text({ dimColor: true, children: [`${timeOf(h.at)}  ${sanitize(h.text, 300)}`] })] })
-					: Box({
-							key: "h" + i,
-							flexDirection: "column",
-							children: [Text({ bold: true, children: [`${timeOf(h.at)}  ${h.who}`] }), Text({ children: [sanitize(h.text, 1500)] })],
-						}),
-			)
-		: [Text({ dimColor: true, children: ["Nothing said yet."] })];
-	return Box({ flexDirection: "column", children: [...head, blank, ...lines] });
+	const head = Box({
+		flexDirection: "row",
+		justifyContent: "space-between",
+		children: [
+			Box({ flexDirection: "row", columnGap: 3, children: [tabButton("history", "History", "1"), tabButton("settings", "Settings", "2")] }),
+			Text({ dimColor: true, children: [ps.length ? "with " + ps.map(([n]) => n).join(", ") : "no one yet"] }),
+		],
+	});
+	let body;
+	if (tab === "settings") {
+		const row = (label, value) => Box({ flexDirection: "row", children: [Box({ width: 10, children: [Text({ dimColor: true, children: [label] })] }), value] });
+		const relayHost = room.server.replace(/^https?:\/\//, "");
+		body = [
+			row("Room", Text({ children: [room.code] })),
+			row("You", Text({ children: [room.name] })),
+			row(
+				"Relay",
+				connected
+					? Box({ flexDirection: "row", children: [Text({ color: "green", children: ["● "] }), Text({ children: [relayHost] })] })
+					: Box({ flexDirection: "row", children: [Text({ color: "red", children: ["○ "] }), Text({ children: [`${relayHost} · ${connError ? sanitize(connError, 80) : "offline"}`] })] }),
+			),
+			row(
+				"Gates",
+				Box({ flexDirection: "row", columnGap: 1, children: [Text({ bold: room.mode === "ask", dimColor: room.mode !== "ask", children: ["ask"] }), Text({ bold: room.mode === "auto", dimColor: room.mode !== "auto", children: [`auto${paused ? " (paused)" : ""}`] })] }),
+			),
+			blank,
+			Box({
+				flexDirection: "row",
+				columnGap: 3,
+				flexWrap: "wrap",
+				children: [
+					Button({
+						key: "copy",
+						label: "Copy code",
+						hotkey: "c",
+						plain: true,
+						onPress: (press) =>
+							void (async () => {
+								let ok = false;
+								try {
+									ok = !!(await $.ui.copy({ text: room?.code ?? "", surface: press?.surface }))?.isCopied;
+								} catch {}
+								paneNote = ok ? "code copied" : "copy failed";
+								redraw($);
+							})(),
+					}),
+					Button({ key: "mode", label: "Ask / auto", hotkey: "a", plain: true, onPress: () => void setMode($, room?.mode === "auto" ? "ask" : "auto").catch(() => {}) }),
+					Button({
+						key: "leave",
+						label: "Leave",
+						hotkey: "l",
+						plain: true,
+						onPress: () => {
+							joinEpoch++;
+							void leave($, "left", true).catch(() => {});
+						},
+					}),
+				],
+			}),
+			...(paneNote ? [Text({ dimColor: true, children: [paneNote] })] : []),
+		];
+	} else {
+		body = history.length
+			? history.map((h, i) =>
+					h.note
+						? Text({ key: "h" + i, dimColor: true, children: [`${timeOf(h.at)}  ${sanitize(h.text, 300)}`] })
+						: Box({
+								key: "h" + i,
+								flexDirection: "column",
+								children: [Box({ flexDirection: "row", children: [Text({ bold: true, color: h.who === "you" ? BLUE : AMBER, children: [h.who] }), Text({ dimColor: true, children: [" " + timeOf(h.at)] })] }), ...textRows(Text, h.text, `h${i}.`)],
+							}),
+				)
+			: [Text({ dimColor: true, children: ["Nothing yet"] })];
+	}
+	return Box({ flexDirection: "column", children: [head, blank, ...body, blank, Text({ dimColor: true, children: [tab === "settings" ? "Esc" : "/duet off · Esc"] })] });
 }
 
 function modeLabel() {
 	if (!room) return "";
-	const ps = livePeers().map(([n]) => n);
-	const who = ps.length ? ps.join(", ") : "no one seen yet";
-	const link = connected ? "" : " · offline";
-	const waiting = queue.length && (peerTurn || pendingPeer || expected.length) ? ` · ${queue.length} waiting` : "";
-	return `duet ${room.code} · ${who} · ${room.mode}${paused ? " (paused)" : ""}${waiting}${link}`;
-}
-
-// A peer's request that started where commands asked first (or started by auto mode) may not go on
-// once they run unasked (Shift+Tab to bypass mid-request), unless the user said yes to that for this
-// room. Checked on each of its tool calls, since no hook fires when the mode changes.
-async function checkPermissionMode($, e) {
-	const g = (e.agentId ? agentGuards[e.agentId] : peerTurn?.guard) ?? lastGuard;
-	// A request the user took while commands already ran unasked was their choice; anything else
-	// (auto, taken while asking, or not known) is checked.
-	if (!g || (!g.auto && g.unaskedAtStart === true)) return null;
-	if (room?.riskOk || (await checkUnasked($)) === false) return null;
-	const peer = peerNames();
-	if (peerTurn && !peerTurn.modeNoted) {
-		peerTurn.modeNoted = true;
-		if (room?.mode !== "auto") $.ui.toast(`duet: commands now run without asking you, so ${peer}'s request was stopped there`);
-	}
-	await backToAsk($, peer);
-	const how = g.auto ? "switch the mode back (Shift+Tab), or say yes to it with /duet auto" : "switch the mode back (Shift+Tab) and ask you to go on";
-	return `duet: this session's permission mode changed while you worked on ${peer}'s request (or duet couldn't check it), and commands may now run without your user being asked, so this call was not run. Stop working on this request and tell your user; they can ${how}.`;
+	const ps = peerList() || "no one yet";
+	// Both gates: requests (gate 1) and replies (gate 2) waiting for the user.
+	const n = queue.length + outbox.length;
+	const waiting = n ? ` · ${n} waiting` : "";
+	return `duet · ${ps} · ${room.mode}${paused ? " · paused" : ""}${waiting}${connected ? "" : " · offline"}`;
 }
 
 // No turn of this process or conversation is running: forget what a crashed or other one left.
@@ -1080,18 +1120,13 @@ async function clearTurn($) {
 	pendingPeer = null;
 	expected = [];
 	peerTurn = null;
-	lastPeer = null;
-	lastGuard = null;
 	runningTurn = "";
-	// Subagents belong to this process, not the conversation: one a request started keeps its fence.
 	await saveTurn($);
 	redraw($);
 }
 
 function notePermissionMode(e) {
-	if (typeof e.permission_mode !== "string" || !e.permission_mode) return;
-	if (e.permission_mode !== permissionMode) lastUnasked = undefined; // the mode says more until the next check
-	permissionMode = e.permission_mode;
+	if (typeof e.permission_mode === "string" && e.permission_mode) permissionMode = e.permission_mode;
 }
 
 // ---------- hooks ----------
@@ -1105,7 +1140,7 @@ export function register(on) {
 		// First: a /duet typed (or given on the command line) as Claude Code starts must find the
 		// command. Registered after the work below, it lost that race on a Mac (seen 2026-10-04).
 		try {
-			await $.command.register({ name: "duet", description: "Pair with another developer's agent: /duet new, /duet <room>, /duet off", argumentHint: "[new | <room> [name] [relay] | off | trust | ask | auto | status]", immediate: true });
+			await $.command.register({ name: "duet", description: "Pair with another developer's agent: /duet new, /duet <room>, /duet off", argumentHint: "[new | <room> [name] [relay] | off | ask | auto | status]", immediate: true });
 		} catch {}
 		ready = new Promise((r) => (markReady = r));
 		cwd = e.cwd || (await $.session.cwd());
@@ -1142,37 +1177,36 @@ export function register(on) {
 				if (git.exitCode === 0 && git.stdout.trim()) defaultName = fitName(git.stdout.trim().split(/\s+/)[0].toLowerCase());
 			} catch {}
 		}
-		// After a module reload in this same process, the request in progress stays fenced: its turn,
-		// a frame Claude Code has queued, its subagents. A variable in Claude Code's own environment
-		// tells a reload (it's set) from a new process (it isn't), whatever order the events come in.
+		// After a module reload in this same process, the request in progress is still the peer's: its
+		// turn, a frame Claude Code has queued. A variable in Claude Code's own environment tells a
+		// reload (it's set) from a new process (it isn't), whatever order the events come in.
 		const sameProcess = !!(await $.env.get("DUET_PROCESS"));
 		if (!sameProcess) await $.env.set("DUET_PROCESS", randomId());
+		// The module now running here: a reply an older module still holds at gate 2 settles, unsent.
+		try {
+			await $.env.set("DUET_MODULE", moduleId);
+		} catch {}
 		const turn = sameProcess ? await $.store.get("turn:" + sessionId) : null;
 		if (!sameProcess) await $.store.delete("turn:" + sessionId);
 		if (turn && Date.now() - (turn.at ?? 0) < 6 * 3600_000) {
 			pendingPeer = turn.pendingPeer ?? null;
 			expected = Array.isArray(turn.expected) ? turn.expected : [];
 			peerTurn = turn.peerTurn ?? null;
-			lastPeer = turn.lastPeer ?? null;
-			lastGuard = turn.lastGuard ?? null;
 			runningTurn = turn.runningTurn ?? "";
-			peerAgents = Array.isArray(turn.peerAgents) ? turn.peerAgents : [];
-			agentGuards = turn.agentGuards && typeof turn.agentGuards === "object" ? turn.agentGuards : {};
 		}
-		void supervise($);
+		void supervise($).catch(() => {});
 		if (e.isInteractive || (await canDraw($))) {
 			// After a module reload this window was in a room: take it up again, silently.
 			const active = await $.store.get("active:" + sessionId);
 			const owner = active ? await $.store.get(active.lockKey) : null;
 			if (active && owner?.token === active.token && !owner.released) {
 				token = active.token;
-				void join($, active.code, active.name, active.mode, true, active.relay);
+				void join($, active.code, active.name, active.mode, true, active.relay).catch(() => {});
 			} else if (envRoom) {
-				// Started as DUET_ROOM=<room> DUET_NAME=<name> claude (the website's line): join as
-				// /duet <room> <name> would, whenever this module loads.
-				void join($, envRoom, envName || undefined, "ask", false);
+				// Started as DUET_ROOM=<room> DUET_NAME=<name> claude (the website's line).
+				void join($, envRoom, envName || undefined, "ask", false).catch(() => {});
 			} else {
-				void autoRejoin($);
+				void autoRejoin($).catch(() => {});
 			}
 		}
 		markReady();
@@ -1183,7 +1217,8 @@ export function register(on) {
 					"Send a message to the other agent(s) in your duet room (another developer's coding agent on their computer). " +
 					"Use it to answer a duet request, or when your user asks you to tell the other side something. " +
 					"Your text replies are seen only by your own user; this tool is the only way to reach the other side. " +
-					"Send one complete reply when you're done, not progress updates or several small messages; split only if it is over ~3.5 KB.",
+					"Send one complete reply when you're done, not progress updates or several small messages; split only if it is over ~3.5 KB. " +
+					"In ask mode your user sees the whole reply and presses Send or Don't send; if they don't send it, don't send it again.",
 				inputSchema: {
 					type: "object",
 					properties: {
@@ -1200,7 +1235,7 @@ export function register(on) {
 	// The Desktop app may attach after the session started: rejoin then.
 	on("session.attach", async ($, e, next) => {
 		const result = await next(e);
-		void autoRejoin($);
+		void autoRejoin($).catch(() => {});
 		return result;
 	});
 
@@ -1215,7 +1250,6 @@ export function register(on) {
 		const old = sessionId;
 		sessionId = await $.session.id();
 		// /resume and /branch (a fork) continue another conversation: no turn of this one runs there.
-		// Saved under the new id, so a reload right after still finds the subagents a request started.
 		if (e.source === "resume" || e.source === "fork") {
 			await clearTurn($);
 			if (old && old !== sessionId) await $.store.delete("turn:" + old);
@@ -1236,91 +1270,69 @@ export function register(on) {
 			try {
 				child?.return?.();
 			} catch {}
-			// All session.end hooks share 1.5 s: best effort, and nothing on a crash.
+			// All session.end hooks share 1.5 s: best effort, and nothing on a crash. The folder keeps
+			// its room ("room:<cwd>"), so the next session here rejoins quietly.
 			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "note", note: "left" })).catch(() => {});
-			void $.store.set(r.lockKey, { token, cwd, at: 0, released: true });
-			if (r.fileLock) void readFileLock($, r.fileLock).then((l) => (l?.token === token ? writeFileLock($, r.fileLock, true) : undefined));
-			void $.store.delete("active:" + sessionId);
+			void $.store.set("history:" + r.key, fitHistory(history)).catch(() => {});
+			void $.store.set(r.lockKey, { token, cwd, at: 0, released: true }).catch(() => {});
+			if (r.fileLock) void readFileLock($, r.fileLock).then((l) => (l?.token === token ? writeFileLock($, r.fileLock, true) : undefined)).catch(() => {});
+			void $.store.delete("active:" + sessionId).catch(() => {});
 		}
-		if (e.reason !== "clear" && e.reason !== "resume") void $.store.delete("turn:" + sessionId);
+		if (e.reason !== "clear" && e.reason !== "resume") void $.store.delete("turn:" + sessionId).catch(() => {});
 		return next(e);
 	});
 
 	on("command.run", { command: "duet" }, async ($, e) => {
 		// Typed while the session is still starting: wait for its settings (folder, name, relay).
-		await Promise.race([ready, wait($, 10_000)]);
+		await Promise.race([ready, wait($, 8_000)]);
 		if (!(await canDraw($))) {
-			$.ui.log("duet needs the Claude Code terminal or the Desktop app's Code tab.");
+			$.ui.log("duet: Claude Code terminal or Desktop Code tab only");
 			return {};
 		}
 		const [first = "", second, third] = String(e.args ?? "").trim().split(/\s+/);
 		const arg = first.toLowerCase();
+		// Turning the gates off, or joining a room, only from the user's own hand: Enter at the prompt
+		// (composer), Remote Control (bridge) or the SDK host's own turn (the Desktop app). Never from
+		// a plugin's $.command.run, a skill the model reaches, or anything unstamped.
+		const byUser = ["composer", "bridge", "sdk"].includes(e.origin?.kind);
+		if (!byUser && (arg === "auto" || arg === "new" || (isRoomCode(first) && !["ask", "status", ...LEAVE_WORDS].includes(arg)))) {
+			$.ui.log(`/duet ${sanitize(arg, 64)}: type it yourself`);
+			return {};
+		}
 		// Joining and moving wait on the relay and the other window: run them detached, so the
 		// command returns at once and no hook time limit applies.
-		if (!first) void openPane($);
-		else if (arg === "new") void join($, newRoomCode(), second, "ask");
+		if (!first) void openPane($).catch(() => {});
+		else if (arg === "new") void join($, newRoomCode(), second, "ask", false, undefined, true).catch(() => {});
 		else if (LEAVE_WORDS.includes(arg)) {
 			joinEpoch++;
-			if (room) void leave($, "left", true);
+			if (room) void leave($, "left", true).catch(() => {});
 			else {
 				await $.store.delete("room:" + cwd);
 				$.ui.log("not in a room");
 			}
-		} else if (arg === "trust") {
-			if (room) void askTrust($, room.code).then((t) => applyTrust($, t));
-			else $.ui.log("not in a room");
 		} else if (arg === "ask" || arg === "auto") void setMode($, arg).catch(() => {});
-		else if (arg === "status") $.ui.log(room ? `${modeLabel()} · you are ${room.name}` : "not in a room");
-		else if (isRoomCode(first)) void join($, first, second, "ask", false, third);
-		else $.ui.log("usage: /duet new · /duet <room code> [your name] [relay URL] · /duet off · /duet trust · /duet ask|auto · /duet (the room's history)");
+		else if (arg === "status") $.ui.log(room ? `${modeLabel()} · ${room.code} · you are ${room.name}` : "not in a room");
+		else if (isRoomCode(first)) void join($, first, second, "ask", false, third).catch(() => {});
+		else $.ui.log("usage: /duet new · /duet <code> [name] [relay] · /duet off · /duet ask|auto · /duet");
 		return {};
 	});
 
 	on("tool.describe", { tool: SEND_TOOL }, async ($, e) => ({ description: e.description, isDeferred: false }));
 
-	on("tool.call", async ($, e, next) => {
-		if (e.tool === SEND_TOOL) return sendTool($, e);
-		if (fromPeerCall(e)) {
-			const reason = checkPeerTool(e, { cwd, home, peer: peerNames(), sendTool: SEND_TOOL });
-			if (reason) return { deny: reason };
-			const modeReason = await checkPermissionMode($, e);
-			if (modeReason) return { deny: modeReason };
-		}
-		return next(e);
-	}).catch(async ($, e) => ({ deny: `duet's check on this call failed, so it was not run. Try again.` }));
-
-	on("agent.spawn", async ($, e, next) => {
-		const fromPeer = e.parentAgentId ? peerAgents.includes(e.parentAgentId) : !!peerTurn;
-		const guard = (e.parentAgentId ? agentGuards[e.parentAgentId] : peerTurn?.guard) ?? null;
-		const result = await next(e);
-		if (fromPeer && result?.agentId) {
-			peerAgents = [...peerAgents, result.agentId].slice(-200);
-			agentGuards = Object.fromEntries([...Object.entries(agentGuards), [result.agentId, guard]].filter(([id]) => peerAgents.includes(id)));
-			await saveTurn($);
-		}
-		return result;
-	});
+	on("tool.call", { tool: SEND_TOOL }, async ($, e, next) => sendTool($, e, next.signal)).catch(async () => ({ result: "Not sent: duet error · ask your user before resending" }));
 
 	on("prompt.submit", async ($, e, next) => {
-		// Claude Code's own stamp: Enter at the prompt, or Remote Control. Its turn starts before the
-		// submission resolves here (observed in 2.1.289), so turn.start must know of it already.
+		// Claude Code's own stamp: Enter at the prompt, or Remote Control.
 		const kind = e.origin?.kind;
 		const mine = kind === "composer" || kind === "bridge";
-		const open = { text: String(e.text ?? ""), at: Date.now(), used: false };
-		if (mine) userPrompts.push(open);
-		let result;
-		try {
-			result = await next(e);
-		} finally {
-			if (mine) userPrompts = userPrompts.filter((x) => x !== open);
-		}
+		const result = await next(e);
 		if (!result?.drop && mine) {
-			lastPeer = null;
 			userPromptSince = true;
 			autoTurns = 0;
 			if (paused) {
 				paused = false;
 				redraw($);
+				void deliver($).catch(() => {});
 			}
 		}
 		return result;
@@ -1330,30 +1342,17 @@ export function register(on) {
 		if (e.agentId) return next(e);
 		runningTurn = e.turnId;
 		expected = expected.filter((x) => Date.now() - x.at < 30 * 60_000);
-		const i = expected.findIndex((x) => e.text.includes(x.text));
+		const i = expected.findIndex((x) => String(e.text ?? "").includes(x.text));
 		if (i >= 0) {
 			const x = expected[i];
 			expected = expected.filter((_, j) => j !== i);
 			peerTurn = peerTurnFrom(x, e.turnId);
-			lastPeer = null;
 		} else if (expected.length && !userPromptSince) {
-			// duet's request is pending and no prompt of the user's explains this turn: its text may
-			// have been changed on the way. Fence it rather than risk running the request unfenced.
-			const x = expected[0];
+			// duet's request is pending and no prompt of the user's came since: its text may have been
+			// changed on the way. Count it as the peer's, so the notes and the reply link still work.
+			const x = expected.shift();
 			peerTurn = peerTurnFrom(x, e.turnId);
-			lastPeer = null;
-			$.ui.log("a turn started while duet's request was pending and its text didn't match: treating it as the other side's", { to: "debug" });
-		} else if (userPromptFor(e.text)) {
-			// The user's own prompt, on its way in: theirs, and the end of any fence after a peer turn.
-			lastPeer = null;
-		} else if (lastPeer) {
-			// Any turn after the peer's, before the user's own prompt, is still the peer's: a hook that
-			// woke Claude, a continuation, a task notification. Fail closed; the user's prompt ends it.
-			// It isn't really theirs, so it sends them no notes about it.
-			peerTurn = { ...lastPeer, turnId: e.turnId, waitNoted: false, inherited: true };
-			$.ui.log("a turn started after the other side's request, before your own prompt: still fenced as theirs", { to: "debug" });
 		}
-		if (peerTurn?.turnId === e.turnId && peerTurn.guard) lastGuard = peerTurn.guard;
 		await saveTurn($);
 		await saveCursor($);
 		redraw($);
@@ -1362,34 +1361,33 @@ export function register(on) {
 
 	on("turn.complete", async ($, e, next) => {
 		if (!e.agentId && e.turnId === runningTurn) runningTurn = "";
+		// A turn ended (Esc, an error) while a reply it sent still waits at gate 2: its call was
+		// abandoned, so settle it, unsent. (next.signal normally does this first.) Only that loop's
+		// own replies: a background subagent's send keeps waiting after the main turn ends.
+		for (const item of outbox) if ((item.agentId ?? "") === (e.agentId ?? "")) decide($, item, "stopped");
 		if (!e.agentId && peerTurn && peerTurn.turnId === e.turnId) {
 			const t = peerTurn;
 			peerTurn = null;
-			// Stopped (Esc), or the user typed during it: what comes next is the user's.
-			lastPeer = e.isAborted || userPromptSince ? null : { froms: t.froms, roomKey: t.roomKey, guard: t.guard ?? null };
-			if (t.inherited) {
-				// not the peer's own request: nothing to tell them
-			} else if (e.isAborted) for (const p of t.froms) sendNote($, "stopped", p);
+			if (e.isAborted) for (const p of t.froms) sendNote($, "stopped", p);
 			else if (e.reason === "error" || e.reason === "refusal") for (const p of t.froms) sendNote($, "failed", p);
 			redraw($);
 		}
 		if (!e.agentId) await saveTurn($);
 		const result = await next(e);
-		void submitWhenIdle($);
+		void submitWhenIdle($).catch(() => {});
 		void deliver($).catch(() => {});
 		return result;
 	});
 
 	on("classic.PermissionRequest", async ($, e, next) => {
 		notePermissionMode(e);
-		if (peerTurn && !peerTurn.waitNoted && !peerTurn.inherited) {
+		if (peerTurn && !peerTurn.waitNoted) {
 			peerTurn.waitNoted = true;
 			for (const p of peerTurn.froms) sendNote($, "approval-wait", p);
 		}
 		return next(e);
 	});
 
-	// classic.PreToolUse carries no permission_mode (2.1.289); PostToolUse does.
 	on("classic.PostToolUse", async ($, e, next) => {
 		notePermissionMode(e);
 		return next(e);
@@ -1422,7 +1420,8 @@ export function register(on) {
 	});
 
 	on("ui.render", { component: "Spinner" }, async ($, e, next) => {
-		if (!peerTurn) return next(e);
-		return next({ ...e, props: { ...e.props, suffix: `${e.props.suffix ?? ""} · for ${peerNames()}` } });
+		if (!peerTurn && !outbox.length) return next(e);
+		const suffix = outbox.length ? ` · reply to ${oneLine(outbox[0].to)} waiting` : ` · for ${peerNames()}`;
+		return next({ ...e, props: { ...e.props, suffix: `${e.props.suffix ?? ""}${suffix}` } });
 	});
 }

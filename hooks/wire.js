@@ -129,22 +129,40 @@ export function isForMe(env, myFromId, myName) {
 
 export const byteLength = (s) => new TextEncoder().encode(s).length;
 
+// Characters a terminal draws as nothing but a model still reads: Unicode format characters (\p{Cf}:
+// the tag block U+E0000–E007F, bidi controls, zero-width characters, BOM), variation selectors and
+// the Hangul fillers. Text built from them can carry a whole hidden instruction.
+export const HIDDEN = /[\p{Cf}\u115F\u1160\u3164\uFFA0\uFE00-\uFE0F\u{E0100}-\u{E01EF}]+/gu;
+export const HIDDEN_MARK = " [hidden characters removed]";
+
 // Peer text is untrusted: Text refuses control characters other than tab and newline (and an invalid
-// tree silently falls back to the engine's drawing), so strip them, and cap the length.
+// tree silently falls back to the engine's drawing), so strip them, and cap the length. Invisible
+// characters are stripped too, with a visible mark, so a card shows every word Claude gets (gate 1)
+// and every word a reply sends (gate 2): the same function makes both.
 export function sanitize(text, max = MAX_SHOWN) {
+	let hidden = false;
 	const clean = String(text ?? "")
 		.replace(/\r\n?/g, "\n")
 		.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "") // ANSI escape sequences
-		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]/g, "");
-	return clean.length > max ? clean.slice(0, max) + `… [${clean.length - max} more characters]` : clean;
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]/g, "")
+		.replace(HIDDEN, () => ((hidden = true), ""));
+	const cut = clean.length > max ? clean.slice(0, max) + `… [${clean.length - max} more characters]` : clean;
+	return hidden ? cut + HIDDEN_MARK : cut;
 }
 
 // The first `lines` lines of a text, each cut to `width`, for the card above the prompt.
 export function preview(text, lines = 4, width = 160, hint = " — /duet to read all") {
 	const all = sanitize(text).split("\n");
 	const total = String(text ?? "").replace(/\r\n?/g, "\n").split("\n").length; // before sanitize shortens it
-	const shown = all.slice(0, lines).map((l) => (l.length > width ? l.slice(0, width - 1) + "…" : l));
+	let cut = String(text ?? "").length > MAX_SHOWN; // sanitize shortened it
+	const shown = all.slice(0, lines).map((l) => {
+		if (l.length <= width) return l;
+		cut = true;
+		return l.slice(0, width - 1) + "…";
+	});
+	// Say so whenever anything is left out, not only whole lines.
 	if (total > lines) shown.push(`… (${total - lines} more lines${hint})`);
+	else if (cut) shown.push(`… (cut${hint})`);
 	return shown.join("\n");
 }
 
@@ -171,7 +189,6 @@ export function frameForClaude(envs, cwd, tool) {
 		`${parts.join("\n\n---\n\n")}\n\n` +
 		`Only your own user sees your text replies: to answer ${froms}, call the ${tool} tool. ` +
 		`"Your folder" means ${cwd}: work there, and nowhere else unless your own user says so. ` +
-		`While you work on this request, some tools are off (anything outside that folder, scheduling, background work); ` +
-		`if you need one, tell ${froms} to ask your user.`
+		`Send one complete reply when you're done.`
 	);
 }
