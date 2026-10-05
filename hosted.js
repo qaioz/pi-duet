@@ -9,8 +9,9 @@
 // Each open panel has a seat: its own room, name, inbox and history, found by a random token the
 // panel makes for itself (hosts don't reliably keep one MCP session per conversation). What the server
 // holds, and only in memory:
-//   - per seat: the room's topic hash (never the room code: it is hashed at join and dropped), the
-//     name, the messages since the seat joined, and a short "seat" handle the agent's duet_send uses;
+//   - per seat: the room's topic hash (never the room code: it is hashed at join and dropped; the panel
+//     keeps the code), the name, the messages since the seat joined, a short "seat" handle the agent's
+//     duet_send uses, and the agent's replies waiting for the user's Send (gate 2; they expire);
 //   - nothing on disk, and no log line with a room, a token, a name or a message.
 // The relay sees every message in plain text (as for every duet client: F12); this server sees the
 // messages of the rooms its panels are in, while they are open.
@@ -23,10 +24,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { BlockList, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
-import { appTools, cleanText, handOver, PANEL_URI, panelError, panelResult, preview, resourceContents, resourceEntry, roomTool, shortRoom } from "./panel.js";
+import { appTools, cleanText, handOver, heldResult, makeHolds, outgoingItem, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom, toWhom } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.7.0"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.8.1"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -87,7 +88,7 @@ async function loadOpenAiRanges() {
 const ORIGINS = [/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/];
 const originOk = (o) => !o || ORIGINS.some((r) => r.test(o)) || list("DUET_ORIGINS").includes(o);
 
-const MAX_AUTO = 8; // replies without a click before the agent must check with its user (as in mcp.js)
+const HOLDS_PER_SEAT = 5; // replies waiting for the user's Send, per panel
 const INBOX_MAX = 50;
 const PEERS_MAX = 20;
 const FULL_MAX = 4000; // a waiting request up to this long goes to the panel whole; longer ones on "Show all"
@@ -152,6 +153,7 @@ function closeSeat(seat, why = "left") {
 	const r = rooms.get(seat.topic);
 	seats.delete(seat.key);
 	handles.delete(seat.handle);
+	holds.drop(seat.key);
 	allChars -= seat.chars;
 	for (const e of seat.handed.values()) allChars -= e.text.length;
 	if (!r) return;
@@ -169,6 +171,9 @@ const seats = new Map(); // sha256(token) -> Seat
 const handles = new Map(); // seat handle (for the agent's duet_send) -> Seat
 let allChars = 0; // waiting text held, all seats
 let longBytes = { n: 0, reset: Date.now() + 86_400_000 }; // long messages sent today, all seats
+// Gate 2: replies waiting for the user's click in the duet card. Their text counts in allChars like
+// waiting requests do, and gives it back when it is sent, dropped or expires.
+const holds = makeHolds({ onFree: (n) => (allChars -= n) });
 
 class Seat {
 	constructor(key, topic, name, room, address) {
@@ -185,7 +190,6 @@ class Seat {
 		this.lastFrom = new Map();
 		this.sent = new Set(); // our messages' ids, to know a reply when one comes
 		this.sends = []; // { at, bytes }
-		this.exchanges = 0;
 		this.chars = 0;
 		this.seq = 0;
 		this.rev = 0;
@@ -221,16 +225,17 @@ class Seat {
 		this.peers.set(env.from, Date.now());
 		if (VIA[env.via]) this.peerVia.set(env.from, env.via);
 		if (env.kind === "join") return this.remember({ who: env.from, text: "joined", note: true });
-		this.remember({ who: env.from, text: env.text });
+		const pid = String(++this.seq);
+		this.remember({ who: env.from, text: env.text, pid });
 		this.lastFrom.set(env.from, { id: env.id, at: Date.now() });
 		if (this.lastFrom.size > PEERS_MAX) this.lastFrom.delete(this.lastFrom.keys().next().value);
 		const text = cleanText(env.text);
 		if (allChars + text.length > LIMIT.allChars) return this.warnings.add("a request was dropped: the hosted server is full right now (Claude Code, Codex or pi have no such limit)");
-		this.hold({ pid: String(++this.seq), id: env.id, from: env.from, ts: env.ts, re: env.re, text, size: text.length });
+		this.hold({ pid, id: env.id, from: env.from, ts: env.ts, re: env.re, text, size: text.length });
 	}
 	revNow() {
 		const here = [...this.peers.values()].filter((at) => Date.now() - at < RECENT_MS).length;
-		return `${this.id}.${this.rev}.${rooms.get(this.topic)?.up ? 1 : 0}.${here}`;
+		return `${this.id}.${this.rev}.${rooms.get(this.topic)?.up ? 1 : 0}.${here}.${holds.waiting(this.key).length}`;
 	}
 	state() {
 		const r = rooms.get(this.topic);
@@ -243,16 +248,21 @@ class Seat {
 			name: this.name,
 			peers: [...this.peers].map(([p, at]) => ({ name: p, via: VIA[this.peerVia.get(p)] ?? "", here: Date.now() - at < RECENT_MS })),
 			waiting: this.inbox.map((e) => ({ id: e.pid, from: e.from, at: e.ts, text: e.size <= FULL_MAX ? e.text : preview(e.text), full: e.size <= FULL_MAX, size: e.size })),
-			history: this.history.slice(-40).map((h) => ({ who: h.who, mine: !!h.mine, text: h.text, at: h.at, note: !!h.note })),
+			// The conversation: messages only (name · time · text), none of the requests still waiting.
+			history: this.history
+				.filter((h) => !h.note && !(h.pid && this.inbox.some((e) => e.pid === h.pid)))
+				.slice(-40)
+				.map((h) => ({ who: h.who, mine: !!h.mine, text: h.text, at: h.at })),
+			outgoing: holds.waiting(this.key).map(outgoingItem),
 			warnings: [...this.warnings],
 			modelNote:
 				`duet: your user is in a duet room as ${this.name} (the duet panel in this chat shows it). Requests from the other person's agent reach you only when your user hands one over from the panel. ` +
-				`When your user asks you to tell or ask the other agent something, call duet_send with seat "${this.handle}".`,
+				`When your user asks you to tell or ask the other agent something, call duet_send with seat "${this.handle}"; your user OKs each reply in the duet card.`,
 			rev: this.revNow(),
 		};
 	}
 }
-const notInRoom = { hosted: true, inRoom: false, connected: false, status: "", room: "", name: "", peers: [], waiting: [], history: [], warnings: [], modelNote: "", rev: "out" };
+const notInRoom = { hosted: true, inRoom: false, connected: false, status: "", room: "", name: "", peers: [], waiting: [], history: [], outgoing: [], warnings: [], modelNote: "", rev: "out" };
 
 // A panel that stopped polling (closed chat, scrolled away for long) gives its seat back. Only the
 // panel keeps a seat alive: the agent's duet_send doesn't.
@@ -270,65 +280,83 @@ const sendTool = {
 		"Send a message to the other person's coding agent in your user's duet room (another developer's agent, on their computer). " +
 		"Use it to answer a request your user handed to you from the duet panel, or when your user asks you to tell or ask the other agent something. " +
 		"Pass the seat code from the handed-over message (or from the duet note in your context). Your plain-text replies are seen only by your own user. " +
-		"Send one complete reply with real results, not progress updates or thank-you messages.",
+		"Send one complete reply with real results, not progress updates or thank-you messages. " +
+		SEND_NOTE,
 	inputSchema: {
 		type: "object",
 		properties: {
 			seat: { type: "string", description: 'The seat code duet gave you (in the handed-over message: call duet_send with seat "…").' },
 			text: { type: "string", description: "The message: one complete reply, up to ~200 KB." },
 			to: { type: "string", description: "Recipient name, if the room has more than one other agent." },
-			user_asked: { type: "boolean", description: "true only if your own user's latest message asked for this send." },
 		},
 		required: ["seat", "text"],
 	},
 	annotations: { openWorldHint: true },
+	_meta: sendToolMeta,
 };
 
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError } : {}) });
 
-async function send(a) {
+// Gate 2: the model's duet_send only holds the reply; the user's Send in the duet card (duet_reply)
+// sends it. Every seat exists because a panel was drawn, so this host draws the card too.
+function holdReply(a) {
 	const seat = handles.get(String(a.seat ?? ""));
-	if (!seat) return text("No duet room with that seat code: it may have closed (a panel nobody looked at for 30 minutes leaves its room). Ask your user to open the duet panel and join again.", true);
+	if (!seat) return text("Not held · no room with that seat (closed after 30 min unseen) · your user reopens the duet panel", true);
 	if (typeof a.text !== "string" || !a.text) return text("text is required", true);
-	if (a.text.length > MAX_TEXT) return text(`The message is ${a.text.length} characters; the limit is ${MAX_TEXT}.`, true);
-	const userAsked = a.user_asked === true;
-	if (!userAsked && seat.exchanges >= MAX_AUTO) {
-		return text(`Not sent: auto-reply limit. ${MAX_AUTO} replies have gone to the other agent since your user last handed one over. Ask your user whether to continue; only if they say so, send again with user_asked: true.`, true);
-	}
+	if (a.text.length > MAX_TEXT) return text(`Not held · ${a.text.length} chars · limit ${MAX_TEXT}`, true);
+	// The card shows, and Send sends, the same text: no invisible or control characters.
+	const shown = cleanText(a.text);
+	if (!shown) return text("Not held · nothing visible to send", true);
+	const to = a.to ? fitName(String(a.to)) : "";
+	const shownTo = toWhom(to, [...seat.peers.keys()]); // exactly who gets it: no `to` goes to the whole room
+	const waiting = holds.waiting(seat.key);
+	const again = waiting.some((h) => h.text === shown && h.to === shownTo); // the same card again: nothing new held
+	if (!again && waiting.length >= HOLDS_PER_SEAT) return text(`Not sent · ${HOLDS_PER_SEAT} replies already wait in duet cards`, true);
+	if (!again && allChars + shown.length > LIMIT.allChars) return text("Not held · hosted server full · try again later", true);
+	const h = holds.hold(seat.key, shownTo, shown);
+	// Counted by what hold() did, not by the check above: a matching hold that expired in between
+	// (hold() sweeps first, and gives its text back) is a new one here.
+	if (!waiting.includes(h)) allChars += shown.length;
+	h.sendTo ??= to;
+	seat.rev++;
+	return heldResult(h);
+}
+
+// The user's Send: out to the relay, within the seat's limits.
+async function sendHeld(h) {
+	const seat = seats.get(h.owner);
+	if (!seat) throw new Error("Panel left the room · open it, join again");
 	const now = Date.now();
-	const peer = a.to ? seat.lastFrom.get(String(a.to)) : [...seat.lastFrom.values()].sort((x, y) => y.at - x.at)[0];
+	const peer = h.sendTo ? seat.lastFrom.get(h.sendTo) : [...seat.lastFrom.values()].sort((x, y) => y.at - x.at)[0];
 	const re = peer && now - peer.at < 30 * 60_000 ? peer.id : undefined;
-	const env = envelope({ fromId: seat.fromId, from: seat.name, kind: "msg", ...(a.to ? { to: fitName(String(a.to)) } : {}), text: a.text, ...(re ? { re } : {}) });
+	const env = envelope({ fromId: seat.fromId, from: seat.name, kind: "msg", ...(h.sendTo ? { to: h.sendTo } : {}), text: h.text, ...(re ? { re } : {}) });
 	// What the relay stores is the envelope as JSON (control characters take 6 bytes there): count that.
 	const bytes = Buffer.byteLength(JSON.stringify(env));
 	seat.sends = seat.sends.filter((s) => now - s.at < 10 * 60_000);
 	if (seat.sends.length >= LIMIT.sendsPerSeat || seat.sends.reduce((n, s) => n + s.bytes, 0) + bytes > LIMIT.seatSendBytes) {
-		return text("Not sent: too many messages from this room in 10 minutes. Wait a little.", true);
+		throw new Error("Too many messages from this room · wait a few minutes");
 	}
 	const long = bytes > 4000 ? bytes : 0; // over ntfy's 4096 bytes it becomes an attachment on the relay
 	if (now >= longBytes.reset) longBytes = { n: 0, reset: now + 86_400_000 };
 	const mine = `long ${seat.address}`;
 	if (long && (longBytes.n + long > LIMIT.longPerDay || !allow(mine, seat.longPerDay, 86_400_000, long))) {
-		return text("Not sent: the hosted server's allowance for long messages is used up for today. Send it shorter (under ~3.8 KB), in parts.", true);
+		throw new Error("the hosted server's allowance for long messages is used up for today; ask for it shorter (under ~3.8 KB)");
 	}
-	// Counted before the await, so parallel calls can't slip past the limits; given back if it fails.
+	// Counted before the await, so parallel clicks can't slip past the limits; given back if it fails.
 	const slot = { at: now, bytes };
 	seat.sends.push(slot);
-	seat.exchanges = userAsked ? 0 : seat.exchanges + 1;
 	longBytes.n += long;
 	try {
 		await publish(RELAY, seat.topic, env);
 	} catch (err) {
 		seat.sends.splice(seat.sends.indexOf(slot), 1);
-		if (!userAsked) seat.exchanges = Math.max(0, seat.exchanges - 1);
 		longBytes.n -= long;
 		if (long) allow(mine, seat.longPerDay, 86_400_000, -long);
-		return text(String(err.message), true);
+		throw err;
 	}
 	seat.sent.add(env.id);
 	if (seat.sent.size > 100) seat.sent.delete(seat.sent.values().next().value);
-	seat.remember({ who: "you", mine: true, text: a.text });
-	return text("sent — the other agent has not answered yet; your user will see its reply in the duet panel");
+	seat.remember({ who: "you", mine: true, text: h.text });
 }
 
 async function callTool(name, a, ip) {
@@ -339,10 +367,17 @@ async function callTool(name, a, ip) {
 				"(If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)",
 		);
 	}
-	if (name === "duet_send") return send(a);
+	if (name === "duet_send") return holdReply(a);
+	// The card's Send / Don't send: the hold's random id is what it needs (the model never sees it).
+	if (name === "duet_reply") {
+		const r = await holds.act(a.id, String(a.action ?? ""), sendHeld);
+		const owner = seats.get(holds.get(a.id)?.owner);
+		if (owner) owner.rev++;
+		return r.status === "waiting" && r.error ? { ...panelResult(r), isError: true } : panelResult(r);
+	}
 	// The panel's own tools: each needs the panel's token.
 	if (!appTools.some((t) => t.name === name)) return text(`unknown tool ${name}`, true);
-	if (!isToken(a.token)) return panelError("This panel has no id: reload it.");
+	if (!isToken(a.token)) return panelError("Panel has no id · reload it");
 	const key = sha(a.token);
 	let seat = seats.get(key);
 	if (seat) seat.seen = Date.now();
@@ -355,11 +390,11 @@ async function callTool(name, a, ip) {
 		case "duet_room_join": {
 			const room = String(a.room ?? "").trim();
 			const name = String(a.name ?? "").trim();
-			if (!isRoomCode(room)) return panelError("A room code is 3-64 letters, digits, . _ -");
-			if (!isName(name) || isPlaceholderName(name)) return panelError("Your name: letters, digits, . _ - (up to 40), starting with a letter or digit.");
+			if (!isRoomCode(room)) return panelError("Room code: 3-64 letters, digits, . _ -");
+			if (!isName(name) || isPlaceholderName(name)) return panelError("Name: letters, digits, . _ - · up to 40");
 			const cls = classOf(ip);
 			const address = addressKey(ip);
-			if (!allow(`join ${address}`, cls.joins, 10 * 60_000)) return panelError("Too many joins from here: wait a few minutes.");
+			if (!allow(`join ${address}`, cls.joins, 10 * 60_000)) return panelError("Too many joins from here · wait a few minutes");
 			const topic = topicFor(room); // the code itself goes no further than this line and the label
 			if (seat && seat.topic === topic && seat.name === name) return panelResult(seat.state());
 			if (seat) closeSeat(seat);
@@ -367,11 +402,11 @@ async function callTool(name, a, ip) {
 			if (seats.size >= LIMIT.seats) return panelError(full);
 			if (!rooms.has(topic) && rooms.size >= LIMIT.rooms) return panelError(full.replace("is full", "has too many rooms open"));
 			const fromHere = [...seats.values()].filter((s) => s.address === address);
-			if (fromHere.length >= cls.seats) return panelError("Too many duet panels open from here: leave one first.");
-			if (!fromHere.some((s) => s.topic === topic) && new Set(fromHere.map((s) => s.topic)).size >= cls.rooms) return panelError("Too many duet rooms open from here: leave one first.");
+			if (fromHere.length >= cls.seats) return panelError("Too many duet panels open from here · leave one first");
+			if (!fromHere.some((s) => s.topic === topic) && new Set(fromHere.map((s) => s.topic)).size >= cls.rooms) return panelError("Too many duet rooms open from here · leave one first");
 			// One panel per name in a room, as everywhere in duet: a second one would hand the same requests over again.
 			if ([...(rooms.get(topic)?.seats ?? [])].some((s) => s.name.toLowerCase() === name.toLowerCase())) {
-				return panelError(`${name} is already in this room in another chat: leave it there first, or use another name.`);
+				return panelError(`${name} already in this room in another chat · leave there, or pick another name`);
 			}
 			seat = new Seat(key, topic, name, room, address);
 			seat.longPerDay = cls.longPerDay;
@@ -387,14 +422,14 @@ async function callTool(name, a, ip) {
 		}
 		case "duet_read": {
 			const e = seat?.inbox.find((m) => m.pid === String(a.id));
-			return e ? panelResult({ id: e.pid, text: e.text }) : panelError("That request isn't waiting any more.");
+			return e ? panelResult({ id: e.pid, text: e.text }) : panelError("Not waiting any more");
 		}
 		case "duet_take":
 		case "duet_ignore": {
-			if (!seat) return panelError("Not in a room.");
+			if (!seat) return panelError("Not in a room");
 			if (name === "duet_take" && a.undo === true) {
 				const back = seat.handed.get(String(a.id));
-				if (!back) return panelError("Nothing to put back.");
+				if (!back) return panelError("Nothing to put back");
 				seat.handed.delete(back.pid);
 				allChars -= back.text.length;
 				seat.hold(back);
@@ -403,7 +438,7 @@ async function callTool(name, a, ip) {
 				return panelResult(seat.state());
 			}
 			const e = seat.inbox.find((m) => m.pid === String(a.id));
-			if (!e) return panelError("That request isn't waiting any more: it was handed over or ignored already.");
+			if (!e) return panelError("Not waiting any more");
 			seat.drop(e);
 			if (name === "duet_ignore") {
 				publish(RELAY, seat.topic, envelope({ fromId: seat.fromId, from: seat.name, kind: "note", note: "declined", to: e.from })).catch(() => {});
@@ -417,7 +452,6 @@ async function callTool(name, a, ip) {
 				seat.handed.delete(old.pid);
 				allChars -= old.text.length;
 			}
-			seat.exchanges = 0; // the user's click: they are here
 			seat.remember({ who: "", text: `you handed ${e.from}'s request to your agent`, note: true });
 			return panelResult({ text: handOver(e, { reply: !!(e.re && seat.sent.has(e.re)), seat: seat.handle, utc: true }) });
 		}
@@ -429,7 +463,7 @@ async function callTool(name, a, ip) {
 
 const instructions =
 	"duet connects your user with another developer's coding agent through a shared room. The duet panel (duet_room) shows the room; " +
-	"your user hands you a request from the other agent with a click, and you answer it with duet_send. Your plain-text replies reach only your own user.";
+	"your user hands you a request from the other agent with a click, and you answer it with duet_send (your user OKs the reply in the duet card). Your plain-text replies reach only your own user.";
 
 async function rpc(msg, ip) {
 	const { id, method, params } = msg ?? {};
@@ -452,11 +486,11 @@ async function rpc(msg, ip) {
 			case "tools/list":
 				return ok({ tools: [roomTool, sendTool, ...appTools] });
 			case "resources/list":
-				return ok({ resources: [resourceEntry] });
+				return ok({ resources: resourceEntries });
 			case "resources/templates/list":
 				return ok({ resourceTemplates: [] });
 			case "resources/read":
-				return params?.uri === PANEL_URI ? ok(resourceContents(VERSION)) : err(-32002, "resource not found");
+				return resourceContents(params?.uri, VERSION) ? ok(resourceContents(params.uri, VERSION)) : err(-32002, "resource not found");
 			case "tools/call":
 				return ok(await callTool(String(params?.name ?? ""), params?.arguments, ip));
 			default:
@@ -484,7 +518,7 @@ const clientIp = (req) => {
 const landing = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>duet MCP server</title>
 <style>body{font:15px/1.5 system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px;color:#222;background:#fff}@media(prefers-color-scheme:dark){body{color:#eee;background:#161616}}code{background:#8882;padding:1px 5px;border-radius:4px}</style>
 <h1>duet MCP server</h1><p>This is duet's hosted MCP server: the duet panel for claude.ai, the Claude apps and ChatGPT. Add <code>${PUBLIC_URL}/mcp</code> as a custom connector; steps on <a href="https://qaioz.github.io/pi-duet/">the duet website</a>.</p>
-<p>It keeps no accounts and stores nothing on disk. Room codes are hashed as soon as a panel joins; messages stay in memory only while the panel is open. A request reaches your agent only when you click <b>Hand to agent</b>, and nothing guards what the agent does with it.</p>`;
+<p>It keeps no accounts and stores nothing on disk. Room codes are hashed as soon as a panel joins; messages stay in memory only while the panel is open. Two clicks: a request reaches your agent only when you hand it over, and its reply leaves only when you click <b>Send</b>.</p>`;
 
 const inflight = new Map(); // address -> { n, bytes }: requests being read
 const poolBytes = { normal: 0, shared: 0 };

@@ -84,8 +84,8 @@ export function startServer(name, room, { home = join(ROOT, name), args = [], en
 		} while (Date.now() < end);
 		return { ...r, timedOut: true };
 	};
-	s.init = async (client = "test", { initialized = true } = {}) => {
-		const res = await s.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: client, version: "1" } });
+	s.init = async (client = "test", { initialized = true, caps = {} } = {}) => {
+		const res = await s.request("initialize", { protocolVersion: "2025-06-18", capabilities: caps, clientInfo: { name: client, version: "1" } });
 		if (initialized) s.notify("notifications/initialized");
 		return res.result;
 	};
@@ -108,7 +108,7 @@ async function waitConnected(s) {
 	let last = "";
 	while (Date.now() < end) {
 		last = (await s.call("duet_status")).text;
-		if (last.includes("— connected")) return;
+		if (last.includes("· connected")) return;
 		await sleep(200);
 	}
 	throw new Error(`${s.name} never connected: ${last} ${s.stderr.slice(-300)}`);
@@ -352,7 +352,7 @@ async function main() {
 		await Promise.all(pair.map((x) => x.init()));
 		await sleep(1500);
 		const st2 = await Promise.all(pair.map((x) => x.call("duet_status")));
-		owners.push(st2.filter((x) => /— (connected|connecting)/.test(x.text)).length);
+		owners.push(st2.filter((x) => /· (connected|connecting)/.test(x.text)).length);
 		for (const x of pair) await x.stop();
 	}
 	check("simultaneous start: one owner", owners.every((n) => n === 1), `owners per try: ${owners.join(", ")}`);
@@ -537,7 +537,7 @@ async function main() {
 	check(
 		"setup codex writes the duet block",
 		setupOut.startsWith("exit=0") && !toml.includes('"old"') && !toml.includes("approval_mode = \"prompt\"") && toml.includes('model = "m"') &&
-			toml.includes('args = ["-y", "github:qaioz/pi-duet", "--room", "r00m", "--name", "nika"]') && toml.includes("tool_timeout_sec = 120") &&
+			toml.includes('args = ["-y", "github:qaioz/pi-duet", "--room", "r00m", "--name", "nika"]') && toml.includes("tool_timeout_sec = 1800") && !toml.includes("PreToolUse") &&
 			toml.includes('default_tools_approval_mode = "approve"'),
 		toml.replace(/\n/g, " ⏎ "),
 	);
@@ -565,6 +565,8 @@ async function main() {
 	const fromPi = await b.recv(10);
 	check("receives a pi-format envelope", fromPi.text.includes("[duet] from pia") && fromPi.text.includes("FROM-PI"), fromPi.text.slice(0, 80));
 
+	await gateTwo();
+
 	// No room configured: tools explain instead of crashing.
 	const n = startServer("nobody", "", { args: [] });
 	await n.init();
@@ -575,6 +577,118 @@ async function main() {
 	for (const s of [...live]) await s.stop();
 	const locks = readdirSync(join(ROOT, "bob", ".duet")).filter((f) => f.endsWith(".lock"));
 	check("closing releases the lock", locks.length === 0, `lock files left in bob's ~/.duet: ${locks.length}`);
+}
+
+// Gate 2 on the stdio server, by host: a host with forms (any, not only Codex) asks Send / Don't send
+// in ask mode; a chat app that draws panels gets the reply card and duet holds the reply until the
+// click (duet_reply), and a held reply expires unsent; a host with neither sends at once.
+async function gateTwo() {
+	const room = freshRoom();
+	const peerSeen = [];
+	const { subscribe } = await import("../transport.js");
+	const sub = subscribe({ server: SERVER, topic: topicFor(room), onEnvelope: (e) => peerSeen.push(e) });
+	const said = (t) => peerSeen.some((e) => e.kind === "msg" && e.text === t);
+
+	// A host with forms: the whole reply in the form.
+	const f = startServer("formhost", room);
+	await f.init("some-ide", { caps: { elicitation: { form: {} } } });
+	await waitConnected(f);
+	await sleep(500);
+	const answer = async (choice) => {
+		const ask = await until(() => f.notes.find((n) => n.method === "elicitation/create" && !n.answered), 10_000, "a form");
+		ask.answered = true;
+		f.proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: ask.id, result: { action: "accept", content: { answer: choice } } }) + "\n");
+		return ask;
+	};
+	const p1 = f.call("duet_send", { text: "FORM-SEND", user_asked: true });
+	const a1 = await answer("Send");
+	const r1 = await p1;
+	const p2 = f.call("duet_send", { text: "FORM-DROP", user_asked: true });
+	await answer("Don't send");
+	const r2 = await p2;
+	await until(() => said("FORM-SEND"), 8000, "FORM-SEND").catch(() => {});
+	await sleep(1000);
+	check(
+		"gate 2 (forms): every reply in ask mode waits for Send; Don't send sends nothing",
+		/^duet · send to .+\? · full reply\n\nFORM-SEND$/.test(a1.params.message) && r1.text.startsWith("Sent to") && said("FORM-SEND") && /^Not sent/.test(r2.text) && !said("FORM-DROP"),
+		`form ${JSON.stringify(a1.params.message)}; ${r1.text}; ${r2.text.slice(0, 40)}; at the peer: FORM-SEND ${said("FORM-SEND")}, FORM-DROP ${said("FORM-DROP")}`,
+	);
+	await f.stop();
+
+	// A chat app (draws MCP Apps): duet_send only holds; the card's click sends.
+	const UI = { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } };
+	const c = startServer("chatapp", room, { env: { DUET_HOLD_MS: "4000" } });
+	await c.init("claude-ai", { caps: UI });
+	await waitConnected(c);
+	await sleep(500);
+	const tools = (await c.request("tools/list")).result.tools;
+	const sendTool = tools.find((t) => t.name === "duet_send");
+	const replyTool = tools.find((t) => t.name === "duet_reply");
+	const card = (await c.request("resources/read", { uri: "ui://duet/send" })).result?.contents?.[0];
+	const raw = async (name, a) => (await c.request("tools/call", { name, arguments: a })).result;
+	const key = (await raw("duet_room", {}))._meta?.["duet/key"]; // the panel's key, as the panel gets it
+	const held = await raw("duet_send", { text: "HOLD-1\nall of it" });
+	const again = await raw("duet_send", { text: "HOLD-1\nall of it" }); // the model resends: the same card
+	const id = held._meta?.["duet/hold"];
+	await sleep(1500);
+	const notYet = said("HOLD-1\nall of it");
+	const panel = (await raw("duet_room_state", { key })).structuredContent;
+	const st = (await raw("duet_reply", { id, action: "status" })).structuredContent;
+	const sent = (await raw("duet_reply", { id, action: "send" })).structuredContent;
+	await until(() => said("HOLD-1\nall of it"), 8000, "held reply after the click").catch(() => {});
+	const twice = (await raw("duet_reply", { id, action: "send" })).structuredContent;
+	await sleep(800);
+	const copies = peerSeen.filter((e) => e.text === "HOLD-1\nall of it").length;
+	check(
+		"gate 2 (chat app): duet_send holds the reply (\"Waiting for your OK in the duet card\"), the card has it; sent only on the click, once",
+		sendTool?._meta?.ui?.resourceUri === "ui://duet/send" && JSON.stringify(replyTool?._meta?.ui?.visibility) === '["app"]' && card?.mimeType === "text/html;profile=mcp-app" &&
+			held.content[0].text === "Waiting for your OK in the duet card" && !JSON.stringify(held.content).includes(id) && held.structuredContent.text === "HOLD-1\nall of it" &&
+			again._meta?.["duet/hold"] === id && !notYet && panel.outgoing?.length === 1 && st.status === "waiting" && sent.status === "sent" && twice.status === "sent" && copies === 1,
+		`result: ${held.content[0].text}; card ${card?.text?.length} bytes; resend → same hold: ${again._meta?.["duet/hold"] === id}; before the click at the peer: ${notYet}; panel lists ${panel.outgoing?.length}; status ${st.status} → ${sent.status}; copies at the peer: ${copies}`,
+	);
+	const dropped = await raw("duet_send", { text: "HOLD-DROP" });
+	const dr = (await raw("duet_reply", { id: dropped._meta["duet/hold"], action: "drop" })).structuredContent;
+	const expiring = await raw("duet_send", { text: "HOLD-EXPIRE" });
+	await sleep(5000);
+	const ex = (await raw("duet_reply", { id: expiring._meta["duet/hold"], action: "send" })).structuredContent;
+	const guess = (await raw("duet_reply", { id: "not-a-hold", action: "send" })).structuredContent;
+	await sleep(1000);
+	check(
+		"gate 2 (chat app): Don't send drops it; a reply nobody clicks expires unsent; a made-up id sends nothing",
+		dr.status === "dropped" && ex.status === "expired" && guess.status === "expired" && !said("HOLD-DROP") && !said("HOLD-EXPIRE"),
+		`drop → ${dr.status}; after the hold time → ${ex.status}; made-up id → ${guess.status}; at the peer: ${["HOLD-DROP", "HOLD-EXPIRE"].filter(said).join(", ") || "neither"}`,
+	);
+	// A held reply longer than the panel lists whole: the panel gets its start, marked not full, and
+	// what Show all (duet_reply status) returns is exactly what Send sends.
+	const longText = "LONG-REPLY " + "q".repeat(25_000) + " END";
+	const longHeld = await raw("duet_send", { text: longText });
+	const out = (await raw("duet_room_state", { key })).structuredContent.outgoing.find((o) => o.id === longHeld._meta["duet/hold"]);
+	const longStatus = (await raw("duet_reply", { id: longHeld._meta["duet/hold"], action: "status" })).structuredContent;
+	check(
+		"gate 2 (panel fallback): a long held reply is listed as its start, marked not full; Show all gives all of it",
+		out && out.full === false && out.size === longText.length && out.text.length <= 20_001 && longStatus.text === longText,
+		`listed ${out?.text.length} of ${out?.size}, full: ${out?.full}; Show all: ${longStatus.text?.length}`,
+	);
+	await raw("duet_reply", { id: longHeld._meta["duet/hold"], action: "drop" });
+	// The card names exactly who gets it: with two others in the room and no `to`, everyone.
+	const { publish: pub, envelope: env } = await import("../transport.js");
+	await pub(SERVER, topicFor(room), env({ fromId: "p-ana", from: "ana", kind: "msg", text: "hi from ana" }));
+	await pub(SERVER, topicFor(room), env({ fromId: "p-nika", from: "nika", kind: "msg", text: "hi from nika" }));
+	await until(async () => (await raw("duet_room_state", { key })).structuredContent.peers?.length >= 2, 8000, "two peers").catch(() => {});
+	const toAll = (await raw("duet_send", { text: "TO-ALL" })).structuredContent;
+	const toNika = (await raw("duet_send", { text: "TO-NIKA", to: "nika" })).structuredContent;
+	check("gate 2: the card names who gets it (no `to` with two others: everyone in the room)", toAll.to === "everyone in the room" && toNika.to === "nika", `no to: ${toAll.to}; to nika: ${toNika.to}`);
+	await c.stop();
+
+	// Auto mode on a host that draws panels: no gates, the reply goes out at once.
+	const au = startServer("chatauto", room, { args: ["--mode", "auto"] });
+	await au.init("claude-ai", { caps: UI });
+	await waitConnected(au);
+	const auOut = (await au.request("tools/call", { name: "duet_send", arguments: { text: "AUTO-PANEL", user_asked: true } })).result;
+	await until(() => said("AUTO-PANEL"), 8000, "auto reply").catch(() => {});
+	check("gate 2: auto mode on a panel host sends at once (no hold)", auOut.content[0].text.startsWith("Sent to") && !auOut._meta?.["duet/hold"] && said("AUTO-PANEL"), `${auOut.content[0].text}; at the peer: ${said("AUTO-PANEL")}`);
+	await au.stop();
+	sub.stop();
 }
 
 try {
