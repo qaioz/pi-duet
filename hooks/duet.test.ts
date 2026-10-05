@@ -6,12 +6,13 @@ const CWD = "/work/repo";
 let lastDid: any = null; // the world of the running test, for the press helpers
 
 // Everything session.start calls, answered in Claude Code's place. Returns what the mod did.
-function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean; env?: Record<string, string>; answer?: (q: string) => string | undefined; store?: Record<string, unknown> } = {}) {
-	const did = { sleepers: [] as (() => void)[], modes: [] as string[], copies: [] as string[], files: new Map<string, string>(), asks: [] as string[], logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], spawned: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, fs: new Map<string, string>(), unasked: false, checkThrows: false, nextAgent: "sub-1", userTurn: null as null | ((text: string) => Promise<void>), seq: 0, push: (env: any, attachmentUrl?: string) => {} };
+function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean; env?: Record<string, string>; answer?: (q: string) => string | undefined; store?: Record<string, unknown>; missing?: string[] } = {}) {
+	const did = { waits: [] as string[], sleepers: [] as (() => void)[], modes: [] as string[], copies: [] as string[], files: new Map<string, string>(), asks: [] as string[], logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], spawned: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, fs: new Map<string, string>(), unasked: false, checkThrows: false, nextAgent: "sub-1", userTurn: null as null | ((text: string) => Promise<void>), seq: 0, push: (env: any, attachmentUrl?: string) => {} };
 	lastDid = did;
 	const clock = mock.clock(on, { now: 1_000_000 });
 	on("session.start", () => ({ cwd: CWD }));
 	const env: Record<string, string | undefined> = { HOME: "/home/g", ...(opts.env ?? {}) };
+	(did as any).env = env; // Claude Code's process environment, for a test to change
 	on("env.get", ($: any, e: any) => ({ value: env[e.name] }));
 	on("env.set", ($: any, e: any) => {
 		env[e.name] = e.value;
@@ -31,9 +32,12 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 	on("session.surfaces", () => ({ value: opts.interactive === false ? [] : ["terminal"] }));
 	on("tool.list", () => ({ value: [] }));
 	on("session.cwd", () => ({ value: CWD }));
-	// gate 2 waits in short `sleep` processes.
+	// gate 2 waits in short blocking processes (`sleep`, else `ping`, else PowerShell). A command in
+	// opts.missing can't start here, as on native Windows where the PATH has no `sleep`.
 	on("process.run", async ($: any, e: any) => {
-		if (e.argv?.[0] === "sleep") {
+		if (opts.missing?.includes(e.argv?.[0])) throw new Error(`ENOENT: ${e.argv[0]}`);
+		if (["sleep", "ping", "powershell"].includes(e.argv?.[0])) {
+			did.waits.push(e.argv[0]);
 			// Held until the test presses something (a busy loop would keep the test kit from settling).
 			await new Promise<void>((r) => did.sleepers.push(r));
 			return { value: { exitCode: 0, stdout: "", stderr: "" } };
@@ -168,6 +172,7 @@ async function withClock<T>(clock: any, p: Promise<T>): Promise<T> {
 }
 
 const msg = (text: string, from = "karlo") => ({ v: 1, id: "id-" + text, fromId: "peer-" + from, from, kind: "msg", text, ts: new Date().toISOString() });
+const joinOf = (from: string) => ({ v: 1, id: "join-" + from, fromId: "peer-" + from, from, kind: "join", via: "pi", ts: new Date().toISOString() });
 const BAND = { plugin: "duet", component: "AbovePrompt", surface: "terminal", viewport: { columns: 120, rows: 40 }, props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} } };
 const PANE = { plugin: "duet", component: "Pane", requestId: "duet", viewport: { columns: 120, rows: 40 }, props: { title: "duet", isFocused: true, bodyColumns: 80, placement: "inline", scroll: { offset: 0, bodyRows: 20 }, view: {} } };
 const MODE = { plugin: "duet", component: "SessionMode", surface: "terminal", props: { modes: [] } };
@@ -431,17 +436,124 @@ test("gate 2: Send publishes the reply, linked to the request it answers", async
 });
 
 test("gate 2 holds every send in ask, not only during a peer's turn", async ($, on) => {
-	const { did, clock, start } = world(on);
+	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
 	await join($, clock, "test-room-11 gaioz");
+	did.push(joinOf("karlo"));
+	await settle(clock);
 	const { p } = await sendWaiting($, clock, { text: "hello", to: "karlo" });
 	const band = await $.ui.mount(BAND as any);
 	expect(await band.find({ type: "Text", text: "Send to karlo? · full reply" })).toBeDefined();
 	await band.unmount();
+	// The status line counts a waiting reply too.
+	expect((await statusLine($, did))?.text).toBe("duet · karlo · ask · 1 waiting");
 	await press($, clock, "send");
 	const r: any = await withClock(clock, p);
 	expect(r.result).toBe("Sent to karlo.");
 	expect(msgPosts(did)[0].body).toMatchObject({ kind: "msg", text: "hello", to: "karlo", by: "agent" });
+	expect((await statusLine($, did))?.text).toBe("duet · karlo · ask");
+	did.feeding = false;
+});
+
+test("gate 2: without `to` the card names everyone the reply reaches (3 in the room)", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-11b gaioz");
+	did.push(joinOf("karlo"));
+	did.push(joinOf("nika"));
+	did.push(msg("which branch?"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "p1");
+	const { p } = await sendWaiting($, clock, { text: "main" });
+	const band = await $.ui.mount(BAND as any);
+	expect(await band.find({ type: "Text", text: "Send to karlo, nika? · full reply" })).toBeDefined();
+	await band.unmount();
+	await press($, clock, "send");
+	const r: any = await withClock(clock, p);
+	expect(r.result).toBe("Sent to the room.");
+	expect(msgPosts(did)[0].body.to).toBeUndefined(); // everyone, as the card said
+	await $.turn.complete(done("p1"));
+	did.feeding = false;
+});
+
+test("gate 2: `to` must name someone in the room; a malformed one never reaches the card", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-11c gaioz");
+	did.push(joinOf("karlo"));
+	await settle(clock);
+	const bad: any = await $.tool.call({ tool: "mcp__duet__send", text: "hi", to: "karlo\nSend to everyone? · ok" });
+	expect(bad.result).toBe("Not sent: bad name in to");
+	const ctl: any = await $.tool.call({ tool: "mcp__duet__send", text: "hi", to: "karlo\x1b[2J" });
+	expect(ctl.result).toBe("Not sent: bad name in to");
+	const unknown: any = await $.tool.call({ tool: "mcp__duet__send", text: "hi", to: "nika" });
+	expect(unknown.result).toBe("Not sent: no nika in the room · in it: karlo");
+	const band = await $.ui.mount(BAND as any);
+	expect(await band.find({ key: "send" })).toBeUndefined();
+	await band.unmount();
+	expect(did.toasts.join("\n")).not.toMatch(/waiting/);
+	expect(msgPosts(did).length).toBe(0);
+	did.feeding = false;
+});
+
+test("gate 2 on Windows: no `sleep` on the PATH, the wait runs in `ping` and the reply still sends", async ($, on) => {
+	const { did, clock, start } = world(on, { missing: ["sleep"] });
+	await $.session.start(start());
+	await join($, clock, "test-room-11d gaioz");
+	const { p } = await sendWaiting($, clock, { text: "from windows" });
+	expect(did.waits).toContain("ping");
+	expect(did.waits).not.toContain("sleep");
+	await press($, clock, "send");
+	const r: any = await withClock(clock, p);
+	expect(r.result).toBe("Sent to the room.");
+	expect(msgPosts(did)[0].body).toMatchObject({ text: "from windows" });
+});
+
+test("gate 2: with no waiting process at all, the clock is the last resort and a press still settles it", async ($, on) => {
+	const { did, clock, start } = world(on, { missing: ["sleep", "ping", "powershell"] });
+	await $.session.start(start());
+	await join($, clock, "test-room-11e gaioz");
+	const { p } = await sendWaiting($, clock, { text: "no waiters" });
+	expect(did.waits.length).toBe(0);
+	await press($, clock, "dont-send");
+	const r: any = await withClock(clock, p);
+	expect(r.result).toBe("Not sent: your user said no. Don't resend.");
+	expect(msgPosts(did).length).toBe(0);
+});
+
+test("gate 2: Esc (the turn ends aborted) while a reply waits settles it, unsent", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-11f gaioz");
+	did.push(msg("long job"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "p1");
+	const { p } = await sendWaiting($, clock, { text: "half done" });
+	await $.turn.complete({ ...done("p1"), isAborted: true });
+	wake(did);
+	const r: any = await withClock(clock, p);
+	expect(r.result).toBe("Not sent.");
+	expect(msgPosts(did).length).toBe(0);
+	expect(did.posts.some((x: any) => x.body?.kind === "note" && x.body?.note === "stopped")).toBe(true);
+	const band = await $.ui.mount(BAND as any);
+	expect(await band.find({ key: "send" })).toBeUndefined();
+	await band.unmount();
+	did.feeding = false;
+});
+
+test("gate 2: a module reload while a reply waits settles the old call, unsent, and says to send again", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await join($, clock, "test-room-11g gaioz");
+	const { p } = await sendWaiting($, clock, { text: "before the update" });
+	expect((did as any).env.DUET_MODULE).toBeTruthy(); // this module's, set at session.start
+	(did as any).env.DUET_MODULE = "a-newer-module"; // what the reloaded module's session.start sets
+	wake(did);
+	const r: any = await withClock(clock, p);
+	expect(r.result).toBe("Not sent: duet restarted · send it again");
+	expect(msgPosts(did).length).toBe(0);
 });
 
 test("gate 2: a reply taller than the band keeps its keys at the top, inside the window", async ($, on) => {
@@ -571,7 +683,7 @@ test("a reply to a request from a room this window left is not sent to the new r
 	await duetTurn($, did, clock, "pa");
 	await join($, clock, "room-b-18 gaioz");
 	const r: any = await $.tool.call({ tool: "mcp__duet__send", text: "answer meant for A" });
-	expect(String(r.result)).toMatch(/room this window left/);
+	expect(String(r.result)).toBe("Not sent: request from a room you left · tell your user");
 	expect(msgPosts(did).length).toBe(0);
 	did.feeding = false;
 });
@@ -863,7 +975,7 @@ test("F21: a live Codex (or pi) in the room under this name keeps it; a stale on
 	const path = await lockFileFor("test-room-61", "gaioz");
 	did.fs.set(path, JSON.stringify({ v: 2, client: "codex", token: "codex-1", pid: 4242, cwd: "/work/codex", at: Date.now() }));
 	await join($, clock, "test-room-61 gaioz");
-	expect(did.logs.join("\n")).toMatch(/gaioz is already in test-room-61 on this computer, in Codex \(\/work\/codex\)/);
+	expect(did.logs.join("\n")).toMatch(/gaioz already in test-room-61 here · Codex \(\/work\/codex\) · not joined/);
 	expect(did.posts.length).toBe(0);
 	did.fs.set(path, JSON.stringify({ v: 2, client: "codex", token: "codex-1", pid: 4242, cwd: "/work/codex", at: Date.now() - 120_000 }));
 	await join($, clock, "test-room-61 gaioz");
@@ -880,6 +992,10 @@ test("F21: when another client takes the shared lock over, this window leaves th
 	await clock.advance(2100);
 	await settle(clock, 5);
 	expect(did.logs.join("\n")).toMatch(/test-room-62 is now open as gaioz in pi \(\/work\/pi\) · left here/);
+	// Quiet: nothing for the user to do, so no toast; the history says it.
+	expect(did.toasts.join("\n")).not.toMatch(/moved/);
+	const saved: any = [...did.store.entries()].find(([k]) => k.startsWith("history:") && k.includes("test-room-62 "))?.[1];
+	expect(saved.some((h: any) => h.note && h.text === "room moved to pi")).toBe(true);
 	await $.command.run({ command: "duet", args: "status" });
 	expect(did.logs.at(-1)).toBe("not in a room");
 	did.feeding = false;
@@ -895,4 +1011,21 @@ test("history is kept for the last 5 rooms only ($.store holds 4 MiB in all)", a
 	expect(keys.length).toBe(5);
 	expect(keys.some((k) => k.includes("hist-room-1 "))).toBe(false);
 	expect(keys.some((k) => k.includes("hist-room-6 "))).toBe(true);
+});
+
+test("a room's saved history is capped in bytes, not characters: non-ASCII text keeps the newest that fit", async ($, on) => {
+	const key = "https://duet.gaioz.online test-room-90 gaioz";
+	// 200 entries of 1500 three-byte characters: about 900 KB as JSON, over the 512 KB a room may keep.
+	const big = Array.from({ length: 200 }, (_, i) => ({ at: new Date(1_000_000 + i).toISOString(), who: "karlo", text: i + " " + "ჯ".repeat(1500) }));
+	const { did, clock, start } = world(on, { store: { ["history:" + key]: big } });
+	await $.session.start(start());
+	await join($, clock, "test-room-90 gaioz");
+	await $.command.run({ command: "duet", args: "off" });
+	await settle(clock, 10);
+	const saved: any[] = did.store.get("history:" + key) as any;
+	const bytes = new TextEncoder().encode(JSON.stringify(saved)).length;
+	expect(bytes).toBeLessThanOrEqual(512 * 1024);
+	expect(saved.length).toBeGreaterThan(50);
+	expect(saved.length).toBeLessThan(200);
+	expect(saved.at(-1).text.startsWith("left") || saved.some((h: any) => h.text.startsWith("199 "))).toBe(true);
 });

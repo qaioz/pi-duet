@@ -13,7 +13,9 @@
 // Gate 2: every reply Claude sends with the duet tool waits as a card showing the whole reply
 // (1 Send, 2 Don't send); the tool call holds until the press. Auto mode: no gates, up to MAX_AUTO
 // requests in a row without the user. While Claude works on a peer's request it runs under the
-// user's own permission mode, like any other turn: duet adds no checks of its own.
+// user's own permission mode, like any other turn: duet adds no checks of its own. So gate 2 holds
+// the duet tool only; it is not a fence around what leaves the computer: where commands run unasked,
+// a peer can ask Claude to post to the room's relay topic (or anywhere) with curl.
 //
 // Which turn is the peer's (for the spinner, the notes the peer gets, and which request a reply
 // answers): Claude Code hands turn.start the prompt's text wrapped in its own lines ("The duet plugin
@@ -24,7 +26,7 @@
 // validator refuses `$` passed to an imported function. wire.js is pure.
 import {
 	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
-	isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, preview, randomId, sanitize, sha256hex, timeOf, topicFor,
+	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, preview, randomId, sanitize, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
 const PANE = "duet";
@@ -33,7 +35,8 @@ const REPAIR_POLL_MS = 10_000; // ntfy.sh writes its cache in batches; re-poll a
 const MAX_BACKOFF_MS = 30_000;
 const LOCK_STALE_MS = 60_000;
 const HISTORY_MAX = 200; // per room, kept in $.store across restarts
-const HISTORY_TEXT_MAX = 1500; // characters of one history entry kept ($.store holds 4 MiB in all)
+const HISTORY_TEXT_MAX = 1500; // characters of one history entry kept
+const HISTORY_BYTES_MAX = 512 * 1024; // one room's saved history, as JSON in UTF-8: 5 rooms stay well under $.store's 4 MiB
 const HISTORY_ROOMS = 5; // rooms whose history is kept; older ones are dropped
 const QUEUE_MAX = 50;
 const BATCH_MAX = 5; // messages handed to Claude in one turn
@@ -45,6 +48,7 @@ const ASKING_MODES = ["default", "acceptEdits", "plan", "dontAsk"];
 
 // ---------- state (module variables; the room and the turn in progress are also kept in $.store) ----------
 
+const moduleId = randomId(); // this module instance; a reload loads a new one (kept in DUET_MODULE)
 let token = randomId(); // this window; adopted from $.store after a module reload
 let installId = "";
 let sessionId = "";
@@ -88,6 +92,7 @@ let lineChain = Promise.resolve(); // received lines, one at a time in arrival o
 const warnedAbout = new Set(); // warnings already given: "crowd", "place:<name>"
 
 const viaLabel = (via) => VIA[via] ?? "";
+const oneLine = (s) => sanitize(s, 200).replace(/\n/g, " "); // a name or list of names on a card, safe to draw
 const livePeers = () => [...peers.entries()].filter(([, p]) => !p.left);
 const peerList = () => livePeers().map(([n]) => n).join(", ");
 const peerNames = () => (peerTurn ? peerTurn.froms.join(", ") : peerList() || "the room");
@@ -117,8 +122,22 @@ function remember($, entry) {
 	// One write per burst.
 	historySave = $.clock.after(200, () => {
 		historySave = null;
-		void $.store.set(key, history).catch(() => {});
+		void $.store.set(key, fitHistory(history)).catch(() => {});
 	});
+}
+
+// The newest entries whose JSON fits HISTORY_BYTES_MAX (non-ASCII text, escapes: a character can be
+// several bytes), so a full $.store never blocks the writes of the cursor, the room and the lock.
+function fitHistory(list) {
+	let total = 2;
+	let i = list.length;
+	while (i > 0) {
+		const size = byteLength(JSON.stringify(list[i - 1])) + 1;
+		if (total + size > HISTORY_BYTES_MAX) break;
+		total += size;
+		i--;
+	}
+	return i ? list.slice(i) : list;
 }
 
 async function canDraw($) {
@@ -545,7 +564,7 @@ async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 	if (held) {
 		let answer = "Cancel";
 		try {
-			answer = await $.ui.ask(`duet: ${code} is open as ${name} in another window (${held.cwd}). Move it here?`, ["Move here", "Cancel"]);
+			answer = await $.ui.ask(`duet: ${code} · ${name} · open in another window (${held.cwd}) · move here?`, ["Move here", "Cancel"]);
 		} catch {}
 		if (answer !== "Move here") return;
 		await $.store.set(lockKey, { ...held, release: token });
@@ -567,7 +586,7 @@ async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
 		if (!quiet) {
 			const where = other.cwd ? ` (${other.cwd})` : other.pid ? ` (pid ${other.pid})` : "";
-			$.ui.log(`${name} is already in ${code} on this computer, in ${describeClient(other)}${where}: use that, close it, or pick another name`);
+			$.ui.log(`${name} already in ${code} here · ${describeClient(other)}${where} · not joined`);
 			$.ui.toast(`duet: ${name} already in this room · ${describeClient(other)}`);
 		}
 		return;
@@ -664,9 +683,10 @@ async function beat($) {
 		const shared = await readFileLock($, r.fileLock);
 		if (room !== r) return;
 		if (shared && shared.token !== token && shared.client !== "claude-code" && (await fileLockHeld($, shared))) {
+			// Not a failure and nothing to do: history and the transcript only (quiet).
+			remember($, { text: `room moved to ${describeClient(shared)}`, note: true });
 			await leave($, null, false, true);
 			$.ui.log(`${r.code} is now open as ${r.name} in ${describeClient(shared)}${shared.cwd ? ` (${shared.cwd})` : ""} · left here`);
-			$.ui.toast(`duet: room moved to ${describeClient(shared)}`);
 			return;
 		}
 		await writeFileLock($, r.fileLock);
@@ -686,7 +706,7 @@ async function leave($, note, forget, lost) {
 		historySave.cancel?.();
 		historySave = null;
 	}
-	await $.store.set("history:" + r.key, history).catch(() => {});
+	await $.store.set("history:" + r.key, fitHistory(history)).catch(() => {});
 	// A request taken but not yet handed to Claude stays with the room (its resume point is saved).
 	if (pendingPeer && !pendingPeer.submitted) pendingPeer = null;
 	await saveTurn($);
@@ -775,23 +795,44 @@ function decide($, item, decision) {
 }
 
 // Hold the send tool's call until the user presses Send or Don't send. The hook's time limit stops
-// while a mods API call is in flight and runs on through a promise of the mod's own, so the wait
-// sits inside short `sleep` processes. Where `sleep` can't start (Windows), $.clock.sleep — which
-// counts — and the hook's .catch then refuses the send.
+// while a mods API call is in flight and runs on through a promise of the mod's own (and through
+// $.clock.sleep), so the wait sits inside short blocking processes: `sleep` (macOS, Linux, Git Bash),
+// else `ping` to this computer (Windows' own, System32: about a second a round), else PowerShell's
+// Start-Sleep. A waiter that can't start, or exits with an error, is dropped for the rest of this
+// module's life. Only with none of them left does the wait fall back to $.clock.sleep, which counts
+// against the hook's 10 s; the hook's .catch then refuses the send (fails closed).
+const WAITERS = [
+	["sleep", "0.25"],
+	["ping", "-n", "2", "127.0.0.1"],
+	["powershell", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Milliseconds 250"],
+];
+let waiter = 0; // the first of WAITERS not yet found missing here
 async function awaitDecision($, item, signal) {
-	let viaProcess = true;
 	while (!item.decision) {
 		if (signal?.aborted) return "stopped";
 		if (!room) return "left";
-		if (viaProcess) {
+		// A module reload (a plugin update) while this reply waits: the new module never draws this
+		// card, so settle the call, unsent, instead of holding it until Esc.
+		let current = "";
+		try {
+			current = (await $.env.get("DUET_MODULE")) || "";
+		} catch {}
+		if (current && current !== moduleId) return "reloaded";
+		if (item.decision) break;
+		if (waiter < WAITERS.length) {
 			try {
-				await $.process.run(["sleep", "0.25"], { timeoutMs: 5000 });
-				continue;
-			} catch {
-				viaProcess = false;
-			}
+				const r = await $.process.run(WAITERS[waiter], { timeoutMs: 5000 });
+				if (r.exitCode === 0) continue;
+			} catch {}
+			if (item.decision) break;
+			waiter++;
+			continue;
 		}
-		await $.clock.sleep(250);
+		try {
+			await $.clock.sleep(250, signal ? { signal } : undefined);
+		} catch {
+			return signal?.aborted ? "stopped" : "reloaded";
+		}
 	}
 	return item.decision;
 }
@@ -817,14 +858,19 @@ async function sendTool($, e, signal) {
 	if (!text) return { result: "Not sent: empty." };
 	if (text.length > MAX_TEXT) return { result: `Not sent: ${text.length} characters, limit ${MAX_TEXT}. Send the key part, or split it.` };
 	const to = typeof e.to === "string" && e.to.trim() ? e.to.trim() : undefined;
+	// `to` comes from the model: only the name of someone in the room (it shows on the card, the
+	// spinner and the toast, and a name nobody has would reach no one).
+	if (to !== undefined && !isName(to)) return { result: "Not sent: bad name in to" };
+	if (to !== undefined && !livePeers().some(([n]) => n === to)) return { result: `Not sent: no ${to} in the room · in it: ${peerList() || "no one yet"}` };
 	const fromPeer = !!peerTurn;
-	if (fromPeer && peerTurn.roomKey !== room.key) return { result: "Not sent: that request came from a room this window left. Tell your user." };
+	if (fromPeer && peerTurn.roomKey !== room.key) return { result: "Not sent: request from a room you left · tell your user" };
 	const r = room;
-	// Gate 2, in ask mode: the whole reply waits above the prompt for Send / Don't send.
+	// Gate 2, in ask mode: the whole reply waits above the prompt for Send / Don't send. Without
+	// `to` a reply reaches everyone in the room, so the card names everyone.
 	if (!autoActive()) {
-		const item = { id: randomId(), text, to: to ?? (fromPeer ? peerTurn.froms.join(", ") : peerList() || "the room"), decision: "" };
+		const item = { id: randomId(), text, to: to ?? (peerList() || "the room"), decision: "" };
 		outbox = [...outbox, item];
-		$.ui.toast(`duet: reply to ${item.to} waiting`);
+		$.ui.toast(`duet: reply to ${oneLine(item.to)} waiting`);
 		redraw($);
 		let decision;
 		try {
@@ -834,6 +880,7 @@ async function sendTool($, e, signal) {
 			redraw($);
 		}
 		if (decision === "drop") return { result: "Not sent: your user said no. Don't resend." };
+		if (decision === "reloaded") return { result: "Not sent: duet restarted · send it again" };
 		if (decision !== "send") return { result: "Not sent." };
 		if (room !== r) return { result: "Not sent: left the room." };
 	}
@@ -881,7 +928,7 @@ function drawCard($, e) {
 	if (outbox.length) {
 		const item = outbox[0];
 		const more = outbox.length > 1 ? ` · +${outbox.length - 1}` : "";
-		const title = Text({ bold: true, children: [`Send to ${item.to}? · full reply${more}`] });
+		const title = Text({ bold: true, children: [`Send to ${oneLine(item.to)}? · full reply${more}`] });
 		const keys = buttons([
 			Button({ key: "send", label: "Send", hotkey: "1", plain: true, onPress: () => decide($, item, "send") }),
 			Button({ key: "dont-send", label: "Don't send", hotkey: "2", plain: true, onPress: () => decide($, item, "drop") }),
@@ -1036,7 +1083,9 @@ function drawPane($, e) {
 function modeLabel() {
 	if (!room) return "";
 	const ps = peerList() || "no one yet";
-	const waiting = queue.length ? ` · ${queue.length} waiting` : "";
+	// Both gates: requests (gate 1) and replies (gate 2) waiting for the user.
+	const n = queue.length + outbox.length;
+	const waiting = n ? ` · ${n} waiting` : "";
 	return `duet · ${ps} · ${room.mode}${paused ? " · paused" : ""}${waiting}${connected ? "" : " · offline"}`;
 }
 
@@ -1108,6 +1157,10 @@ export function register(on) {
 		// reload (it's set) from a new process (it isn't), whatever order the events come in.
 		const sameProcess = !!(await $.env.get("DUET_PROCESS"));
 		if (!sameProcess) await $.env.set("DUET_PROCESS", randomId());
+		// The module now running here: a reply an older module still holds at gate 2 settles, unsent.
+		try {
+			await $.env.set("DUET_MODULE", moduleId);
+		} catch {}
 		const turn = sameProcess ? await $.store.get("turn:" + sessionId) : null;
 		if (!sameProcess) await $.store.delete("turn:" + sessionId);
 		if (turn && Date.now() - (turn.at ?? 0) < 6 * 3600_000) {
@@ -1195,7 +1248,7 @@ export function register(on) {
 			// All session.end hooks share 1.5 s: best effort, and nothing on a crash. The folder keeps
 			// its room ("room:<cwd>"), so the next session here rejoins quietly.
 			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "note", note: "left" })).catch(() => {});
-			void $.store.set("history:" + r.key, history).catch(() => {});
+			void $.store.set("history:" + r.key, fitHistory(history)).catch(() => {});
 			void $.store.set(r.lockKey, { token, cwd, at: 0, released: true }).catch(() => {});
 			if (r.fileLock) void readFileLock($, r.fileLock).then((l) => (l?.token === token ? writeFileLock($, r.fileLock, true) : undefined)).catch(() => {});
 			void $.store.delete("active:" + sessionId).catch(() => {});
@@ -1233,7 +1286,7 @@ export function register(on) {
 
 	on("tool.describe", { tool: SEND_TOOL }, async ($, e) => ({ description: e.description, isDeferred: false }));
 
-	on("tool.call", { tool: SEND_TOOL }, async ($, e, next) => sendTool($, e, next.signal)).catch(async () => ({ result: "Not sent: duet failed. Ask your user before trying again." }));
+	on("tool.call", { tool: SEND_TOOL }, async ($, e, next) => sendTool($, e, next.signal)).catch(async () => ({ result: "Not sent: duet error · ask your user before resending" }));
 
 	on("prompt.submit", async ($, e, next) => {
 		// Claude Code's own stamp: Enter at the prompt, or Remote Control.
@@ -1275,6 +1328,9 @@ export function register(on) {
 
 	on("turn.complete", async ($, e, next) => {
 		if (!e.agentId && e.turnId === runningTurn) runningTurn = "";
+		// The main turn ended (Esc, an error) while a reply still waits at gate 2: its call was
+		// abandoned, so settle it, unsent. (next.signal normally does this first.)
+		if (!e.agentId && outbox.length) for (const item of outbox) decide($, item, "stopped");
 		if (!e.agentId && peerTurn && peerTurn.turnId === e.turnId) {
 			const t = peerTurn;
 			peerTurn = null;
@@ -1331,7 +1387,7 @@ export function register(on) {
 
 	on("ui.render", { component: "Spinner" }, async ($, e, next) => {
 		if (!peerTurn && !outbox.length) return next(e);
-		const suffix = outbox.length ? ` · reply to ${outbox[0].to} waiting` : ` · for ${peerNames()}`;
+		const suffix = outbox.length ? ` · reply to ${oneLine(outbox[0].to)} waiting` : ` · for ${peerNames()}`;
 		return next({ ...e, props: { ...e.props, suffix: `${e.props.suffix ?? ""}${suffix}` } });
 	});
 }
