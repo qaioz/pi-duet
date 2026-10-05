@@ -33,7 +33,8 @@ const REPAIR_POLL_MS = 10_000; // ntfy.sh writes its cache in batches; re-poll a
 const MAX_BACKOFF_MS = 30_000;
 const LOCK_STALE_MS = 60_000;
 const HISTORY_MAX = 200; // per room, kept in $.store across restarts
-const HISTORY_TEXT_MAX = 4000; // characters of one history entry kept in $.store
+const HISTORY_TEXT_MAX = 1500; // characters of one history entry kept ($.store holds 4 MiB in all)
+const HISTORY_ROOMS = 5; // rooms whose history is kept; older ones are dropped
 const QUEUE_MAX = 50;
 const BATCH_MAX = 5; // messages handed to Claude in one turn
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex" };
@@ -604,6 +605,12 @@ async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 	outbox = [];
 	peers.clear();
 	const stored = await $.store.get("history:" + key);
+	// Keep the histories of the last few rooms only: $.store is 4 MiB for everything.
+	try {
+		const recent = [key, ...(((await $.store.get("history-rooms")) ?? []).filter((k) => k !== key))];
+		for (const old of recent.slice(HISTORY_ROOMS)) await $.store.delete("history:" + old);
+		await $.store.set("history-rooms", recent.slice(0, HISTORY_ROOMS));
+	} catch {}
 	history = Array.isArray(stored) ? stored.slice(-HISTORY_MAX) : [];
 	autoTurns = 0;
 	paused = false;
@@ -679,7 +686,7 @@ async function leave($, note, forget, lost) {
 		historySave.cancel?.();
 		historySave = null;
 	}
-	await $.store.set("history:" + r.key, history);
+	await $.store.set("history:" + r.key, history).catch(() => {});
 	// A request taken but not yet handed to Claude stays with the room (its resume point is saved).
 	if (pendingPeer && !pendingPeer.submitted) pendingPeer = null;
 	await saveTurn($);

@@ -884,3 +884,15 @@ test("F21: when another client takes the shared lock over, this window leaves th
 	expect(did.logs.at(-1)).toBe("not in a room");
 	did.feeding = false;
 });
+
+test("history is kept for the last 5 rooms only ($.store holds 4 MiB in all)", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	for (let i = 1; i <= 6; i++) await join($, clock, `hist-room-${i} gaioz`);
+	await $.command.run({ command: "duet", args: "off" });
+	await settle(clock, 10);
+	const keys = [...did.store.keys()].filter((k) => k.startsWith("history:"));
+	expect(keys.length).toBe(5);
+	expect(keys.some((k) => k.includes("hist-room-1 "))).toBe(false);
+	expect(keys.some((k) => k.includes("hist-room-6 "))).toBe(true);
+});
