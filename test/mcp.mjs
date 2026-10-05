@@ -626,12 +626,13 @@ async function gateTwo() {
 	const replyTool = tools.find((t) => t.name === "duet_reply");
 	const card = (await c.request("resources/read", { uri: "ui://duet/send" })).result?.contents?.[0];
 	const raw = async (name, a) => (await c.request("tools/call", { name, arguments: a })).result;
+	const key = (await raw("duet_room", {}))._meta?.["duet/key"]; // the panel's key, as the panel gets it
 	const held = await raw("duet_send", { text: "HOLD-1\nall of it" });
 	const again = await raw("duet_send", { text: "HOLD-1\nall of it" }); // the model resends: the same card
 	const id = held._meta?.["duet/hold"];
 	await sleep(1500);
 	const notYet = said("HOLD-1\nall of it");
-	const panel = (await raw("duet_room_state", {})).structuredContent;
+	const panel = (await raw("duet_room_state", { key })).structuredContent;
 	const st = (await raw("duet_reply", { id, action: "status" })).structuredContent;
 	const sent = (await raw("duet_reply", { id, action: "send" })).structuredContent;
 	await until(() => said("HOLD-1\nall of it"), 8000, "held reply after the click").catch(() => {});
@@ -657,7 +658,36 @@ async function gateTwo() {
 		dr.status === "dropped" && ex.status === "expired" && guess.status === "expired" && !said("HOLD-DROP") && !said("HOLD-EXPIRE"),
 		`drop → ${dr.status}; after the hold time → ${ex.status}; made-up id → ${guess.status}; at the peer: ${["HOLD-DROP", "HOLD-EXPIRE"].filter(said).join(", ") || "neither"}`,
 	);
+	// A held reply longer than the panel lists whole: the panel gets its start, marked not full, and
+	// what Show all (duet_reply status) returns is exactly what Send sends.
+	const longText = "LONG-REPLY " + "q".repeat(25_000) + " END";
+	const longHeld = await raw("duet_send", { text: longText });
+	const out = (await raw("duet_room_state", { key })).structuredContent.outgoing.find((o) => o.id === longHeld._meta["duet/hold"]);
+	const longStatus = (await raw("duet_reply", { id: longHeld._meta["duet/hold"], action: "status" })).structuredContent;
+	check(
+		"gate 2 (panel fallback): a long held reply is listed as its start, marked not full; Show all gives all of it",
+		out && out.full === false && out.size === longText.length && out.text.length <= 20_001 && longStatus.text === longText,
+		`listed ${out?.text.length} of ${out?.size}, full: ${out?.full}; Show all: ${longStatus.text?.length}`,
+	);
+	await raw("duet_reply", { id: longHeld._meta["duet/hold"], action: "drop" });
+	// The card names exactly who gets it: with two others in the room and no `to`, everyone.
+	const { publish: pub, envelope: env } = await import("../transport.js");
+	await pub(SERVER, topicFor(room), env({ fromId: "p-ana", from: "ana", kind: "msg", text: "hi from ana" }));
+	await pub(SERVER, topicFor(room), env({ fromId: "p-nika", from: "nika", kind: "msg", text: "hi from nika" }));
+	await until(async () => (await raw("duet_room_state", { key })).structuredContent.peers?.length >= 2, 8000, "two peers").catch(() => {});
+	const toAll = (await raw("duet_send", { text: "TO-ALL" })).structuredContent;
+	const toNika = (await raw("duet_send", { text: "TO-NIKA", to: "nika" })).structuredContent;
+	check("gate 2: the card names who gets it (no `to` with two others: everyone in the room)", toAll.to === "everyone in the room" && toNika.to === "nika", `no to: ${toAll.to}; to nika: ${toNika.to}`);
 	await c.stop();
+
+	// Auto mode on a host that draws panels: no gates, the reply goes out at once.
+	const au = startServer("chatauto", room, { args: ["--mode", "auto"] });
+	await au.init("claude-ai", { caps: UI });
+	await waitConnected(au);
+	const auOut = (await au.request("tools/call", { name: "duet_send", arguments: { text: "AUTO-PANEL", user_asked: true } })).result;
+	await until(() => said("AUTO-PANEL"), 8000, "auto reply").catch(() => {});
+	check("gate 2: auto mode on a panel host sends at once (no hold)", auOut.content[0].text.startsWith("Sent to") && !auOut._meta?.["duet/hold"] && said("AUTO-PANEL"), `${auOut.content[0].text}; at the peer: ${said("AUTO-PANEL")}`);
+	await au.stop();
 	sub.stop();
 }
 

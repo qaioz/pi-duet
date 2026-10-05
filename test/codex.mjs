@@ -213,17 +213,26 @@ async function main() {
 	const g2b = await c.answer("Don't send");
 	const dropOut = await dropAsk;
 	const escAsk = c.call("duet_send", { text: "ESC-ME" }, { id: "turn-2", trigger: "queue" });
-	await c.answer(undefined, "decline");
+	await c.answer(undefined, "cancel"); // Esc in Codex's form
 	const escOut = await escAsk;
+	// A reply on the other side's request under Full Access (Codex declines the form by itself): not sent.
+	const faReplyAsk = c.call("duet_send", { text: "FA-PEER-REPLY" }, { id: "turn-2", trigger: "queue" });
+	await c.answer(undefined, "decline");
+	const faReplyOut = await faReplyAsk;
+	// Too long for the form to show whole: refused before any form, nothing sent.
+	const formsBeforeLong = c.asks.length;
+	const longOut = await c.call("duet_send", { text: "LONG-" + "z".repeat(60_001) }, { id: "turn-2", trigger: "queue" });
 	await sleep(1500);
-	const leaked = p.got.some((e) => e.text === "DROP-ME" || e.text === "ESC-ME");
+	const leaked = p.got.some((e) => e.text === "DROP-ME" || e.text === "ESC-ME" || e.text === "FA-PEER-REPLY" || e.text?.startsWith("LONG-"));
 	check(
-		"gate 2 (ask): duet_send shows the whole reply (Send / Don't send); Send sends it; Don't send and Esc/decline send nothing",
+		"gate 2 (ask): duet_send shows the whole reply (Send / Don't send); Send sends it; Don't send, Esc and Full Access send nothing; a reply too long to show whole is refused",
 		g2.params.message === `duet · send to nika? · full reply\n\n${fullReply}` &&
 			JSON.stringify(g2.params.requestedSchema.properties.answer.enum) === '["Send","Don\'t send"]' &&
 			sentOut.text === "Sent to nika." && !!arrived && arrived.re &&
-			g2b.params.message.includes("DROP-ME") && /^Not sent · your user chose Don't send/.test(dropOut.text) && /^Not sent · couldn't ask you/.test(escOut.text) && !leaked,
-		`form: ${JSON.stringify(g2.params.message.slice(0, 50))}…; Send: ${sentOut.text}, at nika: ${!!arrived}; Don't send: ${dropOut.text.slice(0, 40)}; decline: ${escOut.text.slice(0, 40)}; leaked: ${leaked}`,
+			g2b.params.message.includes("DROP-ME") && /^Not sent · your user chose Don't send/.test(dropOut.text) && /^Not sent · form closed/.test(escOut.text) &&
+			/^Not sent · Codex declined duet's Send form \(Full Access\)/.test(faReplyOut.text) &&
+			/^Not sent · 60006 chars · the Send form shows up to 60000/.test(longOut.text) && c.asks.length === formsBeforeLong && !leaked,
+		`form: ${JSON.stringify(g2.params.message.slice(0, 50))}…; Send: ${sentOut.text}, at nika: ${!!arrived}; Don't send: ${dropOut.text.slice(0, 40)}; Esc: ${escOut.text.slice(0, 30)}; Full Access: ${faReplyOut.text.slice(0, 60)}; 60k+: ${longOut.text.slice(0, 60)} (forms: ${c.asks.length - formsBeforeLong}); leaked: ${leaked}`,
 	);
 	// The model can't call duet_hook.
 	await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-3", prompt: "my own prompt" });
@@ -273,8 +282,37 @@ async function main() {
 	const checked = await c.call("duet_inbox", {}, { id: "turn-7" });
 	check(
 		"Full Access: a declined form blocks the request (not run, not lost); 'check duet' shows it",
-		faOut?.decision === "block" && /couldn't ask you/.test(faOut.reason) && checked.text.includes("REQ-FULL-ACCESS"),
+		faOut?.decision === "block" && /Codex declined duet's form \(Full Access\)/.test(faOut.reason) && checked.text.includes("REQ-FULL-ACCESS"),
 		`hook: ${JSON.stringify(faOut).slice(0, 100)}; check duet: ${checked.text.includes("REQ-FULL-ACCESS")}`,
+	);
+	// Full Access, the user's own send: Codex declines the form by itself; a send the user asked for in
+	// their own prompt goes out (their permission mode approves without asking). The turn that read
+	// "check duet" holds the other side's request, so a send there doesn't.
+	await c.hook({ event: "Stop", thread: "thr-1", turn: "turn-7" });
+	const fromInboxTurn = c.call("duet_send", { text: "FA-AFTER-INBOX", user_asked: true }, { id: "turn-7" });
+	await c.answer(undefined, "decline");
+	const fromInboxOut = await fromInboxTurn;
+	await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-7b", prompt: "tell nika hi" });
+	const ownAsk = c.call("duet_send", { text: "FA-OWN-SEND", user_asked: true }, { id: "turn-7b" });
+	await c.answer(undefined, "decline");
+	const ownOut = await ownAsk;
+	const ownArrived = await until(() => p.got.find((e) => e.text === "FA-OWN-SEND"), 8000, "own send at nika").catch(() => null);
+	// "duet auto" in the user's own prompt under Full Access: the confirm is declined by Codex, the user's word stands.
+	const faAuto = c.call("duet_mode", { mode: "auto" }, { id: "turn-7b" });
+	await c.answer(undefined, "decline");
+	const faAutoOut = await faAuto;
+	const backToAsk = await c.call("duet_mode", { mode: "ask" }, { id: "turn-7b" });
+	// Esc on the confirm keeps ask.
+	const escAuto = c.call("duet_mode", { mode: "auto" }, { id: "turn-7b" });
+	await c.answer(undefined, "cancel");
+	const escAutoOut = await escAuto;
+	await c.hook({ event: "Stop", thread: "thr-1", turn: "turn-7b" });
+	await sleep(1000);
+	check(
+		"Full Access: the user's own send goes out; a send in a turn holding the other side's request doesn't; 'duet auto' in their own prompt switches; Esc keeps ask",
+		ownOut.text === "Sent to nika." && !!ownArrived && /^Not sent · Codex declined/.test(fromInboxOut.text) && !p.got.some((e) => e.text === "FA-AFTER-INBOX") &&
+			/^duet · auto · .*Full Access/.test(faAutoOut.text) && backToAsk.text.startsWith("duet · ask") && /^duet · still ask · form closed/.test(escAutoOut.text),
+		`own: ${ownOut.text}; after check duet: ${fromInboxOut.text.slice(0, 50)}; auto: ${faAutoOut.text}; Esc: ${escAutoOut.text}`,
 	);
 
 	// ---- review attacks: twin requests, a request duet forgot, check duet, history from a request ----

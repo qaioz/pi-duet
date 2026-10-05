@@ -94,6 +94,9 @@ function stdio(name, { args = [], env = {} } = {}) {
 			pending.set(id, r);
 			proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
 		});
+	// The panel's key: duet_room's result carries it in _meta; the panel passes it to its tools.
+	let key;
+	const PANEL_TOOLS = ["duet_room_state", "duet_room_join", "duet_room_leave", "duet_read", "duet_take", "duet_ignore"];
 	return {
 		request,
 		init: async (client, caps = {}) => {
@@ -101,7 +104,15 @@ function stdio(name, { args = [], env = {} } = {}) {
 			proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
 			return r.result;
 		},
-		call: async (tool, a = {}) => (await request("tools/call", { name: tool, arguments: a })).result,
+		// As the panel calls its tools (with the key, once duet_room gave it).
+		call: async (tool, a = {}) => (await request("tools/call", { name: tool, arguments: PANEL_TOOLS.includes(tool) && key ? { key, ...a } : a })).result,
+		// As the model would, if a host listed the app-only tools to it: no key.
+		bare: async (tool, a = {}) => (await request("tools/call", { name: tool, arguments: a })).result,
+		open: async () => {
+			const r = (await request("tools/call", { name: "duet_room", arguments: {} })).result;
+			key = r?._meta?.["duet/key"];
+			return r;
+		},
 		stop: () => proc.stdin.end(),
 	};
 }
@@ -152,6 +163,18 @@ async function localTests() {
 	const cdTools = (await cd.request("tools/list")).result.tools.map((t) => t.name);
 	check("stdio: claude-ai (Claude Desktop's chat) gets the panel tools", cdTools.includes("duet_room") && cdTools.includes("duet_take"), cdTools.join(" "));
 	cd.stop();
+
+	// The panel's tools need the key from duet_room's _meta: the model, even if a host listed them to it,
+	// can't join, read the room (its hold and request ids) or hand itself a request.
+	const noKeyJoin = await desk.bare("duet_room_join", { room: `t-${randomUUID()}`, name: "gaioz" });
+	const noKeyState = await desk.bare("duet_room_state");
+	const opened = await desk.open();
+	const wrongKey = await desk.bare("duet_room_state", { key: "guess" });
+	check(
+		"stdio: the panel's tools need the key from duet_room's _meta (never in its text); without it: refused",
+		noKeyJoin.isError && data(noKeyJoin).needKey && noKeyState.isError && wrongKey.isError && typeof opened._meta?.["duet/key"] === "string" && opened._meta["duet/key"].length >= 20 && !JSON.stringify(opened.content).includes(opened._meta["duet/key"]),
+		`no key: ${data(noKeyJoin).error}; wrong key refused: ${wrongKey.isError}; duet_room _meta key: ${typeof opened._meta?.["duet/key"]}`,
+	);
 
 	// Join from the panel, a peer's request arrives, the panel hands it over.
 	const room = `t-${randomUUID()}`;
@@ -219,8 +242,9 @@ async function localTests() {
 	// A short room code is never shown, not even its start: that could be all of it.
 	const short = stdio("short", { args: ["--room", "abc", "--name", "gaioz"] });
 	await short.init("claude-ai", UI_CAPS);
+	const shortRoomText = (await short.open()).content[0].text;
 	const shortState = data(await short.call("duet_room_state"));
-	const shortTexts = [(await short.call("duet_room")).content[0].text, (await short.call("duet_status")).content[0].text];
+	const shortTexts = [shortRoomText, (await short.call("duet_status")).content[0].text];
 	check("stdio: a short room code is not shown at all", shortState.room === "…" && shortTexts.every((t) => !/\babc\b/.test(t)), JSON.stringify([shortState.room, ...shortTexts.map((t) => t.slice(0, 70))]));
 	short.stop();
 }
@@ -491,7 +515,7 @@ addEventListener("message", async (ev) => {
 		ev.source.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: window.TOOL.args } }, "*");
 		ev.source.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: window.TOOL.result }, "*");
 	} else if (m.method === "tools/call") {
-		const r = await fetch(${JSON.stringify(h.url + "/mcp")}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: m.params }) }).then((r) => r.json());
+		const r = await fetch(window.MCP_URL || ${JSON.stringify(h.url + "/mcp")}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: m.params }) }).then((r) => r.json());
 		reply(r.error ? { error: r.error } : { result: r.result });
 	} else if (m.method === "ui/message") {
 		if (window.refuse) return reply({ error: { code: -32000, message: "Message sending denied" } });
@@ -519,18 +543,18 @@ addEventListener("message", async (ev) => {
 	if (shots) mkdirSync(shots, { recursive: true });
 	const shot = async (page, file) => shots && (await sleep(400), await page.screenshot({ path: join(shots, file), fullPage: true })); // after transitions
 	// Open a panel (or the card) in a fresh tab of the host.
-	async function open({ theme = "light", width = 380, hostName, full = false, tool, src = html } = {}) {
+	async function open({ theme = "light", width = 380, hostName, full = false, tool, src = html, mcpUrl } = {}) {
 		const page = await context.newPage(); // one context: panels share localStorage, like tabs of one chat app
 		await page.setViewportSize({ width, height: 900 });
 		await page.emulateMedia({ colorScheme: theme });
 		const errors = [];
 		page.on("pageerror", (e) => errors.push(e.message));
 		await page.goto(base);
-		await page.evaluate(([src, theme, hostName, full, tool]) => {
-			Object.assign(window, { THEME: theme, HOSTNAME: hostName, FULL: full, TOOL: tool });
+		await page.evaluate(([src, theme, hostName, full, tool, mcpUrl]) => {
+			Object.assign(window, { THEME: theme, HOSTNAME: hostName, FULL: full, TOOL: tool, MCP_URL: mcpUrl });
 			document.body.style.background = theme === "dark" ? "#1f1f1e" : "#f7f7f5";
 			document.getElementById("f").srcdoc = src;
-		}, [src, theme, hostName, full, tool]);
+		}, [src, theme, hostName, full, tool, mcpUrl]);
 		return { page, panel: page.frameLocator("#f"), errors };
 	}
 	async function joinPanel(panel, room, name, errors) {
@@ -634,6 +658,25 @@ addEventListener("message", async (ev) => {
 		await panel.locator("#outgoing .item .btn", { hasText: "Don't send" }).click();
 		await panel.locator("#outgoing .item").first().waitFor({ state: "detached", timeout: 10_000 });
 		const heldState = data(await cl.call("duet_reply", { id: held._meta["duet/hold"], action: "status" }));
+		// A held reply too long to list whole: Send stays off until Show all opened all of it.
+		const longReply = "LONG-REPLY-START " + "z".repeat(24_000) + " LONG-REPLY-END";
+		const longHeld = await cl.model("duet_send", { seat, text: longReply });
+		await panel.locator("#outgoing .item").first().waitFor({ timeout: 10_000 });
+		const sendBtn = panel.locator("#outgoing .item .btn", { hasText: /^Send$/ });
+		const offBefore = await sendBtn.isDisabled();
+		const shownBefore = (await panel.locator("#outgoing .item .text").first().textContent()).length;
+		await panel.locator("#outgoing .item .btn", { hasText: "Show all" }).click();
+		await panel.locator("#outgoing .item .btn", { hasText: "Show all" }).waitFor({ state: "detached", timeout: 5000 });
+		const shownAfter = await panel.locator("#outgoing .item .text").first().textContent();
+		const onAfter = !(await sendBtn.isDisabled());
+		await panel.locator("#outgoing .item .btn", { hasText: "Don't send" }).click();
+		await panel.locator("#outgoing .item").first().waitFor({ state: "detached", timeout: 10_000 });
+		const longState = data(await cl.call("duet_reply", { id: longHeld._meta["duet/hold"], action: "status" }));
+		check(
+			"browser: a long held reply in the panel: Send is off until Show all shows all of it (the click never sends unseen text)",
+			offBefore && shownBefore <= 20_001 && shownAfter === longReply && onAfter && longState.status === "dropped",
+			`Send off before: ${offBefore} (${shownBefore} of ${longReply.length} shown); after Show all: ${shownAfter.length} shown, Send on: ${onAfter}; then ${longState.status}`,
+		);
 		await panel.locator("#convo-btn").click();
 		await panel.locator("#convo[open] > div").waitFor({ timeout: 5000 });
 		const entries = await panel.locator("#log .entry").allTextContents();
@@ -643,7 +686,7 @@ addEventListener("message", async (ev) => {
 		const closed = !(await panel.locator("#convo[open]").count());
 		check(
 			"browser: Conversation · N opens a modal in the panel: name · time · text, the handed request included once; the panel's reply row works",
-			entries.length === 3 && entries[0].startsWith("nika") && entries[0].includes(evil) && entries[1].startsWith("you") && entries.some((e) => e.includes("Adding the backfill.")) && !entries.join().includes("Cause: expires_at") && closed && !modes.length && outTitle === "Send to nika?" && heldState.status === "dropped",
+			entries.length === 3 && entries[0].startsWith("nika") && entries[0].includes(evil) && entries[1].startsWith("you") && entries.some((e) => e.includes("Adding the backfill.")) && !entries.join().includes("Cause: expires_at") && closed && !modes.length && outTitle === "Send to everyone in the room?" && heldState.status === "dropped",
 			`${entries.length} entries: ${JSON.stringify(entries.map((e) => e.slice(0, 40)))}; display-mode requests: ${JSON.stringify(modes)}; closed: ${closed}; panel reply row: ${outTitle} → ${heldState.status}`,
 		);
 		// With a host that allows fullscreen, the modal asks for it, and goes back inline on close.
@@ -686,8 +729,8 @@ addEventListener("message", async (ev) => {
 		// Gate 2: the reply card (duet_send's view), drawn by the host with the tool's input and result.
 		for (const [theme, width] of [["light", 380], ["dark", 380], ["light", 720], ["dark", 720]]) {
 			const reply = `Cause: expires_at null on old rows.\nFix: UPDATE sessions SET expires_at = created_at + interval '14 days' WHERE expires_at IS NULL; (${theme} ${width})`;
-			const result = await cl.model("duet_send", { seat, text: reply });
-			const c = await open({ theme, width, hostName: "Claude", src: cardHtml, tool: { args: { seat, text: reply }, result } });
+			const result = await cl.model("duet_send", { seat, text: reply, to: "nika" });
+			const c = await open({ theme, width, hostName: "Claude", src: cardHtml, tool: { args: { seat, text: reply, to: "nika" }, result } });
 			await c.panel.locator("#send:not([disabled])").waitFor({ timeout: 10_000 });
 			const title = await c.panel.locator("#title").textContent();
 			const body = await c.panel.locator("#reply").textContent();
@@ -741,6 +784,42 @@ addEventListener("message", async (ev) => {
 		lev.stop();
 		await twin.close();
 		nika.stop();
+
+		// The local server (mcp.js over stdio, as Claude Desktop runs it): the panel gets its key from
+		// duet_room's result (_meta) and works with it; a panel with no key gets nothing from the room.
+		const sd = stdio("browser-stdio", { args: ["--folder="] });
+		await sd.init("claude-ai", UI_CAPS);
+		const bridge = createServer(async (req, res) => {
+			const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "access-control-allow-methods": "POST, OPTIONS" };
+			if (req.method === "OPTIONS") return res.writeHead(204, cors).end();
+			let body = "";
+			for await (const c of req) body += c;
+			const m = JSON.parse(body);
+			const r = await sd.request(m.method, m.params);
+			res.writeHead(200, { "content-type": "application/json", ...cors }).end(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...(r.error ? { error: r.error } : { result: r.result }) }));
+		});
+		await new Promise((r) => bridge.listen(0, "127.0.0.1", r));
+		try {
+			const mcpUrl = `http://127.0.0.1:${bridge.address().port}/`;
+			const localHtml = (await sd.request("resources/read", { uri: "ui://duet/room" })).result.contents[0].text;
+			const roomResult = (await sd.request("tools/call", { name: "duet_room", arguments: {} })).result;
+			const keyless = await open({ src: localHtml, mcpUrl, hostName: "claude-ai" });
+			const keyed = await open({ src: localHtml, mcpUrl, hostName: "claude-ai", tool: { args: {}, result: roomResult } });
+			const localRoom = `t-${randomUUID()}`;
+			await joinPanel(keyed.panel, localRoom, "gaioz", keyed.errors);
+			await sleep(1500);
+			const keylessJoin = await keyless.panel.locator("#join:not(.hidden), #inroom:not(.hidden)").count();
+			check(
+				"browser (local server): the panel works with the key from duet_room's result; without it, it shows no room and can't join",
+				keylessJoin === 0 && !keyed.errors.length && !keyless.errors.length,
+				`keyed panel joined and connected; keyless panel views shown: ${keylessJoin}; page errors: ${JSON.stringify([...keyed.errors, ...keyless.errors])}`,
+			);
+			await keyed.page.close();
+			await keyless.page.close();
+		} finally {
+			bridge.close();
+			sd.stop();
+		}
 	} finally {
 		await browser.close();
 		site.close();

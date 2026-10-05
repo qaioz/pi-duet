@@ -70,6 +70,21 @@ export function handOver(e, { folder = "", reply = false, seat = "", utc = false
 
 // ---------- gate 2: replies held until the user's click ----------
 
+// Who a reply goes to, named exactly: the `to` the agent gave, else (no `to`: the envelope goes to the
+// whole room) the one other person when there is only one, else "everyone in the room".
+export const toWhom = (to, peerNames) => to || (peerNames.length === 1 ? peerNames[0] : peerNames.length ? "everyone in the room" : "the room");
+
+// A held reply as the panel lists it (the fallback for a card the chat didn't draw). Up to OUT_FULL
+// characters whole; a longer one comes with its start only, and the panel lets Send through only after
+// the user opened all of it (duet_reply status): the click never sends text the user didn't see.
+export const OUT_FULL = 20_000;
+export const outgoingItem = (h) => ({ id: h.id, to: h.to, text: h.text.length <= OUT_FULL ? cleanText(h.text) : preview(h.text, OUT_FULL), full: h.text.length <= OUT_FULL, size: h.text.length });
+
+// stdio only: the panel's key. duet_room's result carries it in _meta (for the panel; hosts keep a
+// result's _meta out of the model's context), and every panel tool but duet_reply needs it. So even a
+// host that lists app-only tools to the model doesn't let the model read the room or hand itself a request.
+export const PANEL_KEY_META = "duet/key";
+
 // What duet_send answers while the reply waits in the card. The hold id is in _meta only: the card gets
 // it, the model doesn't (hosts keep a result's _meta out of the model's context).
 export const WAITING_TEXT = "Waiting for your OK in the duet card";
@@ -90,7 +105,12 @@ export function makeHolds({ ttlMs = Number(process.env.DUET_HOLD_MS) || 30 * 60_
 			if (h.status === "waiting" && now - h.at > ttlMs) [h.status, h.text] = ["expired", ""];
 			if (h.status !== "waiting" && now - h.at > ttlMs + 6 * 3600_000) all.delete(h.id);
 		}
-		while (all.size > max) all.delete(all.keys().next().value);
+		// Over the cap, only finished holds go (oldest first): a reply still waiting for its user's click
+		// is never pushed out by other people's. Waiting ones are capped per owner by the servers.
+		for (const h of all.values()) {
+			if (all.size <= max) break;
+			if (h.status !== "waiting" && h.status !== "sending") all.delete(h.id);
+		}
 	};
 	return {
 		ttlMs,
@@ -139,7 +159,10 @@ export function makeHolds({ ttlMs = Number(process.env.DUET_HOLD_MS) || 30 * 60_
 // ---------- tools ----------
 
 const appOnly = (uri = PANEL_URI) => ({ ui: { resourceUri: uri, visibility: ["app"] }, "openai/widgetAccessible": true, "openai/visibility": "private" });
-const tokenProp = { token: { type: "string", description: "The panel's own random id (hosted server)." } };
+const tokenProp = {
+	token: { type: "string", description: "The panel's own random id (hosted server)." },
+	key: { type: "string", description: "The panel's key from duet_room's result (local server)." },
+};
 
 // The one tool the model sees: it opens the panel. No room code in its arguments: the code is typed
 // into the panel, so it never enters the chat (or the model's context).
@@ -444,11 +467,18 @@ ${BRIDGE}
 	const shortRoom = (r) => (r.length >= 12 ? r.slice(0, 4) + "…" : "…");
 	const myCode = (s) => { const c = store("session", "duet-room"); return c && s && s.room === shortRoom(c) ? c : ""; };
 	$("name").value = store("local", "duet-name");
+	// The local server's key for this panel: in duet_room's result (_meta), which the model doesn't see.
+	let key = store("session", "duet-key");
+	handlers["ui/notifications/tool-result"] = (r) => {
+		const k = r && r._meta && r._meta[${JSON.stringify(PANEL_KEY_META)}];
+		if (typeof k === "string" && k && k !== key) { key = k; store("session", "duet-key", k); if (ready) refresh(true); }
+	};
 
 	async function call(name, args) {
-		const r = await rpc("tools/call", { name, arguments: Object.assign({ token }, args || {}) });
+		const r = await rpc("tools/call", { name, arguments: Object.assign({ token }, key ? { key } : {}, args || {}) });
 		const data = r && r.structuredContent;
 		const said = r && r.content && r.content[0] && r.content[0].text;
+		if (data && data.needKey) { const e = new Error(data.error); e.needKey = true; throw e; }
 		if (data && data.error) throw new Error(data.error);
 		if (r && r.isError) throw new Error(said || "failed");
 		if (!data) throw new Error("this chat app didn't pass duet's answer to the panel");
@@ -461,6 +491,7 @@ ${BRIDGE}
 	let state = null;
 	let busy = false;
 	let modelToldFor = "";
+	const opened = new Map(); // held reply id -> its whole text, once the user opened it (Show all)
 
 	function draw() {
 		const s = state || {};
@@ -483,17 +514,33 @@ ${BRIDGE}
 		$("warnings").replaceChildren(...(s.warnings || []).map((t) => el("div", "warn", "⚠ " + t)));
 
 		// Gate 2, as a fallback for a card the chat didn't draw: replies waiting for Send.
+		// Send only ever sends what the card shows: a long reply's Send waits until all of it is open.
 		$("outgoing").replaceChildren(...(s.outgoing || []).map((o) => {
 			const c = el("div", "item");
-			c.append(el("div", "who", "Send to " + o.to + "?"), el("div", "text", o.text));
+			const body = el("div", "text", o.full ? o.text : (opened.get(o.id) || o.text));
+			c.append(el("div", "who", "Send to " + o.to + "?"), body);
 			const acts = el("div", "row");
 			const yes = btn("Send"), no = btn("Don't send", "outline");
 			yes.onclick = () => reply(o.id, "send", c);
 			no.onclick = () => reply(o.id, "drop", c);
+			if (!o.full && !opened.has(o.id)) {
+				yes.disabled = true;
+				const more = btn("Show all · " + o.size + " chars", "link", "sm"); more.classList.add("linkish");
+				more.onclick = async () => {
+					try {
+						const r = await call("duet_reply", { id: o.id, action: "status" });
+						if (r.status !== "waiting" || typeof r.text !== "string") return refresh(true);
+						opened.set(o.id, r.text);
+						body.textContent = r.text; more.remove(); yes.disabled = false; report();
+					} catch (e) { showError(e.message); }
+				};
+				c.append(more);
+			}
 			acts.append(yes, no);
 			c.append(acts);
 			return c;
 		}));
+		for (const id of [...opened.keys()]) if (!(s.outgoing || []).some((o) => o.id === id)) opened.delete(id);
 
 		// Gate 1: each request waiting, Hand to <agent> / Ignore.
 		$("waiting").replaceChildren(...(s.waiting || []).map((m) => {
@@ -666,8 +713,10 @@ ${BRIDGE}
 			if (!s.unchanged) { state = s; draw(); }
 			failures = 0;
 		} catch (e) {
-			failures++;
-			if (failures > 2) showError("Can't reach duet: " + e.message);
+			// The local server's panel tools need the key from duet_room's result: wait for it; a key
+			// that no longer works is from before duet restarted.
+			if (e.needKey) showError(key ? "Ask for the duet panel again" : "");
+			else if (++failures > 2) showError("Can't reach duet: " + e.message);
 		}
 		schedule();
 	}

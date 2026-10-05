@@ -24,7 +24,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { BlockList, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
-import { appTools, cleanText, handOver, heldResult, makeHolds, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom } from "./panel.js";
+import { appTools, cleanText, handOver, heldResult, makeHolds, outgoingItem, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom, toWhom } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, subscribe, topicFor } from "./transport.js";
 
 export const VERSION = "0.8.0"; // the MCP server's version, as in mcp.js
@@ -251,7 +251,7 @@ class Seat {
 				.filter((h) => !h.note && !(h.pid && this.inbox.some((e) => e.pid === h.pid)))
 				.slice(-40)
 				.map((h) => ({ who: h.who, mine: !!h.mine, text: h.text, at: h.at })),
-			outgoing: holds.waiting(this.key).map((h) => ({ id: h.id, to: h.to, text: preview(h.text, 20_000) })),
+			outgoing: holds.waiting(this.key).map(outgoingItem),
 			warnings: [...this.warnings],
 			modelNote:
 				`duet: your user is in a duet room as ${this.name} (the duet panel in this chat shows it). Requests from the other person's agent reach you only when your user hands one over from the panel. ` +
@@ -303,7 +303,7 @@ function holdReply(a) {
 	if (typeof a.text !== "string" || !a.text) return text("text is required", true);
 	if (a.text.length > MAX_TEXT) return text(`The message is ${a.text.length} characters; the limit is ${MAX_TEXT}.`, true);
 	const to = a.to ? fitName(String(a.to)) : "";
-	const shownTo = to || [...seat.lastFrom].sort((x, y) => y[1].at - x[1].at)[0]?.[0] || [...seat.peers.keys()].at(-1) || "the room";
+	const shownTo = toWhom(to, [...seat.peers.keys()]); // exactly who gets it: no `to` goes to the whole room
 	const waiting = holds.waiting(seat.key);
 	if (!waiting.some((h) => h.text === a.text && h.to === shownTo) && waiting.length >= HOLDS_PER_SEAT) {
 		return text(`Not sent: ${HOLDS_PER_SEAT} replies already wait for your user's OK in duet cards.`, true);
