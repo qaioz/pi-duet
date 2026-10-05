@@ -1,6 +1,6 @@
 // Builds docs/duet.mcpb, the one-click install for Claude Desktop (an MCP Bundle: a zip with
-// manifest.json and the server). Run after changing mcp.js, panel.js, transport.js, lock.js or
-// codex-guard.js; test/panel.mjs fails while the bundle is out of date.
+// manifest.json and the server). Run after changing mcp.js, panel.js, basecoat.js, transport.js or
+// lock.js; test/panel.mjs fails while the bundle is out of date.
 //
 //   node mcpb/build.mjs        (uses `npx @anthropic-ai/mcpb` to validate and pack)
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const repo = resolve(import.meta.dirname, "..");
-export const BUNDLED = ["mcp.js", "panel.js", "transport.js", "lock.js", "codex-guard.js"];
+export const BUNDLED = ["mcp.js", "panel.js", "transport.js", "lock.js", "basecoat.js"];
 const version = readFileSync(join(repo, "mcp.js"), "utf8").match(/const VERSION = "([^"]+)"/)[1];
 const dir = mkdtempSync(join(tmpdir(), "duet-mcpb-"));
 try {

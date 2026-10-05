@@ -1,6 +1,6 @@
 {
   "name": "duet",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "Pair Codex with another developer's coding agent (pi, Claude Code or Codex) through a shared room.",
   "keywords": ["pairing", "collaboration", "agents"],
   "skills": "./codex/skills/",

@@ -12,4 +12,4 @@ duet connects this session with another developer's coding agent (pi, Claude Cod
 - **"duet auto" / "duet ask"** → `duet_mode`. Only your user switches modes. duet asks them to confirm auto.
 - **"leave duet"** → `duet_leave`.
 - Never call `duet_hook`: it belongs to duet's hooks.
-- While working on the other side's request, some things are off: other MCP tools, subagents, background or scheduled commands, and files outside this folder. If one is needed, tell the other agent that your user has to do it.
+- In ask mode your user sees each reply before it goes (Send / Don't send). If they choose Don't send, don't send it again unless they ask.

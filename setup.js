@@ -7,7 +7,7 @@
 //   or the tool approval, and `-c` flags would cut the session off from `codex queue` (our push).
 //   `required`: Codex otherwise starts the first turn ~1s in, before a first-time npx download is done.
 //   Also duet's hooks (codex/hooks.json as TOML, between marker lines): they ask before a request runs
-//   (ask mode), fence what it may do, and hand messages over when a turn ends. Codex asks the user to
+//   (ask mode) and hand messages over when a turn ends. Codex asks the user to
 //   trust them once (/hooks). The Codex plugin (codex plugin marketplace add qaioz/pi-duet) brings the
 //   same server and hooks without this; setup stays for the IDE extension, which has no plugins.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -156,7 +156,7 @@ command = ${q(command)}
 args = [${args.map(q).join(", ")}]
 required = true
 startup_timeout_sec = 120
-tool_timeout_sec = 120
+tool_timeout_sec = 1800
 default_tools_approval_mode = "approve"
 env_vars = ["CODEX_HOME"]
 ${hooksClash ? "" : `\n${HOOKS_BEGIN}${hooksToml()}${HOOKS_END}\n`}`;

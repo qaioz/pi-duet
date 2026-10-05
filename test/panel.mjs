@@ -113,7 +113,7 @@ async function localTests() {
 	const init = await desk.init("claude-ai", UI_CAPS);
 	const tools = (await desk.request("tools/list")).result.tools;
 	const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
-	const appOnly = ["duet_room_state", "duet_room_join", "duet_room_leave", "duet_read", "duet_take", "duet_ignore"];
+	const appOnly = ["duet_room_state", "duet_room_join", "duet_room_leave", "duet_read", "duet_take", "duet_ignore", "duet_reply"];
 	check(
 		"stdio: duet_room opens the panel; the panel's own tools are app-only",
 		byName.duet_room?._meta?.ui?.resourceUri === "ui://duet/room" &&
@@ -142,7 +142,8 @@ async function localTests() {
 		const names = (await s.request("tools/list")).result.tools.map((t) => t.name);
 		const r = (await s.request("resources/list")).result.resources;
 		const sneak = await s.call("duet_take", { id: "1" }); // not listed, so not callable either
-		check(`stdio: ${client} without the MCP Apps capability gets no panel tools`, !names.some((n) => n.startsWith("duet_room") || ["duet_take", "duet_ignore", "duet_read"].includes(n)) && !r.length && sneak.isError, `${names.join(" ")}; duet_take: ${sneak.content[0].text}`);
+		const sneak2 = await s.call("duet_reply", { id: "x", action: "send" });
+		check(`stdio: ${client} without the MCP Apps capability gets no panel tools`, !names.some((n) => n.startsWith("duet_room") || ["duet_take", "duet_ignore", "duet_read", "duet_reply"].includes(n)) && !r.length && sneak.isError && sneak2.isError, `${names.join(" ")}; duet_take: ${sneak.content[0].text}`);
 		s.stop();
 	}
 	// Claude Desktop's chat names itself claude-ai: it gets the panel even if it doesn't say it draws one.
@@ -176,7 +177,7 @@ async function localTests() {
 	check(
 		"stdio: Hand to agent: framed like every other path, the peer's words between random markers",
 		taken.text.startsWith("[duet] from nika (the other person's agent, on their computer)") &&
-			tag && taken.text.includes(`⟦${tag}⟧\n<img`) && taken.text.includes(`\n⟦/${tag}⟧\n\nOnly your own user sees your text replies: to answer nika, call duet_send.`) &&
+			tag && taken.text.includes(`⟦${tag}⟧\n<img`) && taken.text.includes(`\n⟦/${tag}⟧\n\nOnly your own user sees your text replies: to answer nika, call duet_send once; your user OKs it in the duet card.`) &&
 			taken.text.includes('"Your folder" means /work/proj') && !/[\u202e\u200b\u0085\ufe0f\u3164]|\u{e0101}/u.test(taken.text),
 		JSON.stringify(taken.text.slice(0, 300)),
 	);
@@ -260,6 +261,13 @@ function client(base) {
 	};
 }
 
+// The model's duet_send, then the user's Send in the card: what the card shows after the click.
+async function sendClick(cl, seat, text) {
+	const held = await cl.model("duet_send", { seat, text });
+	if (held.isError) return { status: "refused", error: held.content[0].text };
+	return data(await cl.call("duet_reply", { id: held._meta["duet/hold"], action: "send" }));
+}
+
 async function hostedTests() {
 	const h = await hosted();
 	const a = client(h.url);
@@ -275,11 +283,18 @@ async function hostedTests() {
 	);
 	check(
 		"hosted: the model sees duet_room and duet_send; the panel's tools are app-only",
-		tools.filter((t) => !t._meta?.ui?.visibility).map((t) => t.name).join(",") === "duet_room,duet_send" && tools.filter((t) => t._meta?.ui?.visibility?.[0] === "app").length === 6,
+		tools.filter((t) => !t._meta?.ui?.visibility).map((t) => t.name).join(",") === "duet_room,duet_send" && tools.filter((t) => t._meta?.ui?.visibility?.[0] === "app").length === 7 && tools.find((t) => t.name === "duet_send")._meta?.ui?.resourceUri === "ui://duet/send",
 		tools.map((t) => `${t.name}${t._meta?.ui?.visibility ? `[${t._meta.ui.visibility}]` : ""}`).join(" "),
 	);
 	const html = (await a.request("resources/read", { uri: "ui://duet/room" })).result.contents[0];
-	check("hosted: serves the same panel", html.mimeType === "text/html;profile=mcp-app" && html.text.includes("Hand to agent"), `${html.text.length} bytes`);
+	const card = (await a.request("resources/read", { uri: "ui://duet/send" })).result.contents[0];
+	const resList = (await a.request("resources/list")).result.resources.map((r) => r.uri);
+	check(
+		"hosted: serves the same panel and the reply card, self-contained",
+		html.mimeType === "text/html;profile=mcp-app" && html.text.includes('id="convo-btn"') && card.mimeType === "text/html;profile=mcp-app" && card.text.includes("Don't send") &&
+			resList.join() === "ui://duet/room,ui://duet/send" && ![html.text, card.text].some((t) => /\b(src|href)\s*=\s*["']?https?:|@import|url\(\s*["']?https?:/i.test(t)) && JSON.stringify(card._meta.ui.csp) === '{"connectDomains":[],"resourceDomains":[]}',
+		`panel ${html.text.length} bytes, card ${card.text.length} bytes; resources ${resList.join(", ")}`,
+	);
 
 	// Two panels (two chats) in two rooms, and a third in the first room.
 	const roomA = `t-${randomUUID()}`;
@@ -320,16 +335,30 @@ async function hostedTests() {
 	const seat = taken.text.match(/call duet_send with seat "([A-Za-z0-9_-]+)"/)?.[1];
 	check("hosted: Hand to agent gives the framed text with the seat code", taken.text.startsWith("[duet] from nika") && seat && !taken.text.includes("Your folder"), JSON.stringify(taken.text.slice(-120)));
 	const sent = await a.model("duet_send", { seat, text: "done: 3 files" });
+	await sleep(1200);
+	const early = nika.seen.some((e) => e.text === "done: 3 files");
+	const clicked = data(await a.call("duet_reply", { id: sent._meta?.["duet/hold"], action: "send" }));
 	const got = await until(() => nika.seen.find((e) => e.kind === "msg" && e.text === "done: 3 files"), 10_000, "reply at nika").catch(() => null);
-	check("hosted: the agent's duet_send reaches the other side, as a reply", !sent.isError && got?.from === "gaioz" && got?.re, `${sent.content[0].text}; at nika: ${JSON.stringify(got && { from: got.from, re: !!got.re })}`);
+	check(
+		"hosted: gate 2: the agent's duet_send waits in the card; the user's Send gets it to the other side, as a reply",
+		sent.content[0].text === "Waiting for your OK in the duet card" && !early && clicked.status === "sent" && got?.from === "gaioz" && got?.re,
+		`${sent.content[0].text}; at nika before the click: ${early}; click: ${clicked.status}; at nika: ${JSON.stringify(got && { from: got.from, re: !!got.re })}`,
+	);
 	const wrong = await a.model("duet_send", { seat: "nope", text: "x" });
 	check("hosted: duet_send with an unknown seat is refused", wrong.isError && /No duet room/.test(wrong.content[0].text), wrong.content[0].text.slice(0, 80));
-	// The loop cap: replies without a click stop at 8, also when they come all at once (one was sent above).
+	// Nothing leaves without a click, also 12 at once: at most 5 cards wait per panel; Don't send drops one.
 	const burst = await Promise.all(Array.from({ length: 12 }, (_, i) => a.model("duet_send", { seat, text: `auto ${i}` })));
-	const accepted = burst.filter((r) => !r.isError).length;
+	const heldN = burst.filter((r) => !r.isError).length;
+	const panelOut = data(await a.call("duet_room_state")).outgoing ?? [];
+	const dropOne = data(await a.call("duet_reply", { id: burst.find((r) => !r.isError)._meta["duet/hold"], action: "drop" }));
 	await sleep(1500);
 	const autos = nika.seen.filter((e) => /^auto \d+$/.test(e.text)).length;
-	check("hosted: replies without a click stop at the cap, also 12 at once", accepted === 7 && autos === 7 && burst.some((r) => /auto-reply limit/.test(r.content[0].text)), `12 parallel sends: ${accepted} accepted, ${autos} on the relay`);
+	check(
+		"hosted: gate 2: 12 sends at once hold 5 cards (also listed in the panel), none reaches the relay; Don't send drops one",
+		heldN === 5 && autos === 0 && panelOut.length === 5 && dropOne.status === "dropped" && burst.some((r) => /already wait/.test(r.content[0].text)),
+		`12 parallel sends: ${heldN} held, ${autos} on the relay; panel lists ${panelOut.length}; drop → ${dropOne.status}`,
+	);
+	for (const r of burst.filter((r) => !r.isError)) await a.call("duet_reply", { id: r._meta["duet/hold"], action: "drop" });
 
 	// A third panel in room A sees the second one, and the second sees it (two seats, one relay subscription).
 	const c = client(h.url);
@@ -404,17 +433,17 @@ async function hostedTests() {
 	await p2.call("duet_room_join", { room: `t-${randomUUID()}`, name: "s2" });
 	const r3 = await p3.call("duet_room_join", { room: `t-${randomUUID()}`, name: "s3" });
 	const handle = r1.modelNote.match(/seat "([^"]+)"/)[1];
-	const longOk = await p1.model("duet_send", { seat: handle, text: "x".repeat(8000), user_asked: true });
-	const longNo = await p1.model("duet_send", { seat: handle, text: "y".repeat(8000), user_asked: true });
+	const longOk = await sendClick(p1, handle, "x".repeat(8000));
+	const longNo = await sendClick(p1, handle, "y".repeat(8000));
 	for (let i = 0; i < 6; i++) {
-		await p1.model("duet_send", { seat: handle, text: `still here ${i}`, user_asked: true });
+		await sendClick(p1, handle, `still here ${i}`);
 		await sleep(1000);
 	}
 	const gone = await p1.model("duet_send", { seat: handle, text: "after" });
 	check(
 		"hosted: panels per address, daily long-message allowance, a seat leaves when its panel stops polling",
-		r3.isError && /Too many duet panels/.test(data(r3).error) && !longOk.isError && longNo.isError && /allowance/.test(longNo.content[0].text) && gone.isError && /No duet room/.test(gone.content[0].text),
-		`3rd panel: ${data(r3).error}; long #1: ${longOk.content[0].text.slice(0, 30)}; long #2: ${longNo.content[0].text.slice(0, 60)}; after 6 s of sends only: ${gone.content[0].text.slice(0, 40)}`,
+		r3.isError && /Too many duet panels/.test(data(r3).error) && longOk.status === "sent" && longNo.status === "waiting" && /allowance/.test(longNo.error) && gone.isError && /No duet room/.test(gone.content[0].text),
+		`3rd panel: ${data(r3).error}; long #1: ${longOk.status}; long #2: ${longNo.status} ${longNo.error?.slice(0, 60)}; after 6 s of sends only: ${gone.content[0].text.slice(0, 40)}`,
 	);
 	u.proc.kill();
 
@@ -426,12 +455,12 @@ async function hostedTests() {
 	await q2.call("duet_room_join", { room: `t-${randomUUID()}`, name: "v2" });
 	const v3 = await q3.call("duet_room_join", { room: `t-${randomUUID()}`, name: "v3" });
 	const vh = v1.modelNote.match(/seat "([^"]+)"/)[1];
-	const ctl1 = await q1.model("duet_send", { seat: vh, text: "\u0001".repeat(3000), user_asked: true });
-	const ctl2 = await q1.model("duet_send", { seat: vh, text: "\u0002".repeat(3000), user_asked: true });
+	const ctl1 = await sendClick(q1, vh, "\u0001".repeat(3000));
+	const ctl2 = await sendClick(q1, vh, "\u0002".repeat(3000));
 	check(
 		"hosted: long messages are counted as the relay stores them; rooms per address are limited",
-		!ctl1.isError && ctl2.isError && /allowance/.test(ctl2.content[0].text) && v3.isError && /Too many duet rooms/.test(data(v3).error),
-		`3000 control characters: #1 ${ctl1.isError ? "refused" : "sent"}, #2 ${ctl2.content[0].text.slice(0, 50)}; 3rd room: ${data(v3).error}`,
+		ctl1.status === "sent" && ctl2.status === "waiting" && /allowance/.test(ctl2.error) && v3.isError && /Too many duet rooms/.test(data(v3).error),
+		`3000 control characters: #1 ${ctl1.status}, #2 ${ctl2.status} ${ctl2.error?.slice(0, 50)}; 3rd room: ${data(v3).error}`,
 	);
 	v.proc.kill();
 }
@@ -442,138 +471,271 @@ async function browserTests() {
 	if (!existsSync(PW)) return check("browser: panel in Chromium", true, `skipped: no playwright-core at ${PW}`);
 	const { chromium } = await import(PW);
 	const h = await hosted();
-	// A minimal MCP Apps host: draws the panel in a sandboxed frame, answers ui/initialize, passes
-	// tools/call to hosted.js over HTTP (as claude.ai's backend would), records ui/message.
+	// A minimal MCP Apps host: draws the panel (or the reply card) in a sandboxed frame, answers
+	// ui/initialize (host name, theme and display modes from the page's globals), passes tools/call to
+	// hosted.js over HTTP (as claude.ai's backend would), records ui/message, grants fullscreen when
+	// FULL is set, and hands the card its tool input and result once it is initialized.
 	// With ?twin, two panels in one chat (one tab), like a chat where duet_room was called twice.
-	const hostPage = `<!doctype html><meta charset="utf-8"><body style="margin:0;background:#888">
-<iframe id="f" sandbox="allow-scripts allow-same-origin" style="width:100%;height:900px;border:0"></iframe>
-<iframe id="f2" sandbox="allow-scripts allow-same-origin" style="width:100%;height:600px;border:0"></iframe>
+	const hostPage = `<!doctype html><meta charset="utf-8"><body style="margin:0;background:var(--bg,#f7f7f5)">
+<iframe id="f" sandbox="allow-scripts allow-same-origin" style="width:100%;height:900px;border:0;display:block"></iframe>
+<iframe id="f2" sandbox="allow-scripts allow-same-origin" style="width:100%;height:600px;border:0;display:block"></iframe>
 <script>
-window.messages = []; window.sizes = []; window.contexts = [];
+window.messages = []; window.sizes = []; window.contexts = []; window.modes = [];
 const frames = [...document.querySelectorAll("iframe")];
 addEventListener("message", async (ev) => {
 	if (!frames.some((f) => f.contentWindow === ev.source)) return;
 	const m = ev.data;
 	const reply = (r) => ev.source.postMessage({ jsonrpc: "2.0", id: m.id, ...r }, "*");
-	if (m.method === "ui/initialize") reply({ result: { protocolVersion: "2026-01-26", hostInfo: { name: "test-host", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { theme: window.THEME, platform: "web" } } });
-	else if (m.method === "tools/call") {
+	if (m.method === "ui/initialize") reply({ result: { protocolVersion: "2026-01-26", hostInfo: { name: window.HOSTNAME || "test-host", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { theme: window.THEME, platform: "web", displayMode: "inline", availableDisplayModes: window.FULL ? ["inline", "fullscreen"] : ["inline"] } } });
+	else if (m.method === "ui/notifications/initialized" && window.TOOL) {
+		ev.source.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: window.TOOL.args } }, "*");
+		ev.source.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: window.TOOL.result }, "*");
+	} else if (m.method === "tools/call") {
 		const r = await fetch(${JSON.stringify(h.url + "/mcp")}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: m.params }) }).then((r) => r.json());
 		reply(r.error ? { error: r.error } : { result: r.result });
 	} else if (m.method === "ui/message") {
 		if (window.refuse) return reply({ error: { code: -32000, message: "Message sending denied" } });
 		window.messages.push(m.params); reply({ result: {} });
+	} else if (m.method === "ui/request-display-mode") {
+		window.modes.push(m.params.mode);
+		const mode = window.FULL ? m.params.mode : "inline";
+		if (mode === "fullscreen") document.getElementById("f").style.height = "100vh";
+		reply({ result: { mode } });
 	}
 	else if (m.method === "ui/update-model-context") { window.contexts.push(m.params); reply({ result: {} }); }
-	else if (m.method === "ui/notifications/size-changed") window.sizes.push(m.params);
+	else if (m.method === "ui/notifications/size-changed") { window.sizes.push(m.params); if (!window.FIXED) document.getElementById("f").style.height = Math.max(m.params.height, 120) + "px"; }
 	else if (m.id !== undefined) reply({ result: {} });
 });
 </script>`;
 	const site = createServer((req, res) => res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(hostPage));
 	await new Promise((r) => site.listen(0, "127.0.0.1", r));
-	const html = JSON.parse(JSON.stringify((await client(h.url).request("resources/read", { uri: "ui://duet/room" })).result.contents[0].text));
+	const base = `http://127.0.0.1:${site.address().port}/`;
+	const res = async (uri) => (await client(h.url).request("resources/read", { uri })).result.contents[0].text;
+	const html = await res("ui://duet/room");
+	const cardHtml = await res("ui://duet/send");
 	const browser = await chromium.launch();
+	const context = await browser.newContext();
+	const shots = process.env.DUET_SHOTS;
+	if (shots) mkdirSync(shots, { recursive: true });
+	const shot = async (page, file) => shots && (await sleep(400), await page.screenshot({ path: join(shots, file), fullPage: true })); // after transitions
+	// Open a panel (or the card) in a fresh tab of the host.
+	async function open({ theme = "light", width = 380, hostName, full = false, tool, src = html } = {}) {
+		const page = await context.newPage(); // one context: panels share localStorage, like tabs of one chat app
+		await page.setViewportSize({ width, height: 900 });
+		await page.emulateMedia({ colorScheme: theme });
+		const errors = [];
+		page.on("pageerror", (e) => errors.push(e.message));
+		await page.goto(base);
+		await page.evaluate(([src, theme, hostName, full, tool]) => {
+			Object.assign(window, { THEME: theme, HOSTNAME: hostName, FULL: full, TOOL: tool });
+			document.body.style.background = theme === "dark" ? "#1f1f1e" : "#f7f7f5";
+			document.getElementById("f").srcdoc = src;
+		}, [src, theme, hostName, full, tool]);
+		return { page, panel: page.frameLocator("#f"), errors };
+	}
+	async function joinPanel(panel, room, name, errors) {
+		await panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
+		await panel.locator("#room").fill(room);
+		await panel.locator("#name").fill(name);
+		await panel.locator("#join-btn").click();
+		await panel.locator("#inroom:not(.hidden)").waitFor({ timeout: 10_000 }).catch(async (e) => {
+			throw new Error(`${e.message}\npanel error: ${await panel.locator("#error").textContent()}; page errors: ${errors.join(" | ")}`);
+		});
+		await panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 }).catch(async (e) => {
+			throw new Error(`${e.message}\npill: ${await panel.locator("#pill").textContent()}; panel error: ${await panel.locator("#error").textContent()}; page errors: ${errors.join(" | ")}`);
+		});
+	}
 	try {
-		const shots = process.env.DUET_SHOTS;
-		if (shots) mkdirSync(shots, { recursive: true });
-		const room = `t-${randomUUID()}`;
+		const room = `amber-otter-${String(Date.now()).slice(-4)}-${randomUUID().slice(0, 4)}`;
 		const nika = peer(room, "nika");
+		// Join, in each look: light and dark, phone (380 px) and wide (720 px).
 		const runs = {};
-		for (const theme of ["dark", "light"]) {
-			const page = await browser.newPage({ viewport: { width: 380, height: 900 } }); // phone width
-			const errors = [];
-			page.on("pageerror", (e) => errors.push(e.message));
-			await page.goto(`http://127.0.0.1:${site.address().port}/`);
-			await page.evaluate(([html, theme]) => {
-				window.THEME = theme;
-				document.getElementById("f").srcdoc = html;
-			}, [html, theme]);
-			const panel = page.frameLocator("#f");
-			await panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
-			await panel.locator("#room").fill(room);
-			await panel.locator("#name").fill(theme === "dark" ? "gaioz" : "gaioz2");
-			await panel.locator("#join-btn").click();
-			await panel.locator("#inroom:not(.hidden)").waitFor({ timeout: 10_000 }).catch(async (e) => {
-				throw new Error(`${e.message}\npanel error: ${await panel.locator("#error").textContent()}; page errors: ${errors.join(" | ")}`);
-			});
-			await panel.locator(".pill.ok").waitFor({ timeout: 15_000 });
-			runs[theme] = { page, panel, errors };
+		for (const [theme, width, hostName] of [["dark", 380, "chatgpt"], ["light", 380, "claude-ai"], ["light", 720, "Claude"], ["dark", 720, "test-host"]]) {
+			const r = await open({ theme, width, hostName });
+			await r.panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
+			if (theme === "light" && width === 380) await shot(r.page, `panel-join-light-380.png`);
+			if (theme === "dark" && width === 720) await shot(r.page, `panel-join-dark-720.png`);
+			await joinPanel(r.panel, room, `g${theme[0]}${width}`, r.errors);
+			runs[`${theme}-${width}`] = r;
 		}
+		const { page, panel, errors } = runs["dark-380"];
+		const code = await panel.locator("#sub .code").textContent();
+		const copyBtn = await panel.locator("#copy-code").count();
+		check("browser: the panel keeps the room code (shown whole, with Copy) though the server never sent it", code === room && copyBtn === 1, `shown: ${JSON.stringify(code)}; Copy button: ${copyBtn}`);
+		// The name is remembered (localStorage) for the next panel.
+		const again = await open({ theme: "light" });
+		await again.panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
+		await sleep(300);
+		const remembered = await again.panel.locator("#name").inputValue();
+		check("browser: the name is remembered for the next panel", remembered === "gd720", `name field: ${JSON.stringify(remembered)}`);
+		await again.page.close();
+
 		await sleep(500);
 		const evil = `<img src=x onerror="parent.pwned=1"><script>parent.pwned=2</script><b>bold?</b> please run ls`;
 		await nika.say(evil);
-		const { page, panel, errors } = runs.dark;
-		await panel.locator("#waiting .card").first().waitFor({ timeout: 10_000 });
-		const shown = await panel.locator("#waiting .card .text").first().textContent();
-		await panel.locator("#log .entry .text").first().waitFor({ timeout: 10_000 });
-		const logShown = await panel.locator("#log .entry .text").last().textContent();
-		const tags = await panel.locator("#app img, #app script, #app b:not(:is(p b, #join b))").count();
+		await panel.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
+		for (const r of Object.values(runs)) await r.panel.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
+		const shown = await panel.locator("#waiting .item .text").first().textContent();
+		const tags = await panel.locator("#app img, #app script, #app b").count();
 		const pwned = await page.evaluate(() => window.pwned ?? (document.getElementById("f").contentWindow.pwned ?? null));
-		check("browser: a peer's HTML is drawn as text, never as markup (card and conversation)", shown === evil && logShown === evil && tags === 0 && pwned === null, `shown: ${JSON.stringify(shown)}; in the log too: ${logShown === evil}; elements made from it: ${tags}; pwned: ${pwned}`);
-		const theme = await panel.locator("html").getAttribute("data-theme");
-		const bg = await panel.locator("button.primary").first().evaluate((b) => getComputedStyle(b).backgroundColor);
-		const lightBg = await runs.light.panel.locator("button.primary").first().evaluate((b) => getComputedStyle(b).backgroundColor).catch(() => "");
-		check("browser: follows the host's theme (dark and light)", theme === "dark" && (await runs.light.panel.locator("html").getAttribute("data-theme")) === "light" && bg !== lightBg, `dark button ${bg}, light button ${lightBg}`);
+		const convoWhileWaiting = await panel.locator("#convo-label").textContent();
+		const logWhileWaiting = await panel.locator("#log").textContent();
+		check(
+			"browser: a peer's HTML is drawn as text, never as markup; a waiting request isn't repeated in the conversation",
+			shown === evil && tags === 0 && pwned === null && convoWhileWaiting === "Conversation · 0" && !logWhileWaiting.includes("please run ls"),
+			`shown: ${JSON.stringify(shown)}; elements made from it: ${tags}; pwned: ${pwned}; ${convoWhileWaiting}`,
+		);
+		const labels = {};
+		for (const [k, r] of Object.entries(runs)) labels[k] = await r.panel.locator("#waiting .item .btn").first().textContent();
+		check(
+			"browser: gate 1 says who gets it: Hand to ChatGPT / Claude / agent, by host; Ignore beside it",
+			labels["dark-380"] === "Hand to ChatGPT" && labels["light-380"] === "Hand to Claude" && labels["light-720"] === "Hand to Claude" && labels["dark-720"] === "Hand to agent" && (await panel.locator("#waiting .item .btn").nth(1).textContent()) === "Ignore",
+			JSON.stringify(labels),
+		);
+		const bgOf = (r) => r.panel.locator("#card").evaluate((c) => getComputedStyle(c).backgroundColor);
+		const [darkBg, lightBg] = [await bgOf(runs["dark-380"]), await bgOf(runs["light-380"])];
+		const darkCls = await panel.locator("html").getAttribute("class");
+		check("browser: follows the host's theme (Basecoat dark and light)", /dark/.test(darkCls ?? "") && darkBg !== lightBg, `dark card ${darkBg}, light card ${lightBg}`);
 		const ctx = await page.evaluate(() => window.contexts.map((c) => c.content[0].text));
 		check("browser: after joining, the agent is told how to answer (model context, not the chat)", ctx.some((t) => /duet_send with seat "[A-Za-z0-9_-]+"/.test(t)) && !ctx.join().includes(room), JSON.stringify(ctx[0]?.slice(0, 120)));
-		if (shots) {
-			await page.screenshot({ path: join(shots, "panel-dark-380.png"), fullPage: true });
-			await runs.light.page.screenshot({ path: join(shots, "panel-light-380.png"), fullPage: true });
-		}
-		// One click: the framed text goes to ui/message, once; the request leaves both panels.
-		await panel.locator("#waiting .card button.primary").first().click();
+		for (const [k, r] of Object.entries(runs)) await shot(r.page, `panel-gate1-${k}.png`);
+
+		// One click: the framed text goes to ui/message, once; the request leaves this panel only.
+		await panel.locator("#waiting .item .btn").first().click();
 		await until(() => page.evaluate(() => window.messages.length), 10_000, "ui/message");
 		await sleep(500);
 		const msgs = await page.evaluate(() => window.messages);
 		const didnt = await panel.locator("#handed-note button").textContent().catch(() => "");
 		const m = msgs[0];
 		check(
-			"browser: Hand to agent sends the framed text as the user's message (ui/message), with a way back if it didn't arrive",
+			"browser: Hand to sends the framed text as the user's message (ui/message), with a way back if it didn't arrive",
 			didnt === "Didn't arrive?" && msgs.length === 1 && m.role === "user" && Array.isArray(m.content) && m.content[0].type === "text" && m.content[0].text.startsWith("[duet] from nika") && m.content[0].text.includes(evil) && /duet_send with seat "/.test(m.content[0].text),
 			JSON.stringify(m?.content?.[0]?.text?.slice(0, 160)),
 		);
-		// The light panel is another seat in the same room: it got its own copy and still waits for its own click.
-		const otherCards = await runs.light.panel.locator("#waiting .card").count();
-		const otherMsgs = await runs.light.page.evaluate(() => window.messages.length);
-		check("browser: nothing reaches the agent without a click (the other panel's copy still waits)", otherMsgs === 0 && otherCards === 1, `other panel: ${otherMsgs} messages sent, ${otherCards} card waiting`);
+		const otherCards = await runs["light-380"].panel.locator("#waiting .item").count();
+		const otherMsgs = await runs["light-380"].page.evaluate(() => window.messages.length);
+		check("browser: nothing reaches the agent without a click (another panel's copy still waits)", otherMsgs === 0 && otherCards === 1, `other panel: ${otherMsgs} messages sent, ${otherCards} card waiting`);
 		const sizes = await page.evaluate(() => window.sizes);
-		check("browser: reports its size to the host; no page errors", sizes.length > 0 && sizes.at(-1).height > 100 && !errors.length && !runs.light.errors.length, `last size ${JSON.stringify(sizes.at(-1))}; errors: ${JSON.stringify([...errors, ...runs.light.errors])}`);
-		if (shots) await page.screenshot({ path: join(shots, "panel-dark-handed-380.png"), fullPage: true });
+		check("browser: reports its size to the host; no page errors", sizes.length > 0 && sizes.at(-1).height > 100 && !Object.values(runs).some((r) => r.errors.length), `last size ${JSON.stringify(sizes.at(-1))}; errors: ${JSON.stringify(Object.values(runs).flatMap((r) => r.errors))}`);
+
+		// The conversation: one row, Conversation · N; a click opens the modal (in the panel here: no fullscreen).
+		const seat = m.content[0].text.match(/seat "([^"]+)"/)[1];
+		const cl = client(h.url);
+		const held = await cl.model("duet_send", { seat, text: "Cause: expires_at null on old rows.\nFix: backfill." });
+		await sendClick(cl, seat, "Both tests pass.");
+		await nika.say("Adding the backfill.");
+		await panel.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
+		await panel.locator("#waiting .item .btn", { hasText: "Ignore" }).first().click();
+		await panel.locator("#convo-label", { hasText: "Conversation · 3" }).waitFor({ timeout: 15_000 });
+		// The held reply is also in the panel (a chat that didn't draw the card), with Send / Don't send.
+		await panel.locator("#outgoing .item").first().waitFor({ timeout: 10_000 });
+		const outTitle = await panel.locator("#outgoing .item .who").first().textContent();
+		await shot(page, "panel-outgoing-dark-380.png");
+		await panel.locator("#outgoing .item .btn", { hasText: "Don't send" }).click();
+		await panel.locator("#outgoing .item").first().waitFor({ state: "detached", timeout: 10_000 });
+		const heldState = data(await cl.call("duet_reply", { id: held._meta["duet/hold"], action: "status" }));
+		await panel.locator("#convo-btn").click();
+		await panel.locator("#convo[open] > div").waitFor({ timeout: 5000 });
+		const entries = await panel.locator("#log .entry").allTextContents();
+		const modes = await page.evaluate(() => window.modes);
+		await shot(page, "panel-conversation-dark-380.png");
+		await panel.locator("#convo-close").click();
+		const closed = !(await panel.locator("#convo[open]").count());
+		check(
+			"browser: Conversation · N opens a modal in the panel: name · time · text, the handed request included once; the panel's reply row works",
+			entries.length === 3 && entries[0].startsWith("nika") && entries[0].includes(evil) && entries[1].startsWith("you") && entries.some((e) => e.includes("Adding the backfill.")) && !entries.join().includes("Cause: expires_at") && closed && !modes.length && outTitle === "Send to nika?" && heldState.status === "dropped",
+			`${entries.length} entries: ${JSON.stringify(entries.map((e) => e.slice(0, 40)))}; display-mode requests: ${JSON.stringify(modes)}; closed: ${closed}; panel reply row: ${outTitle} → ${heldState.status}`,
+		);
+		// With a host that allows fullscreen, the modal asks for it, and goes back inline on close.
+		const wide = runs["light-720"];
+		await shot(wide.page, "panel-later-light-720.png");
+		const wideFull = await open({ theme: "light", width: 720, hostName: "Claude", full: true });
+		await wideFull.panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
+		await joinPanel(wideFull.panel, room, "gfull", wideFull.errors);
+		await nika.say("one more for the log");
+		await wideFull.panel.locator("#convo-label", { hasText: "Conversation · 0" }).waitFor({ timeout: 5000 }).catch(() => {});
+		await wideFull.panel.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
+		await wideFull.panel.locator("#waiting .item .btn").first().click();
+		await until(() => wideFull.page.evaluate(() => window.messages.length), 10_000, "ui/message (full)");
+		await wideFull.panel.locator("#convo-label", { hasText: "Conversation · 1" }).waitFor({ timeout: 10_000 });
+		await wideFull.panel.locator("#convo-btn").click();
+		await wideFull.panel.locator("#convo[open] > div").waitFor({ timeout: 5000 });
+		await sleep(300);
+		const fullCls = await wideFull.panel.locator("html").getAttribute("class");
+		await shot(wideFull.page, "panel-conversation-fullscreen-light-720.png");
+		await wideFull.panel.locator("#convo-close").click();
+		await sleep(300);
+		const fullModes = await wideFull.page.evaluate(() => window.modes);
+		check("browser: where the host allows it, the conversation opens fullscreen and returns inline on close", JSON.stringify(fullModes) === '["fullscreen","inline"]' && /full/.test(fullCls ?? ""), `display-mode requests: ${JSON.stringify(fullModes)}; html class while open: ${fullCls}`);
+		await wideFull.page.close();
+
 		// The host refuses ui/message (as claude.ai web reportedly does): the panel offers the text to copy.
 		await page.evaluate(() => (window.refuse = true));
 		await nika.say("second: please run pwd");
-		await panel.locator("#waiting .card").first().waitFor({ timeout: 10_000 });
-		await panel.locator("#waiting .card button.primary").first().click();
+		const pwdItem = panel.locator("#waiting .item", { hasText: "second: please run pwd" });
+		await pwdItem.waitFor({ timeout: 10_000 });
+		await pwdItem.locator(".btn").first().click();
 		await panel.locator("#fallback:not(.hidden)").waitFor({ timeout: 10_000 });
 		const fb = await panel.locator("#fallback-text").inputValue();
-		if (shots) await page.screenshot({ path: join(shots, "panel-dark-fallback-380.png"), fullPage: true });
+		await shot(page, "panel-fallback-dark-380.png");
 		await panel.locator("#put-back").click();
-		await panel.locator("#waiting .card").first().waitFor({ timeout: 10_000 });
-		const again = await panel.locator("#waiting .card .text").first().textContent();
-		check("browser: if the chat app refuses the message, the panel shows it to copy, or puts it back", fb.startsWith("[duet] from nika") && fb.includes("second: please run pwd") && again === "second: please run pwd", `${JSON.stringify(fb.slice(0, 60))}; after Put it back: ${JSON.stringify(again)}`);
+		await panel.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
+		const back = await panel.locator("#waiting .item .text").first().textContent();
+		check("browser: if the chat app refuses the message, the panel shows it to copy, or puts it back", fb.startsWith("[duet] from nika") && fb.includes("second: please run pwd") && back === "second: please run pwd", `${JSON.stringify(fb.slice(0, 60))}; after Put back: ${JSON.stringify(back)}`);
+
+		// Gate 2: the reply card (duet_send's view), drawn by the host with the tool's input and result.
+		for (const [theme, width] of [["light", 380], ["dark", 380], ["light", 720], ["dark", 720]]) {
+			const reply = `Cause: expires_at null on old rows.\nFix: UPDATE sessions SET expires_at = created_at + interval '14 days' WHERE expires_at IS NULL; (${theme} ${width})`;
+			const result = await cl.model("duet_send", { seat, text: reply });
+			const c = await open({ theme, width, hostName: "Claude", src: cardHtml, tool: { args: { seat, text: reply }, result } });
+			await c.panel.locator("#send:not([disabled])").waitFor({ timeout: 10_000 });
+			const title = await c.panel.locator("#title").textContent();
+			const body = await c.panel.locator("#reply").textContent();
+			const status = await c.panel.locator("#status").textContent();
+			await shot(c.page, `card-gate2-${theme}-${width}.png`);
+			if (theme === "light" && width === 380) {
+				await sleep(1000);
+				const early = nika.seen.some((e) => e.text === reply);
+				await c.panel.locator("#send").click();
+				await c.panel.locator("#status", { hasText: "Sent" }).waitFor({ timeout: 10_000 });
+				const got = await until(() => nika.seen.find((e) => e.text === reply), 10_000, "card reply at nika").catch(() => null);
+				const told = await c.page.evaluate(() => window.contexts.map((x) => x.content[0].text));
+				const hidden = await c.panel.locator("#acts.hidden").count();
+				await shot(c.page, `card-gate2-sent-light-380.png`);
+				check(
+					"browser: gate 2 card: the whole reply with Send / Don't send; nothing leaves before the click; Send sends it once and tells the agent",
+					title === "Send to nika?" && body === reply && status === "Waiting for your OK" && !early && !!got && hidden === 1 && told.some((t) => /was sent/.test(t)) && !JSON.stringify(result.content).includes(result._meta["duet/hold"]),
+					`${title} / ${status}; at nika before: ${early}, after: ${!!got}; model told: ${JSON.stringify(told)}`,
+				);
+			} else if (theme === "dark" && width === 380) {
+				await c.panel.locator("#drop").click();
+				await c.panel.locator("#status", { hasText: "Not sent" }).waitFor({ timeout: 10_000 });
+				await sleep(1000);
+				check("browser: gate 2 card: Don't send sends nothing", !nika.seen.some((e) => e.text === reply) && c.errors.length === 0, `status: ${await c.panel.locator("#status").textContent()}; errors ${JSON.stringify(c.errors)}`);
+			} else await cl.call("duet_reply", { id: result._meta["duet/hold"], action: "drop" });
+			await c.page.close();
+		}
 
 		// Two panels in one chat share the seat: one click hands the request over once, and it leaves both.
 		const twin = await browser.newPage({ viewport: { width: 380, height: 900 } });
-		await twin.goto(`http://127.0.0.1:${site.address().port}/`);
+		await twin.goto(base);
 		await twin.evaluate((html) => {
 			window.THEME = "light";
+			window.FIXED = true;
 			document.getElementById("f").srcdoc = html;
 			document.getElementById("f2").srcdoc = html;
 		}, html);
 		const [one, two] = [twin.frameLocator("#f"), twin.frameLocator("#f2")];
-		await one.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
 		const twinRoom = `t-${randomUUID()}`;
 		const lev = peer(twinRoom, "lev");
-		await one.locator("#room").fill(twinRoom);
-		await one.locator("#name").fill("maya");
-		await one.locator("#join-btn").click();
-		await two.locator(".pill.ok").waitFor({ timeout: 15_000 }); // the second panel finds the seat by itself
+		await joinPanel(one, twinRoom, "maya", []);
+		await two.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 }); // the second panel finds the seat by itself
 		await sleep(500);
 		await lev.say("twin request");
-		await one.locator("#waiting .card").first().waitFor({ timeout: 10_000 });
-		await two.locator("#waiting .card").first().waitFor({ timeout: 10_000 });
-		await one.locator("#waiting .card button.primary").click();
-		const cleared = await until(async () => (await two.locator("#waiting .card").count()) === 0, 15_000, "second panel cleared").catch(() => false);
-		await two.locator("#none-waiting:not(.hidden)").waitFor({ timeout: 5_000 }).catch(() => {});
+		await one.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
+		await two.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
+		await one.locator("#waiting .item .btn").first().click();
+		const cleared = await until(async () => (await two.locator("#waiting .item").count()) === 0, 15_000, "second panel cleared").catch(() => false);
 		const twinMsgs = await twin.evaluate(() => window.messages.length);
 		check("browser: two panels in one chat share the room; a request handed over in one leaves the other", cleared === true && twinMsgs === 1, `second panel's card gone: ${cleared}; messages to the chat: ${twinMsgs}`);
 		lev.stop();
@@ -589,7 +751,7 @@ addEventListener("message", async (ev) => {
 // The Claude Desktop installs: the bundle on the site holds today's server, and setup writes the app's config.
 async function installTests() {
 	const { execFileSync } = await import("node:child_process");
-	const stale = ["mcp.js", "panel.js", "transport.js", "lock.js", "codex-guard.js"].filter((f) => {
+	const stale = ["mcp.js", "panel.js", "transport.js", "lock.js", "basecoat.js"].filter((f) => {
 		try {
 			return execFileSync("unzip", ["-p", join(REPO, "docs/duet.mcpb"), `server/${f}`]).toString("utf8") !== readFileSync(join(REPO, f), "utf8");
 		} catch {

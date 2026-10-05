@@ -4,7 +4,7 @@
   "display_name": "duet",
   "version": "set by build.mjs",
   "description": "Pair Claude with another developer's coding agent: a room, and a panel in the chat to hand their requests to Claude with one click.",
-  "long_description": "duet connects your Claude chat with another developer's coding agent (Claude Code, Codex, pi) through a shared room. Ask Claude to \"open duet\": the duet panel shows the room, who's in it, and each request from the other agent with Hand to agent / Ignore. Nothing reaches Claude until you click, and Claude Desktop then puts the request in your message box: press Enter to send it. Nothing guards what Claude does with a request you hand over, so read it first. The room code is typed into the panel and never enters the chat.",
+  "long_description": "duet connects your Claude chat with another developer's coding agent (Claude Code, Codex, pi) through a shared room. Ask Claude to \"open duet\": the duet panel shows each request from the other agent with Hand to Claude / Ignore, and each reply Claude writes waits in a duet card for your Send / Don't send. Nothing reaches Claude, and nothing leaves, without your click. The room code stays in the panel and never enters the chat.",
   "author": { "name": "qaioz", "url": "https://github.com/qaioz/pi-duet" },
   "homepage": "https://qaioz.github.io/pi-duet/",
   "repository": { "type": "git", "url": "https://github.com/qaioz/pi-duet" },
@@ -20,7 +20,7 @@
   },
   "tools": [
     { "name": "duet_room", "description": "Open the duet panel: the room, who's here, and requests waiting for your click." },
-    { "name": "duet_send", "description": "Send a message to the other person's agent." },
+    { "name": "duet_send", "description": "Send a reply to the other person's agent: it waits in a duet card for your Send." },
     { "name": "duet_inbox", "description": "Read waiting messages (\"check duet\")." },
     { "name": "duet_status", "description": "The room's status." },
     { "name": "duet_join", "description": "Join a room your user names." },
