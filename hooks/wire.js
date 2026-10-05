@@ -143,8 +143,15 @@ export function sanitize(text, max = MAX_SHOWN) {
 export function preview(text, lines = 4, width = 160, hint = " — /duet to read all") {
 	const all = sanitize(text).split("\n");
 	const total = String(text ?? "").replace(/\r\n?/g, "\n").split("\n").length; // before sanitize shortens it
-	const shown = all.slice(0, lines).map((l) => (l.length > width ? l.slice(0, width - 1) + "…" : l));
+	let cut = String(text ?? "").length > MAX_SHOWN; // sanitize shortened it
+	const shown = all.slice(0, lines).map((l) => {
+		if (l.length <= width) return l;
+		cut = true;
+		return l.slice(0, width - 1) + "…";
+	});
+	// Say so whenever anything is left out, not only whole lines.
 	if (total > lines) shown.push(`… (${total - lines} more lines${hint})`);
+	else if (cut) shown.push(`… (cut${hint})`);
 	return shown.join("\n");
 }
 

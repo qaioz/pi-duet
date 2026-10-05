@@ -26,7 +26,7 @@
 // validator refuses `$` passed to an imported function. wire.js is pure.
 import {
 	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
-	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, preview, randomId, sanitize, sha256hex, timeOf, topicFor,
+	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, sanitize, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
 const PANE = "duet";
@@ -35,7 +35,7 @@ const REPAIR_POLL_MS = 10_000; // ntfy.sh writes its cache in batches; re-poll a
 const MAX_BACKOFF_MS = 30_000;
 const LOCK_STALE_MS = 60_000;
 const HISTORY_MAX = 200; // per room, kept in $.store across restarts
-const HISTORY_TEXT_MAX = 1500; // characters of one history entry kept
+const HISTORY_TEXT_MAX = 1500; // characters of one history entry saved to $.store (memory keeps it whole)
 const HISTORY_BYTES_MAX = 512 * 1024; // one room's saved history, as JSON in UTF-8: 5 rooms stay well under $.store's 4 MiB
 const HISTORY_ROOMS = 5; // rooms whose history is kept; older ones are dropped
 const QUEUE_MAX = 50;
@@ -113,9 +113,11 @@ function wait($, ms) {
 }
 
 // Simple history: name · time · text. Notes (joins, leaves) are dim lines. Saved per room.
+// The pane keeps the whole text in memory (it is where the user reads a request in full); only the
+// copy saved to $.store is cut, to HISTORY_TEXT_MAX characters an entry.
 function remember($, entry) {
 	const text = String(entry.text ?? "");
-	history.push({ at: new Date().toISOString(), who: entry.who ?? "", text: text.length > HISTORY_TEXT_MAX ? text.slice(0, HISTORY_TEXT_MAX) + "…" : text, ...(entry.note ? { note: true } : {}) });
+	history.push({ at: new Date().toISOString(), who: entry.who ?? "", text, ...(entry.note ? { note: true } : {}) });
 	if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
 	if (!room || historySave) return;
 	const key = "history:" + room.key;
@@ -128,7 +130,8 @@ function remember($, entry) {
 
 // The newest entries whose JSON fits HISTORY_BYTES_MAX (non-ASCII text, escapes: a character can be
 // several bytes), so a full $.store never blocks the writes of the cursor, the room and the lock.
-function fitHistory(list) {
+function fitHistory(full) {
+	const list = full.map((h) => (typeof h.text === "string" && h.text.length > HISTORY_TEXT_MAX ? { ...h, text: h.text.slice(0, HISTORY_TEXT_MAX) + "…" } : h));
 	let total = 2;
 	let i = list.length;
 	while (i > 0) {
@@ -537,11 +540,11 @@ async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 		return;
 	}
 	if (isPlaceholderName(nameArg)) {
-		$.ui.log(`"${nameArg}" is the placeholder: use your name, as in /duet ${code} karlo`);
+		$.ui.log(`"${nameArg}" is a placeholder · /duet ${code} <your name>`);
 		return;
 	}
 	if (relayArg && !isRelayUrl(relayArg)) {
-		$.ui.log(`relay must be a plain http(s) URL like https://duet.gaioz.online, got ${sanitize(relayArg, 100)}`);
+		$.ui.log(`bad relay ${sanitize(relayArg, 100)} · http(s) URL only, e.g. https://duet.gaioz.online`);
 		return;
 	}
 	const relay = (relayArg || server).replace(/\/+$/, "");
@@ -740,7 +743,7 @@ async function setMode($, mode) {
 		// The one confirm: commands run unasked here, so auto lets the other side's agent run them.
 		let answer = "Keep ask";
 		try {
-			answer = await $.ui.ask("duet: commands run unasked here · auto lets the other agent run them. Turn auto on?", ["Turn auto on", "Keep ask"]);
+			answer = await $.ui.ask("duet auto? · commands run unasked here · the other agent could run them", ["Turn auto on", "Keep ask"]);
 		} catch {}
 		if (!room) return;
 		if (answer !== "Turn auto on") {
@@ -755,7 +758,7 @@ async function setMode($, mode) {
 	paused = false;
 	const active = await $.store.get("active:" + sessionId);
 	if (active) await $.store.set("active:" + sessionId, { ...active, mode });
-	$.ui.log(mode === "auto" ? `auto · no gates · max ${MAX_AUTO} in a row` : "ask · requests and replies wait for you");
+	$.ui.log(mode === "auto" ? `auto · no gates · max ${MAX_AUTO} in a row` : "ask · both gates on");
 	redraw($);
 	void deliver($).catch(() => {});
 }
@@ -798,16 +801,27 @@ function decide($, item, decision) {
 // while a mods API call is in flight and runs on through a promise of the mod's own (and through
 // $.clock.sleep), so the wait sits inside short blocking processes: `sleep` (macOS, Linux, Git Bash),
 // else `ping` to this computer (Windows' own, System32: about a second a round), else PowerShell's
-// Start-Sleep. A waiter that can't start, or exits with an error, is dropped for the rest of this
-// module's life. Only with none of them left does the wait fall back to $.clock.sleep, which counts
-// against the hook's 10 s; the hook's .catch then refuses the send (fails closed).
+// Start-Sleep. A waiter that can't start is dropped for the rest of this module's life; one that
+// fails (a non-zero exit, its time limit) is dropped only after WAITER_FAILS in a row, so one hiccup
+// doesn't move the wait to a slower one. Each has a short time limit of its own: `ping -n 2` on
+// Linux/macOS never ends by itself. Only with none of them left does the wait fall back to
+// $.clock.sleep, which counts against the hook's 10 s; the hook's .catch then refuses the send
+// (fails closed).
 const WAITERS = [
-	["sleep", "0.25"],
-	["ping", "-n", "2", "127.0.0.1"],
-	["powershell", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Milliseconds 250"],
+	{ argv: ["sleep", "0.25"], timeoutMs: 2000 },
+	{ argv: ["ping", "-n", "2", "127.0.0.1"], timeoutMs: 3000 },
+	{ argv: ["powershell", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Milliseconds 250"], timeoutMs: 5000 },
 ];
-let waiter = 0; // the first of WAITERS not yet found missing here
+const WAITER_FAILS = 3;
+let waiter = 0; // the first of WAITERS not yet given up on here
+let waiterFails = 0; // failures in a row of WAITERS[waiter]
 async function awaitDecision($, item, signal) {
+	const decision = await waitForPress($, item, signal);
+	// The hook's budget may have run out (the tool already answered "Not sent: duet error") while a
+	// press came in: never send after that.
+	return signal?.aborted ? "stopped" : decision;
+}
+async function waitForPress($, item, signal) {
 	while (!item.decision) {
 		if (signal?.aborted) return "stopped";
 		if (!room) return "left";
@@ -820,12 +834,20 @@ async function awaitDecision($, item, signal) {
 		if (current && current !== moduleId) return "reloaded";
 		if (item.decision) break;
 		if (waiter < WAITERS.length) {
+			let missing = false;
 			try {
-				const r = await $.process.run(WAITERS[waiter], { timeoutMs: 5000 });
-				if (r.exitCode === 0) continue;
-			} catch {}
-			if (item.decision) break;
-			waiter++;
+				const r = await $.process.run(WAITERS[waiter].argv, { timeoutMs: WAITERS[waiter].timeoutMs });
+				if (r.exitCode === 0) {
+					waiterFails = 0;
+					continue;
+				}
+			} catch (err) {
+				missing = /ENOENT|not found|cannot find|no such file/i.test(String(err?.message ?? err));
+			}
+			if (missing || ++waiterFails >= WAITER_FAILS) {
+				waiter++;
+				waiterFails = 0;
+			}
 			continue;
 		}
 		try {
@@ -853,10 +875,10 @@ async function autoRejoin($) {
 // ---------- the send tool ----------
 
 async function sendTool($, e, signal) {
-	if (!room) return { result: "Not sent: not in a duet room." };
+	if (!room) return { result: "Not sent: not in a duet room" };
 	const text = String(e.text ?? "").trim();
-	if (!text) return { result: "Not sent: empty." };
-	if (text.length > MAX_TEXT) return { result: `Not sent: ${text.length} characters, limit ${MAX_TEXT}. Send the key part, or split it.` };
+	if (!text) return { result: "Not sent: empty" };
+	if (text.length > MAX_TEXT) return { result: `Not sent: ${text.length} characters, limit ${MAX_TEXT} · send the key part, or split it` };
 	const to = typeof e.to === "string" && e.to.trim() ? e.to.trim() : undefined;
 	// `to` comes from the model: only the name of someone in the room (it shows on the card, the
 	// spinner and the toast, and a name nobody has would reach no one).
@@ -879,10 +901,10 @@ async function sendTool($, e, signal) {
 			outbox = outbox.filter((x) => x !== item);
 			redraw($);
 		}
-		if (decision === "drop") return { result: "Not sent: your user said no. Don't resend." };
+		if (decision === "drop") return { result: "Not sent: your user said no · don't resend" };
 		if (decision === "reloaded") return { result: "Not sent: duet restarted · send it again" };
-		if (decision !== "send") return { result: "Not sent." };
-		if (room !== r) return { result: "Not sent: left the room." };
+		if (decision !== "send") return { result: "Not sent" };
+		if (room !== r) return { result: "Not sent: left the room" };
 	}
 	try {
 		// Working on a peer's request: say which message this answers (the latest from that sender).
@@ -896,7 +918,7 @@ async function sendTool($, e, signal) {
 	}
 	remember($, { who: "you", text });
 	redraw($);
-	return { result: `Sent to ${to ?? "the room"}.` };
+	return { result: `Sent to ${to ?? "the room"}` };
 }
 
 // ---------- drawing ----------
@@ -955,26 +977,26 @@ function drawCard($, e) {
 		const via = viaLabel(peers.get(env.from)?.via);
 		const others = queue.length - 1;
 		const reply = (g) => (g.reLine ? [Text({ dimColor: true, children: [`↳ re “${sanitize(g.reLine, 80)}”`] })] : []);
-		const width = Math.max((e.props?.bodyColumns ?? 100) - 4, 40);
-		const body =
-			group.length > 1
-				? group.flatMap((g) => [...reply(g), Text({ children: ["• " + preview(g.text, 2, width, " · /duet")] })])
-				: [...reply(env), Text({ children: [preview(env.text, 8, width, " · /duet")] })];
-		return frame(AMBER, [
-			Box({
-				flexDirection: "row",
-				justifyContent: "space-between",
-				children: [
-					Box({ flexDirection: "row", children: [Text({ bold: true, color: AMBER, children: [env.from] }), Text({ dimColor: true, children: [`${via ? " · " + via : ""} · ${timeOf(env.ts)}${paused ? " · auto paused" : ""}`] })] }),
-					...(others > 0 ? [Text({ dimColor: true, children: [`+${others}`] })] : []),
-				],
-			}),
-			...body,
-			buttons([
-				Button({ key: "take", label: "Do it", hotkey: "1", plain: true, onPress: () => void choose($, "take").catch(() => {}) }),
-				Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
-			]),
+		// Every word Claude would get on "Do it": the whole text of each message in the group, every
+		// line, wrapped, never cut to the band's width or a line count (a peer could hide an
+		// instruction past the cut).
+		const body = group.flatMap((g, i) => [...(i > 0 ? [Text({ key: `sep${i}`, dimColor: true, children: ["—"] })] : []), ...reply(g), ...textRows(Text, g.text, `q${i}.`)]);
+		const head = Box({
+			flexDirection: "row",
+			justifyContent: "space-between",
+			children: [
+				Box({ flexDirection: "row", children: [Text({ bold: true, color: AMBER, children: [env.from] }), Text({ dimColor: true, children: [`${via ? " · " + via : ""} · ${timeOf(env.ts)}${paused ? " · auto paused" : ""}`] })] }),
+				...(others > 0 ? [Text({ dimColor: true, children: [`+${others}`] })] : []),
+			],
+		});
+		const keys = buttons([
+			Button({ key: "take", label: "Do it", hotkey: "1", plain: true, onPress: () => void choose($, "take").catch(() => {}) }),
+			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
 		]);
+		// As gate 2: a request taller than the band keeps its keys under the title, inside the window.
+		const rows = group.reduce((n, g, i) => n + rowsFor(g.text, e.props?.bodyColumns ?? 80) + (g.reLine ? 1 : 0) + (i > 0 ? 1 : 0), 0);
+		const fits = rows + 4 <= (e.props?.maxRows ?? 10);
+		return frame(AMBER, fits ? [head, ...body, keys] : [head, keys, ...body]);
 	}
 	return null;
 }
@@ -1072,7 +1094,7 @@ function drawPane($, e) {
 						: Box({
 								key: "h" + i,
 								flexDirection: "column",
-								children: [Box({ flexDirection: "row", children: [Text({ bold: true, color: h.who === "you" ? BLUE : AMBER, children: [h.who] }), Text({ dimColor: true, children: [" " + timeOf(h.at)] })] }), Text({ children: [sanitize(h.text, 6000)] })],
+								children: [Box({ flexDirection: "row", children: [Text({ bold: true, color: h.who === "you" ? BLUE : AMBER, children: [h.who] }), Text({ dimColor: true, children: [" " + timeOf(h.at)] })] }), ...textRows(Text, h.text, `h${i}.`)],
 							}),
 				)
 			: [Text({ dimColor: true, children: ["Nothing yet"] })];
@@ -1261,11 +1283,19 @@ export function register(on) {
 		// Typed while the session is still starting: wait for its settings (folder, name, relay).
 		await Promise.race([ready, wait($, 8_000)]);
 		if (!(await canDraw($))) {
-			$.ui.log("duet needs the Claude Code terminal or the Desktop app's Code tab");
+			$.ui.log("duet: Claude Code terminal or Desktop Code tab only");
 			return {};
 		}
 		const [first = "", second, third] = String(e.args ?? "").trim().split(/\s+/);
 		const arg = first.toLowerCase();
+		// Turning the gates off, or joining a room, only from the user's own hand: Enter at the prompt
+		// (composer), Remote Control (bridge) or the SDK host's own turn (the Desktop app). Never from
+		// a plugin's $.command.run, a skill the model reaches, or anything unstamped.
+		const byUser = ["composer", "bridge", "sdk"].includes(e.origin?.kind);
+		if (!byUser && (arg === "auto" || arg === "new" || (isRoomCode(first) && !["ask", "status", ...LEAVE_WORDS].includes(arg)))) {
+			$.ui.log(`/duet ${sanitize(arg, 64)}: type it yourself`);
+			return {};
+		}
 		// Joining and moving wait on the relay and the other window: run them detached, so the
 		// command returns at once and no hook time limit applies.
 		if (!first) void openPane($).catch(() => {});

@@ -178,6 +178,12 @@ test("a card preview counts the lines of the whole message, not of the shortened
 	assert.match(wire.preview(text, 4), /1496 more lines/);
 });
 
+test("a card preview says it cut something whenever it did, even a single long line", () => {
+	assert.match(wire.preview("a" + "x".repeat(400), 4, 100, " · /duet"), /… \(cut · \/duet\)$/);
+	assert.match(wire.preview("y".repeat(7000), 4, 10000, " · /duet"), /cut · \/duet/);
+	assert.equal(wire.preview("short", 4, 100, " · /duet"), "short");
+});
+
 test("long-message URLs: only a real upload on this very relay", () => {
 	const S = "https://duet.gaioz.online";
 	for (const f of [transport.attachmentUrl, wire.attachmentUrl]) {
