@@ -26,7 +26,7 @@
 // validator refuses `$` passed to an imported function. wire.js is pure.
 import {
 	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
-	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, sanitize, sha256hex, timeOf, topicFor,
+	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, sanitize, HIDDEN_MARK, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
 const PANE = "duet";
@@ -876,7 +876,10 @@ async function autoRejoin($) {
 
 async function sendTool($, e, signal) {
 	if (!room) return { result: "Not sent: not in a duet room" };
-	const text = String(e.text ?? "").trim();
+	const raw = String(e.text ?? "");
+	if (raw.length > MAX_TEXT) return { result: `Not sent: ${raw.length} characters, limit ${MAX_TEXT} · send the key part, or split it` };
+	// What goes out is exactly what the gate 2 card shows: no control or invisible characters.
+	const text = sanitize(raw, MAX_TEXT).trim();
 	if (!text) return { result: "Not sent: empty" };
 	if (text.length > MAX_TEXT) return { result: `Not sent: ${text.length} characters, limit ${MAX_TEXT} · send the key part, or split it` };
 	const to = typeof e.to === "string" && e.to.trim() ? e.to.trim() : undefined;
@@ -890,7 +893,7 @@ async function sendTool($, e, signal) {
 	// Gate 2, in ask mode: the whole reply waits above the prompt for Send / Don't send. Without
 	// `to` a reply reaches everyone in the room, so the card names everyone.
 	if (!autoActive()) {
-		const item = { id: randomId(), text, to: to ?? (peerList() || "the room"), decision: "" };
+		const item = { id: randomId(), text, to: to ?? (peerList() || "the room"), decision: "", agentId: e.agentId };
 		outbox = [...outbox, item];
 		$.ui.toast(`duet: reply to ${oneLine(item.to)} waiting`);
 		redraw($);
@@ -918,7 +921,7 @@ async function sendTool($, e, signal) {
 	}
 	remember($, { who: "you", text });
 	redraw($);
-	return { result: `Sent to ${to ?? "the room"}` };
+	return { result: `Sent to ${to ?? (peerList() || "the room")}${text.endsWith(HIDDEN_MARK) ? " · hidden characters removed" : ""}` };
 }
 
 // ---------- drawing ----------
@@ -1358,9 +1361,10 @@ export function register(on) {
 
 	on("turn.complete", async ($, e, next) => {
 		if (!e.agentId && e.turnId === runningTurn) runningTurn = "";
-		// The main turn ended (Esc, an error) while a reply still waits at gate 2: its call was
-		// abandoned, so settle it, unsent. (next.signal normally does this first.)
-		if (!e.agentId && outbox.length) for (const item of outbox) decide($, item, "stopped");
+		// A turn ended (Esc, an error) while a reply it sent still waits at gate 2: its call was
+		// abandoned, so settle it, unsent. (next.signal normally does this first.) Only that loop's
+		// own replies: a background subagent's send keeps waiting after the main turn ends.
+		for (const item of outbox) if ((item.agentId ?? "") === (e.agentId ?? "")) decide($, item, "stopped");
 		if (!e.agentId && peerTurn && peerTurn.turnId === e.turnId) {
 			const t = peerTurn;
 			peerTurn = null;

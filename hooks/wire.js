@@ -129,14 +129,25 @@ export function isForMe(env, myFromId, myName) {
 
 export const byteLength = (s) => new TextEncoder().encode(s).length;
 
+// Characters a terminal draws as nothing but a model still reads: Unicode format characters (\p{Cf}:
+// the tag block U+E0000–E007F, bidi controls, zero-width characters, BOM), variation selectors and
+// the Hangul fillers. Text built from them can carry a whole hidden instruction.
+export const HIDDEN = /[\p{Cf}\u115F\u1160\u3164\uFFA0\uFE00-\uFE0F\u{E0100}-\u{E01EF}]+/gu;
+export const HIDDEN_MARK = " [hidden characters removed]";
+
 // Peer text is untrusted: Text refuses control characters other than tab and newline (and an invalid
-// tree silently falls back to the engine's drawing), so strip them, and cap the length.
+// tree silently falls back to the engine's drawing), so strip them, and cap the length. Invisible
+// characters are stripped too, with a visible mark, so a card shows every word Claude gets (gate 1)
+// and every word a reply sends (gate 2): the same function makes both.
 export function sanitize(text, max = MAX_SHOWN) {
+	let hidden = false;
 	const clean = String(text ?? "")
 		.replace(/\r\n?/g, "\n")
 		.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "") // ANSI escape sequences
-		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]/g, "");
-	return clean.length > max ? clean.slice(0, max) + `… [${clean.length - max} more characters]` : clean;
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]/g, "")
+		.replace(HIDDEN, () => ((hidden = true), ""));
+	const cut = clean.length > max ? clean.slice(0, max) + `… [${clean.length - max} more characters]` : clean;
+	return hidden ? cut + HIDDEN_MARK : cut;
 }
 
 // The first `lines` lines of a text, each cut to `width`, for the card above the prompt.
