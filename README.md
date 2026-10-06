@@ -1,61 +1,73 @@
-# duet (pi-duet)
+# duet
 
-Pair your coding agent with a friend's. "ask nika's agent to run the tests and send me the failures":
-their agent works, with its own tools · the answer lands in your session. Works with **Claude Code**, **Codex**, **[pi](https://github.com/badlogic/pi-mono)**, and
-**Claude chat / ChatGPT** through the duet panel, in any mix. No accounts.
+**Pair your coding agent with a friend's.**
 
-- **Start a room:** <https://qaioz.github.io/pi-duet/>
-- **Guide:** <https://qaioz.github.io/pi-duet/guide/> · setup per agent, the two gates, how it works,
-  self-hosting, limits
+> "ask nika's agent to run the tests and send me the failures"
 
-Two gates in ask mode (the default on Claude Code, Codex, chat apps): request in (Do it / Ignore) ·
-whole reply out (Send / Don't send). pi: no gates, always auto, 8 in a row max.
+Their agent does the work on their machine. The answer lands in your session.
+Claude Code, Codex, [pi](https://github.com/badlogic/pi-mono), Claude chat, ChatGPT, in any mix. No accounts.
 
-> **Safety.** Whoever has the invite link (the room code) can send your agent requests and read the
-> room. Share it only with someone you trust. Messages are not end-to-end encrypted.
+![The duet website: start a room, send the link, start your agent](docs/readme/website.png)
 
-## Development
+## Start
+
+1. **Open [qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, press **Start a room**, send the link to your friend.
+2. **Start your agent in your project folder.** The site fills in the room and your name:
+
+   | Agent | Paste |
+   |---|---|
+   | Claude Code | `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user && { claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_ROOM=<room> DUET_NAME=<name> claude; }` |
+   | Codex | `codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet && codex "join duet room <room> as <name>"` |
+   | pi | `pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet && DUET_ROOM=<room> DUET_NAME=<name> pi` |
+   | Claude chat, ChatGPT | Add the connector `https://mcp-duet.gaioz.online/mcp`, then say "open duet" |
+
+3. **Ask your agent:** "ask nika's agent what it thinks of this plan."
+
+## You stay in control
+
+Two gates, on by default: nothing reaches your agent, and nothing leaves it, without you.
+
+![Claude Code: a request waits for 1 Do it, then the full reply waits for 1 Send](docs/readme/claude-code.png)
+
+| Gate | Claude Code, Codex | Chat apps |
+|---|---|---|
+| Request in | `1` Do it · `2` Ignore | Hand to agent · Ignore |
+| Reply out (full text) | `1` Send · `2` Don't send | Send · Don't send |
+
+Hidden characters in a request are removed and marked, so what you read is what your agent gets.
+Want it hands-free? `/duet auto` (Claude Code) or "duet auto" (Codex): no gates, at most 8 turns in a row without you. pi always runs this way.
+
+![The duet panel in a chat: a request with Hand to agent, and a reply waiting for Send](docs/readme/chat-panel.png)
+
+## Good to know
+
+- **The link is the key.** Anyone with it can send your agent requests and read the room. Share it only with people you trust.
+- **Not end-to-end encrypted.** Messages pass through a relay ([ntfy](https://ntfy.sh)) at `duet.gaioz.online`. For sensitive work, [self-host one](https://qaioz.github.io/pi-duet/guide/self-hosting/).
+- **Claude Code** needs version 2.1.287 or newer (duet is a mod). The one-line installs need a Unix shell: macOS, Linux, or Git Bash on Windows.
+
+**[Guide →](https://qaioz.github.io/pi-duet/guide/)** setup per agent, updating, team repos, Claude Desktop, how it works, limits.
+
+<details>
+<summary><b>Development</b></summary>
 
 ```
-npm test                                  # no-model plumbing: MCP server + pi extension
-node --test test/mod-unit.mjs             # Claude Code plugin: wire format
-claude plugin test                        # Claude Code plugin: hooks, cards, pane (Claude Code's own test kit)
-node test/site.mjs                        # the website and the guide in headless Chromium
-node test/e2e.mjs talk do loop            # two real pi agents (needs OPENROUTER_API_KEY; costs cents)
-node test/codex.mjs                       # Codex: hooks, ask form, turn-end hand-over, join (no model)
-node test/panel.mjs                       # the duet panel: stdio + hosted servers, and the panel in Chromium
-node mcpb/build.mjs                       # rebuild docs/duet.mcpb after changing the server (panel.mjs checks it)
-node test/pairs.mjs                       # mixed pairs: pi, Claude Code, Codex (see the file header)
+npm test                       # plumbing: MCP server, Codex hooks, panel, pi (needs a test relay, below)
+node --test test/mod-unit.mjs  # Claude Code plugin: wire format
+claude plugin test             # Claude Code plugin: hooks, cards, pane
+node test/site.mjs             # website and guide in headless Chromium
+node mcpb/build.mjs            # rebuild docs/duet.mcpb after changing the server
 ```
 
-- Tests use the relay in `DUET_SERVER`. The default is a local ntfy on `http://127.0.0.1:18080`:
-  `docker run -d --name duet-ntfy-test -p 127.0.0.1:18080:80 -e NTFY_BASE_URL=http://127.0.0.1:18080 -e NTFY_ATTACHMENT_CACHE_DIR=/tmp/att binwiederhier/ntfy serve`
-  (the base URL and attachment folder let it carry long messages).
-  Set `DUET_SERVER=https://ntfy.sh` for the real relay.
-- Agents run isolated, each with its own HOME, config dir and working folder under
-  `~/coding/personal/duet-test-v2/`.
+Test relay: `docker run -d --name duet-ntfy-test -p 127.0.0.1:18080:80 -e NTFY_BASE_URL=http://127.0.0.1:18080 -e NTFY_ATTACHMENT_CACHE_DIR=/tmp/att binwiederhier/ntfy serve`
+(or `DUET_SERVER=https://ntfy.sh`).
 
-### Website and guide
-
-GitHub Pages serves `main:/docs` (legacy, no build step).
-
-- `docs/index.html`: the website, one file on [Basecoat](https://basecoatui.com) (`docs/basecoat.min.css`,
-  vendored from `basecoat-css@1.0.2`, MIT) with Geist (`docs/fonts/`, OFL). It loads nothing from other
-  domains: only itself and the relay.
-- `docs-site/`: the guide, a [Starlight](https://starlight.astro.build) site. Edit
-  `docs-site/src/content/docs/`, then `cd docs-site && npm ci && npm run build`: it writes `docs/guide/`.
-  Commit both.
-- `docs/claude.sh`: the optional Claude Code installer that also checks mods are on.
-
-### Layout
-
-| file | what |
+| Path | What |
 |---|---|
+| `hooks/` | Claude Code plugin (a mod) |
+| `codex/`, `mcp.js` | Codex plugin and the MCP server (also Claude Desktop, VS Code, Goose) |
+| `panel.js`, `hosted.js`, `hosted/` | the chat panel (MCP App) and the hosted server |
 | `index.ts` | pi extension |
-| `mcp.js` | MCP server (Codex, Claude Desktop, VS Code, Goose) |
-| `hosted.js`, `hosted/` | the hosted MCP server for web chat apps |
-| `panel.js` | the duet panel (MCP App) |
-| `hooks/` | Claude Code plugin (a mod); `hooks/wire.js` is its copy of the wire format |
-| `codex/` | Codex plugin hooks |
-| `transport.js`, `lock.js` | wire format and the one-window lock, shared |
-| `setup.js` | `setup codex`, `setup claude-desktop` |
+| `transport.js`, `lock.js` | wire format and the one-window lock |
+| `docs/` | website (GitHub Pages, `main:/docs`, Basecoat), `docs/guide/` built from `docs-site/` (Starlight) |
+
+</details>
