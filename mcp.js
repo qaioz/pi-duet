@@ -31,8 +31,8 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, ren
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { LOCK_BEAT_MS, describeHolder, duetHome, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeLock } from "./lock.js";
-import { appTools, cleanText, drawsPanels, handOver, heldResult, makeHolds, outgoingItem, PANEL_KEY_META, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom, toWhom } from "./panel.js";
-import { envelope, firstLine, fitName, isEnvelope, isForMe, isName, isPlaceholderName, isRelayUrl, placeFor, publish, subscribe, topicFor } from "./transport.js";
+import { appTools, drawsPanels, handOver, heldResult, makeHolds, outgoingItem, PANEL_KEY_META, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom, toWhom } from "./panel.js";
+import { cleanText, envelope, firstLine, fitName, isEnvelope, isForMe, isName, isPlaceholderName, isRelayUrl, placeFor, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
 if (process.argv[2] === "setup") {
 	await import("./setup.js");
@@ -213,7 +213,8 @@ const timeOf = (ts) => {
 	return Number.isNaN(t) ? "" : new Date(t).toLocaleTimeString();
 };
 
-// Never throws: a peer controls every field here. `requestId` (ours, random) ends a pushed prompt, so
+// Never throws: a peer controls every field here. e.text is cleaned on arrival (onEnvelope), so Codex
+// gets exactly what gate 1's form shows. `requestId` (ours, random) ends a pushed prompt, so
 // duet's UserPromptSubmit hook can tell exactly which push a prompt is.
 const render = (items, requestId) => {
 	const froms = [...new Set(items.map((e) => e.from))].join(", ");
@@ -230,6 +231,14 @@ const REQUEST_ID = /\n\(duet request ([0-9a-f]{16})\)$/;
 // treated as a request too (fail closed), never as the user's own.
 const looksLikeRequest = (prompt) => /^\s*\[duet\] from /.test(prompt);
 
+// Ids of the other side's messages the user saw at gate 1 (Do it or Ignore) or that auto handed over.
+// In ask mode only these may be quoted to the model (catch-up, duet_history): nothing the user didn't see.
+const gated = new Set();
+function seenAtGate(items) {
+	for (const e of items) gated.add(e.id);
+	while (gated.size > 500) gated.delete(gated.values().next().value);
+}
+
 function remember(entry) {
 	history.push({ at: new Date().toISOString(), ...entry });
 	if (history.length > 100) history.shift();
@@ -245,7 +254,9 @@ function onEnvelope(env) {
 		return;
 	}
 	env.pid = String(++inboxSeq); // the panel's handle for it: ours, not the peer's id
-	remember({ who: env.from, text: env.text, pid: env.pid });
+	// Cleaned once, on arrival: every form, the panel, the hand-over and everything Codex gets is this text.
+	env.text = cleanText(env.text);
+	remember({ who: env.from, text: env.text, pid: env.pid, id: env.id });
 	lastFrom.set(env.from, { id: env.id, at: Date.now() });
 	inbox.push(env);
 	if (inbox.length > INBOX_MAX) {
@@ -539,12 +550,13 @@ function elicit(message, choices) {
 	});
 }
 
-// A peer's text as the form shows it: no control or invisible formatting characters (bidi overrides,
-// zero-width), and how much more there is.
-function forForm(text, max = 600) {
-	const clean = String(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f\u2028\u2029]|\p{Cf}/gu, "");
-	return clean.length > max ? `${clean.slice(0, max)} … (${clean.length - max} more characters: Codex sees all of it)` : clean;
-}
+// The most text one form shows. A form shows the whole text or offers no way to hand it over.
+const FORM_MAX = 60_000;
+// A short quote (the session's catch-up): cleaned, cut, and says so.
+const quote = (text, max) => {
+	const t = cleanText(text);
+	return t.length > max ? `${t.slice(0, max)}… (${t.length - max} more)` : t;
+};
 const hhmm = (ts) => {
 	const t = ts ? Date.parse(ts) : Date.now();
 	const d = new Date(t);
@@ -563,11 +575,26 @@ async function askToTake(items, fromText) {
 	const froms = items.length ? [...new Set(items.map((e) => e.from))] : [];
 	const via = froms.length === 1 && peerVia.get(froms[0]) ? ` · ${VIA[peerVia.get(froms[0])]}` : "";
 	const head = `duet · ${froms.join(", ") || "request"}${via} · ${hhmm(items[0]?.ts)}`;
-	const shown = items.length ? items.map((e) => forForm(e.text)).join("\n---\n") : forForm(fromText);
+	// The whole request, as Codex gets it (cleaned on arrival). A prompt duet can't match to what it
+	// queued is shown cleaned; Codex would get it as it is, so one with hidden characters can't be run.
+	const shown = items.length ? items.map((e) => e.text).join("\n---\n") : cleanText(fromText);
+	const hidden = !items.length && shown !== String(fromText);
+	if (shown.length > FORM_MAX || hidden) {
+		const why = hidden ? "hidden characters · can't run it as shown" : `too long for this form · ${shown.length} chars, max ${FORM_MAX}`;
+		const r = await elicit(`${head}\n\n${why} · Ignore only\n\n${shown.slice(0, 2000)}${shown.length > 2000 ? "…" : ""}`, ["Ignore"]);
+		return r?.result?.action === "accept" && r.result.content?.answer === "Ignore" ? "ignore" : noAnswer(r);
+	}
 	const r = await elicit(`${head}\n\n${shown}`, ["Do it", "Ignore"]);
 	const answer = r?.result?.action === "accept" ? r.result.content?.answer : undefined;
 	return answer === "Do it" ? "take" : answer === "Ignore" ? "ignore" : noAnswer(r);
 }
+// How many of the first waiting requests fit in one form (at least one: a longer one gets Ignore only).
+const fitsForm = (max = 8) => {
+	let n = 0;
+	let size = 0;
+	while (n < Math.min(inbox.length, max) && (n === 0 || size + inbox[n].text.length + 5 <= FORM_MAX)) size += inbox[n++].text.length + 5;
+	return n;
+};
 const cantAsk = (why) =>
 	({ unsupported: "this app can't show duet's form", full: "Codex declined duet's form (Full Access)", timeout: "no answer in 30 min", closed: "form closed" })[why] ?? "no answer";
 
@@ -576,12 +603,13 @@ const cantAsk = (why) =>
 // REPLY_FORM_MAX before asking, so nothing the user didn't see can leave.
 const REPLY_FORM_MAX = 60_000;
 async function askToSend(to, text) {
-	const r = await elicit(`duet · send to ${to}? · full reply\n\n${forForm(text, Infinity)}`, ["Send", "Don't send"]);
+	const r = await elicit(`duet · send to ${to}? · full reply\n\n${text}`, ["Send", "Don't send"]);
 	const answer = r?.result?.action === "accept" ? r.result.content?.answer : undefined;
 	return answer === "Send" ? "send" : answer === "Don't send" ? "drop" : noAnswer(r);
 }
 
 function decline(items) {
+	seenAtGate(items);
 	for (const p of new Set(items.map((e) => e.from))) {
 		publish(server, topicFor(room), envelope({ fromId, from: name, kind: "note", note: "declined", to: p })).catch(() => {});
 	}
@@ -597,10 +625,11 @@ function catchUp() {
 	if (!inRoom()) return "";
 	const who = [...peers.keys()].map((p) => (peerVia.get(p) ? `${p} (${VIA[peerVia.get(p)]})` : p)).join(", ");
 	// Each line's text is a JSON string: the other side's words can't close the quote.
+	// In ask mode, none of the other side's words the user didn't see at gate 1.
 	const lines = history
-		.filter((h) => !h.note)
+		.filter((h) => !h.note && (!h.pid || mode === "auto" || gated.has(h.id)))
 		.slice(-6)
-		.map((h) => `  ${timeOf(h.at)} ${h.who}: ${JSON.stringify(forForm(String(h.text).replace(/\s+/g, " "), 160))}`);
+		.map((h) => `  ${timeOf(h.at)} ${h.who}: ${JSON.stringify(quote(String(h.text).replace(/\s+/g, " "), 160))}`);
 	return [
 		`duet: this session is in duet room "${shortRoom(room)}" as ${name}${who ? `, with ${who}` : ""}; mode: ${mode}.`,
 		`Requests from the other person's agent arrive as prompts that start with "[duet] from"; answer them with duet_send. Your user can say "check duet" (duet_inbox), "duet auto" or "duet ask" (duet_mode), or "leave duet" (duet_leave).`,
@@ -654,9 +683,15 @@ async function onHook(a = {}) {
 		const items = q?.items ?? [];
 		const from = items[0]?.from ?? prompt.match(/^\s*\[duet\] from ([^\s(:]+)/)?.[1] ?? "the other person";
 		markPeerTurn(turn);
-		if (mode === "auto") return hookContext("UserPromptSubmit", first);
+		if (mode === "auto") {
+			seenAtGate(items);
+			return hookContext("UserPromptSubmit", first);
+		}
 		const answer = await askToTake(items, prompt);
-		if (answer === "take") return hookContext("UserPromptSubmit", first);
+		if (answer === "take") {
+			seenAtGate(items);
+			return hookContext("UserPromptSubmit", first);
+		}
 		busy = null;
 		if (answer === "ignore") {
 			if (items.length) decline(items);
@@ -676,7 +711,7 @@ async function onHook(a = {}) {
 			// Out of the inbox while the user decides (and the turn counts as running), so nothing pushes
 			// them again meanwhile; back in front if the user can't be asked.
 			askingStop++;
-			const items = take(Math.min(inbox.length, 8));
+			const items = take(fitsForm());
 			busy = { turn, at: Date.now() + ASK_TIMEOUT_MS };
 			if (mode === "ask") {
 				let answer;
@@ -703,6 +738,7 @@ async function onHook(a = {}) {
 			} else askingStop--;
 			consumed();
 			markPeerTurn(turn);
+			seenAtGate(items);
 			busy = { turn, at: Date.now() };
 			return JSON.stringify({ decision: "block", reason: render(items) });
 		}
@@ -750,8 +786,8 @@ function toolList() {
 		{
 			name: "duet_inbox",
 			description:
-				"Read messages from the other agent that are waiting. Returns at once. Call it when your user says 'check duet' or similar, " +
-				"then handle each message: do what was asked and answer with duet_send.",
+				"Read messages from the other agent that are waiting. Call it when your user says 'check duet' or similar, " +
+				"then handle each message: do what was asked and answer with duet_send. In ask mode your user sees each one first and chooses Do it or Ignore; you get only the ones they chose.",
 			inputSchema: { type: "object", properties: {} },
 		},
 		{
@@ -835,7 +871,12 @@ async function history12h(since = "2h") {
 		}
 		if (!isEnvelope(env) || env.kind !== "msg") continue;
 		const who = env.fromId === fromId ? `you (${env.from})` : `${env.from}'s agent`;
-		const text = String(env.text).replace(/\s+/g, " ");
+		// In ask mode, only what the user saw at gate 1 (Do it or Ignore): the rest isn't the model's to read.
+		if (env.fromId !== fromId && mode === "ask" && !gated.has(env.id)) {
+			lines.push(`${timeOf(env.ts)} ${who}: (${inbox.some((e) => e.id === env.id) ? "waiting for your user" : "not shown to your user"})`);
+			continue;
+		}
+		const text = cleanText(env.text).replace(/\s+/g, " ");
 		const to = env.to ? ` → ${fitName(String(env.to))}` : ""; // the sender chose it: one line, name characters only
 		lines.push(`${timeOf(env.ts)} ${who}${to}: ${text.slice(0, 400)}${text.length > 400 ? "…" : ""}`);
 	}
@@ -891,7 +932,7 @@ function panelState() {
 		room: inRoomNow ? shortRoom(room) : "",
 		name: inRoomNow ? name : "",
 		peers: [...peers].map(([p, at]) => ({ name: p, via: VIA[peerVia.get(p)] ?? "", here: Date.now() - at.getTime() < RECENT_MS })),
-		waiting: inRoomNow ? inbox.map((e) => ({ id: e.pid, from: e.from, at: e.ts, text: e.text.length <= FULL_MAX ? cleanText(e.text) : preview(e.text), full: e.text.length <= FULL_MAX, size: e.text.length })) : [],
+		waiting: inRoomNow ? inbox.map((e) => ({ id: e.pid, from: e.from, at: e.ts, text: e.text.length <= FULL_MAX ? e.text : preview(e.text), full: e.text.length <= FULL_MAX, size: e.text.length })) : [],
 		// The conversation: messages only (name · time · text), none of the requests still waiting.
 		history: inRoomNow
 			? history
@@ -960,7 +1001,7 @@ async function callTool(tool, a, ctx) {
 			if (drawsPanels(clientCaps, host) && mode === "ask") {
 				// The card shows, and Send sends, the same text: no invisible or control characters.
 				const shown = cleanText(a.text);
-				if (!shown) throw new Error("Not held · nothing visible to send");
+				if (!stripHidden(a.text).text.trim()) throw new Error("Not held · nothing visible to send");
 				const waiting = holds.waiting("me");
 				if (!waiting.some((h) => h.text === shown && h.to === shownTo) && waiting.length >= HOLDS_MAX) throw new Error(`Not sent · ${HOLDS_MAX} replies already wait in duet cards`);
 				const h = holds.hold("me", shownTo, shown);
@@ -991,7 +1032,7 @@ async function callTool(tool, a, ctx) {
 				// user couldn't see. The form shows the whole reply or nothing: a reply too long for it is
 				// never half-shown.
 				const shown = cleanText(a.text);
-				if (!shown) {
+				if (!stripHidden(a.text).text.trim()) {
 					giveBack();
 					return "Not sent · nothing visible";
 				}
@@ -1037,12 +1078,58 @@ async function callTool(tool, a, ctx) {
 			// In ask mode a request reaches the model only with the user's yes: not from inside another request.
 			if (ctx.peerTurn && mode === "ask") return 'Waiting for your user · they say "check duet"';
 			if (!inbox.length) return "No new duet messages.";
-			holdForUser = false; // the user asked: they're here
+			if (mode === "auto") {
+				holdForUser = false; // the user asked: they're here
+				// The other side's requests are now in this turn: duet's own room tools (join, leave, mode) stay the user's.
+				markPeerTurn(ctx.turnId);
+				const text = render(inbox); // before taking: nothing leaves the inbox unless shown
+				seenAtGate(inbox);
+				take();
+				return text;
+			}
+			// Ask: gate 1 here too. Each request in the form (Do it / Ignore); the model gets only the ones
+			// the user said Do it to, and no peer text at all when there is no form to show it in.
+			if (drawsPanels(clientCaps, host)) return `${inbox.length} waiting · your user opens them in the duet panel`;
+			if (!clientCaps?.elicitation) return `${inbox.length} waiting · this app shows no form · only auto hands them over (start duet with --mode auto)`;
+			const got = [];
+			let ignored = 0;
+			let why = "";
+			while (inbox.length && got.length < 8) {
+				// Out of the inbox while the user decides, so nothing pushes it meanwhile; back in front if
+				// the user can't be asked.
+				const items = inbox.splice(0, 1);
+				askingStop++;
+				let answer;
+				try {
+					answer = await askToTake(items);
+				} finally {
+					askingStop--;
+				}
+				// Esc, or the call was cancelled, while the form was open: the turn is over; keep it waiting.
+				if (answer === "take" && (interrupted || ctx.signal?.aborted)) answer = "closed";
+				if (answer === "take") {
+					got.push(...items);
+					seenAtGate(items);
+				}
+				else if (answer === "ignore") {
+					decline(items);
+					ignored++;
+				} else {
+					inbox.unshift(...items);
+					why = answer;
+					break;
+				}
+			}
+			if (!inbox.length && !pushPausedUntil) pushNote = "";
+			consumed();
+			if (why === "full") holdForUser = true;
+			else holdForUser = false; // the user answered: they're here
+			const left = inbox.length ? `${inbox.length} waiting${why ? ` · ${cantAsk(why)}` : ""}${why === "full" ? ' · your user types "duet auto", or uses a mode that asks' : ' · "check duet" again'}` : "";
+			if (!got.length) return [ignored ? `duet · ignored ${ignored}` : "", left].filter(Boolean).join(" · ") || "No new duet messages.";
+			receivedSinceSend = true;
 			// The other side's requests are now in this turn: duet's own room tools (join, leave, mode) stay the user's.
 			markPeerTurn(ctx.turnId);
-			const text = render(inbox); // before taking: nothing leaves the inbox unless shown
-			take();
-			return text;
+			return render(got) + (left ? `\n\n(duet: ${left})` : "");
 		}
 		case "duet_status": {
 			if (room && name) await joinRoom();
@@ -1092,7 +1179,9 @@ async function callTool(tool, a, ctx) {
 		}
 		case "duet_read": {
 			const e = inbox.find((m) => m.pid === String(a.id));
-			return e ? panelResult({ id: e.pid, text: cleanText(e.text) }) : panelError("Not waiting any more");
+			if (!e) return panelError("Not waiting any more");
+			e.opened = true; // a long request is handed over only once the user had all of it (Show all)
+			return panelResult({ id: e.pid, text: e.text });
 		}
 		case "duet_room_join": {
 			const r = String(a.room ?? "").trim();
@@ -1125,7 +1214,9 @@ async function callTool(tool, a, ctx) {
 			// inbox first, so a second panel (or duet_inbox) can't hand it over again.
 			const i = inbox.findIndex((e) => e.pid === String(a.id));
 			if (i < 0) return panelError("Not waiting any more");
+			if (inbox[i].text.length > FULL_MAX && !inbox[i].opened) return panelError("Show all first");
 			const [e] = inbox.splice(i, 1);
+			seenAtGate([e]);
 			handed.set(e.pid, e);
 			if (handed.size > 10) handed.delete(handed.keys().next().value);
 			[exchanges, receivedSinceSend, holdForUser] = [0, true, false]; // the user is here

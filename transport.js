@@ -37,6 +37,29 @@ const REPAIR_POLL_MS = 10_000;
 // its logs). Never act on anything older than this, so a catch-up can't replay days-old requests.
 export const MAX_AGE_S = 12 * 3600;
 
+// The one cleaner for the other side's text, wherever a gate shows it and wherever an agent gets it
+// (Codex's form and prompt, duet_inbox, the chat panel and its hand-over). hooks/wire.js has a copy
+// (the mod can't import from outside hooks/); test/mod-unit.mjs checks that both agree.
+// Removed: ANSI escapes, control characters but tab and newline (C0, C1, U+2028/2029), format
+// characters (\p{Cf}: bidi controls, zero-width, tags), every default-ignorable code point (variation
+// selectors, CGJ, Hangul fillers, Mongolian FVS, the whole tag block) and the blank Braille cell: each
+// draws as nothing while a model still reads it. Anything removed leaves a visible mark.
+export const HIDDEN = /\x1b\[[0-9;?]*[ -\/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\u2800\u{E0000}-\u{E0FFF}]|\p{Cf}|\p{Default_Ignorable_Code_Point}/gu;
+export const HIDDEN_MARK = " [hidden characters removed]";
+/** @param {unknown} text @returns {{ text: string, hidden: boolean }} */
+export function stripHidden(text) {
+	let hidden = false;
+	const clean = String(text ?? "")
+		.replace(/\r\n?/g, "\n")
+		.replace(HIDDEN, () => ((hidden = true), ""));
+	return { text: clean, hidden };
+}
+/** @param {unknown} text */
+export function cleanText(text) {
+	const r = stripHidden(text);
+	return r.hidden ? r.text + HIDDEN_MARK : r.text;
+}
+
 // The room name is the shared secret; only its hash ever reaches the server.
 /** @param {string} room */
 export function topicFor(room) {
@@ -85,7 +108,9 @@ export function envelope(fields) {
 // Names end up in prompts, status lines and command lines: letters, digits, . _ - only.
 const NAME = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._-]{0,39}$/u; // starts with a letter or digit
 /** @param {unknown} name */
-export const isName = (name) => typeof name === "string" && NAME.test(name);
+// No hidden characters either (\p{M} holds the variation selectors and the grapheme joiner): a name
+// goes into every prompt and form unchanged.
+export const isName = (name) => typeof name === "string" && NAME.test(name) && !stripHidden(name).hidden;
 // The site's stand-in before a name is typed; joining under it means the commands were copied too early.
 /** @param {unknown} name */
 export const isPlaceholderName = (name) => typeof name === "string" && /^your[-_ ]?name$/i.test(name);
@@ -94,7 +119,7 @@ export const isPlaceholderName = (name) => typeof name === "string" && /^your[-_
 export const fitName = (name) =>
 	isName(name)
 		? name
-		: Array.from(name.normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^[^\p{L}\p{N}]+/u, "")).slice(0, 40).join("") || "anon";
+		: Array.from(stripHidden(name).text.normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^[^\p{L}\p{N}]+/u, "")).slice(0, 40).join("") || "anon";
 
 // A relay is a plain http(s) server URL. It goes into shell commands and config files, so it may
 // hold nothing a shell or TOML would read specially.
@@ -110,7 +135,7 @@ export function isEnvelope(/** @type {any} */ e) {
 		e?.v === 1 &&
 		typeof e.fromId === "string" &&
 		typeof e.from === "string" &&
-		NAME.test(e.from) &&
+		isName(e.from) &&
 		typeof e.ts === "string" &&
 		(e.to === undefined || typeof e.to === "string") &&
 		(e.re === undefined || typeof e.re === "string") &&

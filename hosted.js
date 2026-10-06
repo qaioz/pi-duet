@@ -25,7 +25,7 @@ import { createServer } from "node:http";
 import { BlockList, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
 import { appTools, cleanText, handOver, heldResult, makeHolds, outgoingItem, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom, toWhom } from "./panel.js";
-import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, subscribe, topicFor } from "./transport.js";
+import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
 export const VERSION = "0.8.2"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
@@ -226,10 +226,10 @@ class Seat {
 		if (VIA[env.via]) this.peerVia.set(env.from, env.via);
 		if (env.kind === "join") return this.remember({ who: env.from, text: "joined", note: true });
 		const pid = String(++this.seq);
-		this.remember({ who: env.from, text: env.text, pid });
+		const text = cleanText(env.text); // once, on arrival: the panel, its history and the hand-over all show this
+		this.remember({ who: env.from, text, pid });
 		this.lastFrom.set(env.from, { id: env.id, at: Date.now() });
 		if (this.lastFrom.size > PEERS_MAX) this.lastFrom.delete(this.lastFrom.keys().next().value);
-		const text = cleanText(env.text);
 		if (allChars + text.length > LIMIT.allChars) return this.warnings.add("a request was dropped: the hosted server is full right now (Claude Code, Codex or pi have no such limit)");
 		this.hold({ pid, id: env.id, from: env.from, ts: env.ts, re: env.re, text, size: text.length });
 	}
@@ -306,7 +306,7 @@ function holdReply(a) {
 	if (a.text.length > MAX_TEXT) return text(`Not held · ${a.text.length} chars · limit ${MAX_TEXT}`, true);
 	// The card shows, and Send sends, the same text: no invisible or control characters.
 	const shown = cleanText(a.text);
-	if (!shown) return text("Not held · nothing visible to send", true);
+	if (!stripHidden(a.text).text.trim()) return text("Not held · nothing visible to send", true);
 	const to = a.to ? fitName(String(a.to)) : "";
 	const shownTo = toWhom(to, [...seat.peers.keys()]); // exactly who gets it: no `to` goes to the whole room
 	const waiting = holds.waiting(seat.key);
@@ -422,7 +422,9 @@ async function callTool(name, a, ip) {
 		}
 		case "duet_read": {
 			const e = seat?.inbox.find((m) => m.pid === String(a.id));
-			return e ? panelResult({ id: e.pid, text: e.text }) : panelError("Not waiting any more");
+			if (!e) return panelError("Not waiting any more");
+			e.opened = true; // a long request is handed over only once the user had all of it (Show all)
+			return panelResult({ id: e.pid, text: e.text });
 		}
 		case "duet_take":
 		case "duet_ignore": {
@@ -439,6 +441,7 @@ async function callTool(name, a, ip) {
 			}
 			const e = seat.inbox.find((m) => m.pid === String(a.id));
 			if (!e) return panelError("Not waiting any more");
+			if (name === "duet_take" && e.size > FULL_MAX && !e.opened) return panelError("Show all first");
 			seat.drop(e);
 			if (name === "duet_ignore") {
 				publish(RELAY, seat.topic, envelope({ fromId: seat.fromId, from: seat.name, kind: "note", note: "declined", to: e.from })).catch(() => {});

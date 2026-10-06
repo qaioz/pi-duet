@@ -26,7 +26,7 @@
 // validator refuses `$` passed to an imported function. wire.js is pure.
 import {
 	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
-	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, sanitize, HIDDEN_MARK, sha256hex, timeOf, topicFor,
+	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, sanitize, stripHidden, HIDDEN_MARK, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
 const PANE = "duet";
@@ -882,7 +882,7 @@ async function sendTool($, e, signal) {
 	if (raw.length > MAX_TEXT) return { result: `Not sent: ${raw.length} characters, limit ${MAX_TEXT} · send the key part, or split it` };
 	// What goes out is exactly what the gate 2 card shows: no control or invisible characters.
 	const text = sanitize(raw, MAX_TEXT).trim();
-	if (!text) return { result: "Not sent: empty" };
+	if (!stripHidden(raw).text.trim()) return { result: "Not sent: empty" };
 	if (text.length > MAX_TEXT) return { result: `Not sent: ${text.length} characters, limit ${MAX_TEXT} · send the key part, or split it` };
 	const to = typeof e.to === "string" && e.to.trim() ? e.to.trim() : undefined;
 	// `to` comes from the model: only the name of someone in the room (it shows on the card, the

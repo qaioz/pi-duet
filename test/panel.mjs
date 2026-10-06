@@ -223,13 +223,14 @@ async function localTests() {
 		const s = data(await desk.call("duet_room_state"));
 		return s.waiting.length && s;
 	}, 10_000, "long request");
+	const unread = await desk.call("duet_take", { id: st.waiting[0].id }); // before Show all: refused
 	const whole = data(await desk.call("duet_read", { id: st.waiting[0].id }));
 	await desk.call("duet_take", { id: st.waiting[0].id });
 	const back = data(await desk.call("duet_take", { id: st.waiting[0].id, undo: true }));
 	check(
-		"stdio: a long request: the start in the card, all of it on Show all; Put it back undoes a hand-over",
-		!st.waiting[0].full && st.waiting[0].text.length < 2000 && whole.text === long && back.waiting?.[0]?.id === st.waiting[0].id,
-		`card ${st.waiting[0].text.length} of ${st.waiting[0].size} characters; Show all ${whole.text?.length}; after Put it back waiting: ${back.waiting?.length}`,
+		"stdio: a long request: the start in the card, all of it on Show all, no hand-over before it; Put it back undoes a hand-over",
+		!st.waiting[0].full && st.waiting[0].text.length < 2000 && unread.isError && /Show all first/.test(data(unread).error) && whole.text === long && back.waiting?.[0]?.id === st.waiting[0].id,
+		`before Show all: ${data(unread).error}; card ${st.waiting[0].text.length} of ${st.waiting[0].size} characters; Show all ${whole.text?.length}; after Put it back waiting: ${back.waiting?.length}`,
 	);
 	await desk.call("duet_ignore", { id: st.waiting[0].id });
 	const room2 = (await desk.call("duet_room")).content[0].text;
@@ -322,7 +323,7 @@ async function hostedTests() {
 
 	// Two panels (two chats) in two rooms, and a third in the first room.
 	const roomA = `t-${randomUUID()}`;
-	const roomB = `t-${randomUUID()}`;
+	const roomB = `u-${randomUUID()}`; // another start: the panel shows a room by its first 4 characters
 	const nika = peer(roomA, "nika");
 	const lev = peer(roomB, "lev");
 	const sa = data(await a.call("duet_room_join", { room: roomA, name: "gaioz" }));
@@ -353,6 +354,20 @@ async function hostedTests() {
 	const peek = await a.call("duet_read", { id: wb.waiting[0].id }, randomUUID().replace(/-/g, "") + "zz");
 	const stillB = data(await b.call("duet_room_state"));
 	check("hosted: a panel without the other's token can't touch its room", steal.isError && peek.isError && stillB.waiting.length === 1, `${data(steal).error} / ${data(peek).error}`);
+
+	// A long request: no hand-over before Show all (review M3); after it, yes.
+	await nika.say("HOSTED-LONG " + "w".repeat(5000));
+	const wl = await until(async () => {
+		const s = data(await a.call("duet_room_state"));
+		return s.waiting.find((w) => !w.full) && s;
+	}, 10_000, "long waiting");
+	const lid = wl.waiting.find((w) => !w.full).id;
+	const tooSoon = await a.call("duet_take", { id: lid });
+	await a.call("duet_read", { id: lid });
+	const afterRead = await a.call("duet_take", { id: lid });
+	check("hosted: a long request is handed over only after Show all", tooSoon.isError && /Show all first/.test(data(tooSoon).error) && !afterRead.isError && data(afterRead).text.includes("HOSTED-LONG"), `${data(tooSoon).error} / after: ${!afterRead.isError}`);
+	await a.call("duet_take", { id: lid, undo: true });
+	await a.call("duet_ignore", { id: lid });
 
 	// Hand over: the framed text carries the seat code duet_send needs.
 	const taken = data(await a.call("duet_take", { id: wa.waiting[0].id }));
@@ -505,7 +520,7 @@ async function hostedTests() {
 	check(
 		"hosted: held replies count in the memory budget and give it back; card, panel and Send all carry the same cleaned text",
 		!big1.isError && big2.isError && /^Not held · hosted server full/.test(big2.content[0].text) && !big3.isError &&
-			sneaky.structuredContent?.text === "ok go" && JSON.stringify(panelSees) === '["ok go"]' && blank.isError && /nothing visible/.test(blank.content[0].text),
+			sneaky.structuredContent?.text === "ok go [hidden characters removed]" && JSON.stringify(panelSees) === '["ok go [hidden characters removed]"]' && blank.isError && /nothing visible/.test(blank.content[0].text),
 		`600 held: ${!big1.isError}; another 600: ${big2.content[0].text}; after Don't send: ${!big3.isError}; card text ${JSON.stringify(sneaky.structuredContent?.text)}; panel ${JSON.stringify(panelSees)}; blank: ${blank.content[0].text}`,
 	);
 	bud.proc.kill();
@@ -747,6 +762,27 @@ addEventListener("message", async (ev) => {
 		await panel.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
 		const back = await panel.locator("#waiting .item .text").first().textContent();
 		check("browser: if the chat app refuses the message, the panel shows it to copy, or puts it back", fb.startsWith("[duet] from nika") && fb.includes("second: please run pwd") && back === "second: please run pwd", `${JSON.stringify(fb.slice(0, 60))}; after Put back: ${JSON.stringify(back)}`);
+
+		// Gate 1, a request too long to list whole: Hand to stays off until Show all opened all of it (review M3).
+		const longReq = "LONG-REQ-START " + "q".repeat(6000) + " LONG-REQ-END";
+		await nika.say(longReq);
+		const longItem = panel.locator("#waiting .item", { hasText: "LONG-REQ-START" });
+		await longItem.waitFor({ timeout: 10_000 });
+		const handBtn = longItem.locator(".btn", { hasText: /^Hand to/ });
+		const handOffBefore = await handBtn.isDisabled();
+		const reqShownBefore = (await longItem.locator(".text").textContent()).length;
+		await longItem.locator(".btn", { hasText: "Show all" }).click();
+		await longItem.locator(".btn", { hasText: "Show all" }).waitFor({ state: "detached", timeout: 5000 });
+		await sleep(2500); // a poll redraws the list: the opened text and the button must survive it
+		const reqShownAfter = await longItem.locator(".text").textContent();
+		const handOnAfter = !(await handBtn.isDisabled());
+		await longItem.locator(".btn", { hasText: "Ignore" }).click();
+		await longItem.waitFor({ state: "detached", timeout: 10_000 });
+		check(
+			"browser: a long request in the panel: Hand to is off until Show all shows all of it",
+			handOffBefore && reqShownBefore < longReq.length && reqShownAfter === longReq && handOnAfter,
+			`Hand to off before: ${handOffBefore} (${reqShownBefore} of ${longReq.length} shown); after Show all: ${reqShownAfter.length} shown, Hand to on: ${handOnAfter}`,
+		);
 
 		// Gate 2: the reply card (duet_send's view), drawn by the host with the tool's input and result.
 		for (const [theme, width] of [["light", 380], ["dark", 380], ["light", 720], ["dark", 720]]) {

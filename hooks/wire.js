@@ -16,12 +16,14 @@ export const MAX_SHOWN = 6000;
 export const NOTES = ["declined", "stopped", "failed", "approval-wait", "left", "moved"];
 
 const NAME = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._-]{0,39}$/u;
-export const isName = (name) => typeof name === "string" && NAME.test(name);
+// No hidden characters either (\p{M} holds the variation selectors and the grapheme joiner): a name
+// goes into every prompt and form unchanged.
+export const isName = (name) => typeof name === "string" && NAME.test(name) && !stripHidden(name).hidden;
 export const isPlaceholderName = (name) => typeof name === "string" && /^your[-_ ]?name$/i.test(name);
 export const fitName = (name) =>
 	isName(name)
 		? name
-		: Array.from(String(name).normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^[^\p{L}\p{N}]+/u, ""))
+		: Array.from(stripHidden(name).text.normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^[^\p{L}\p{N}]+/u, ""))
 				.slice(0, 40)
 				.join("") || "anon";
 
@@ -108,7 +110,7 @@ export function isEnvelope(e) {
 		e?.v !== 1 ||
 		typeof e.fromId !== "string" ||
 		typeof e.from !== "string" ||
-		!NAME.test(e.from) ||
+		!isName(e.from) ||
 		typeof e.ts !== "string" ||
 		(e.to !== undefined && typeof e.to !== "string") ||
 		(e.re !== undefined && typeof e.re !== "string") ||
@@ -129,23 +131,32 @@ export function isForMe(env, myFromId, myName) {
 
 export const byteLength = (s) => new TextEncoder().encode(s).length;
 
-// Characters a terminal draws as nothing but a model still reads: Unicode format characters (\p{Cf}:
-// the tag block U+E0000–E007F, bidi controls, zero-width characters, BOM), variation selectors and
-// the Hangul fillers. Text built from them can carry a whole hidden instruction.
-export const HIDDEN = /[\p{Cf}\u115F\u1160\u3164\uFFA0\uFE00-\uFE0F\u{E0100}-\u{E01EF}]+/gu;
+// The one cleaner for the other side's text: a copy of transport.js's (the mod can't import from
+// outside hooks/); test/mod-unit.mjs checks that both agree. Removed: ANSI escapes, control characters
+// but tab and newline (C0, C1, U+2028/2029), format characters (\p{Cf}: bidi controls, zero-width,
+// tags), every default-ignorable code point (variation selectors, CGJ, Hangul fillers, Mongolian FVS,
+// the whole tag block) and the blank Braille cell: each draws as nothing while a model still reads it.
+// Text built from them can carry a whole hidden instruction. Anything removed leaves a visible mark.
+export const HIDDEN = /\x1b\[[0-9;?]*[ -\/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\u2800\u{E0000}-\u{E0FFF}]|\p{Cf}|\p{Default_Ignorable_Code_Point}/gu;
 export const HIDDEN_MARK = " [hidden characters removed]";
-
-// Peer text is untrusted: Text refuses control characters other than tab and newline (and an invalid
-// tree silently falls back to the engine's drawing), so strip them, and cap the length. Invisible
-// characters are stripped too, with a visible mark, so a card shows every word Claude gets (gate 1)
-// and every word a reply sends (gate 2): the same function makes both.
-export function sanitize(text, max = MAX_SHOWN) {
+export function stripHidden(text) {
 	let hidden = false;
 	const clean = String(text ?? "")
 		.replace(/\r\n?/g, "\n")
-		.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "") // ANSI escape sequences
-		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]/g, "")
 		.replace(HIDDEN, () => ((hidden = true), ""));
+	return { text: clean, hidden };
+}
+export function cleanText(text) {
+	const r = stripHidden(text);
+	return r.hidden ? r.text + HIDDEN_MARK : r.text;
+}
+
+// Peer text is untrusted: Text refuses control characters other than tab and newline (and an invalid
+// tree silently falls back to the engine's drawing), so they go (stripHidden), and the length is capped.
+// A card shows every word Claude gets (gate 1) and every word a reply sends (gate 2): the same
+// function makes both.
+export function sanitize(text, max = MAX_SHOWN) {
+	const { text: clean, hidden } = stripHidden(text);
 	const cut = clean.length > max ? clean.slice(0, max) + `… [${clean.length - max} more characters]` : clean;
 	return hidden ? cut + HIDDEN_MARK : cut;
 }

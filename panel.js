@@ -13,6 +13,7 @@
 // the look is a subset of Basecoat (basecoat.js), inlined: the panel loads nothing from anywhere.
 import { randomBytes } from "node:crypto";
 import { BASECOAT_CSS } from "./basecoat.js";
+import { cleanText } from "./transport.js";
 
 export const PANEL_URI = "ui://duet/room";
 export const SEND_URI = "ui://duet/send";
@@ -25,12 +26,9 @@ export const UI_EXTENSION = "io.modelcontextprotocol/ui";
 // no panel tools: there the model would see the panel's own tools and could hand requests to itself.
 export const drawsPanels = (capabilities, host) => !!capabilities?.extensions?.[UI_EXTENSION] || host === "claude-ai";
 
-// A peer's text as the panel and the hand-over show it: no control characters other than tab and
-// newline (C0 and C1), no invisible formatting (bidi overrides, zero-width, tags: \p{Cf}), and none of
-// the other characters that draw as nothing (variation selectors, the combining grapheme joiner,
-// Hangul fillers, the blank Braille cell): what you see is what was sent.
-export const cleanText = (text) =>
-	String(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u034f\u115f\u1160\u3164\uffa0\u2800\u17b4\u17b5\u180b-\u180f\ufe00-\ufe0f\u{e0100}-\u{e01ef}]|\p{Cf}/gu, "");
+// A peer's text as the panel and the hand-over show it, and a reply as its card shows it: the one
+// cleaner (transport.js), so what you see is what was sent, with a mark when anything was removed.
+export { cleanText };
 
 // How a room is named to anyone but its members: the first 4 characters of a long code; nothing of a
 // short one (its first 4 characters could be all of it).
@@ -498,6 +496,7 @@ ${BRIDGE}
 	let busy = false;
 	let modelToldFor = "";
 	const opened = new Map(); // held reply id -> its whole text, once the user opened it (Show all)
+	const read = new Map(); // waiting request id -> its whole text, once the user opened it (Show all)
 
 	function draw() {
 		const s = state || {};
@@ -547,22 +546,31 @@ ${BRIDGE}
 			return c;
 		}));
 		for (const id of [...opened.keys()]) if (!(s.outgoing || []).some((o) => o.id === id)) opened.delete(id);
+		for (const id of [...read.keys()]) if (!(s.waiting || []).some((m) => m.id === id)) read.delete(id);
 
 		// Gate 1: each request waiting, Hand to <agent> / Ignore.
 		$("waiting").replaceChildren(...(s.waiting || []).map((m) => {
 			const c = el("div", "item");
 			const head = el("div", "row");
 			head.append(el("span", "who", m.from), el("span", "muted", "· " + time(m.at)));
-			const body = el("div", "text", m.text);
+			const body = el("div", "text", m.full ? m.text : (read.get(m.id) || m.text));
 			c.append(head, body);
-			if (!m.full) {
-				// The card shows the start; the whole of it is what the click hands over, so let it be read.
+			const take = btn("Hand to " + agent()), skip = btn("Ignore", "outline");
+			if (!m.full && !read.has(m.id)) {
+				// The card shows the start; the click hands over all of it, so it waits until all of it is open.
+				take.disabled = true;
 				const more = btn("Show all · " + m.size + " chars", "link", "sm"); more.classList.add("linkish");
-				more.onclick = async () => { try { body.textContent = (await call("duet_read", { id: m.id })).text; more.remove(); } catch (e) { showError(e.message); } };
+				more.onclick = async () => {
+					try {
+						const t = (await call("duet_read", { id: m.id })).text;
+						if (typeof t !== "string") return refresh(true);
+						read.set(m.id, t);
+						body.textContent = t; more.remove(); take.disabled = false; report();
+					} catch (e) { showError(e.message); }
+				};
 				c.append(more);
 			}
 			const acts = el("div", "row");
-			const take = btn("Hand to " + agent()), skip = btn("Ignore", "outline");
 			take.onclick = () => handTo(m.id, c);
 			skip.onclick = () => ignore(m.id, c);
 			acts.append(take, skip);

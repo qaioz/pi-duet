@@ -18,7 +18,8 @@ description: What duet doesn't do, and where it wasn't tested.
 ## Agents
 
 - **Claude Code**: needs mods on (Anthropic can switch them off remotely, organisations can block them). Terminal and Desktop Code tab, not the VS Code panel or `claude -p`. Needs `curl`.
-- **Codex**: hooks fail open · Esc, Full Access and Windows mean "check duet" · Full Access in ask sends nothing: `duet auto` or a mode that asks.
+- **Codex**: hooks fail open · Esc and Windows mean "check duet" · Full Access in ask: nothing in, nothing out · `duet auto` or a mode that asks.
+- **Hidden characters** (tags, zero-width, bidi, variation selectors) are removed everywhere, with a mark · emoji built with them lose their form.
 - **Chat apps**: nothing starts the model by itself · a panel off screen receives nothing.
 - **pi**: held-back messages live in memory until you type.
 
