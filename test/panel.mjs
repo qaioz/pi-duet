@@ -1072,21 +1072,16 @@ async function presendTests() {
 	await publish(SERVER, topicFor(hroom), envelope({ fromId: "other-maya", from: "maya", kind: "join", via: "claude-code" }));
 	const hWarn = await until(async () => data(await a.call("duet_room_state")).warnings.find((t) => t.startsWith("another maya")), 10_000, "hosted same-name").catch(() => "");
 	check("hosted: same name from another client: the panel warns", hWarn === "another maya is in this room (Claude Code) · use another name", hWarn);
-	// Claude Code (claude.ai's connectors synced in): no duet tools from here; the plugin is the way.
+	// Every client gets the same tools and no session id: claude.ai reaches this server through Anthropic's cloud,
+	// like Claude Code, so per-client tool lists leaked ("no tools available" on claude.ai with 0.9.0).
 	const cc = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "claude-code", version: "2.1.290" } } }) });
 	const sid = cc.headers.get("mcp-session-id");
-	const ccPost = (body, id = sid) => fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json", ...(id ? { "mcp-session-id": id } : {}) }, body: JSON.stringify(body) });
-	const ccTools = await (await ccPost({ jsonrpc: "2.0", id: 2, method: "tools/list" })).json();
-	const ccCall = await (await ccPost({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "duet_send", arguments: { seat: hseat, text: "CC-SEND" } } })).json();
-	const stale = await ccPost({ jsonrpc: "2.0", id: 4, method: "tools/list" }, "not-a-session");
-	const aiInit = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: UI_CAPS, clientInfo: { name: "claude-ai", version: "1" } } }) });
-	const claudeAi = { result: (await aiInit.json()).result, sid: aiInit.headers.get("mcp-session-id") };
+	const ccTools = await (await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json", "mcp-session-id": "stale-or-foreign" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) })).json();
 	const aiTools = (await a.request("tools/list")).result.tools.length;
-	await sleep(1000);
 	check(
-		"hosted: Claude Code gets no duet tools (empty list; a call is refused: use the duet plugin); other clients get no session id and all tools",
-		!!sid && ccTools.result.tools.length === 0 && ccCall.result.isError && ccCall.result.content[0].text === "duet: use the duet plugin in Claude Code" && !lev.seen.some((e) => e.text === "CC-SEND") && stale.status === 404 && !!claudeAi.result && claudeAi.sid === null && aiTools > 3,
-		`session: ${!!sid}; tools: ${ccTools.result.tools.length}; call: ${ccCall.result.content[0].text}; unknown session: ${stale.status}; claude-ai tools: ${aiTools}`,
+		"hosted: every client gets every tool, no session id (Claude Code too; a stale session id is ignored)",
+		sid === null && ccTools.result.tools.length === aiTools && aiTools > 3,
+		`session: ${sid}; claude-code tools: ${ccTools.result?.tools?.length}; claude-ai tools: ${aiTools}`,
 	);
 	lev.stop();
 	h.proc.kill();

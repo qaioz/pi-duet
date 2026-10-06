@@ -27,7 +27,7 @@ import { pathToFileURL } from "node:url";
 import { appTools, cleanText, handOver, heldResult, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.9.0"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.9.1"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -501,11 +501,9 @@ const instructions =
 	"duet connects your user with another developer's coding agent through a shared room. The duet panel (duet_room) shows the room; " +
 	"your user hands you a request from the other agent with a click, and you answer it with duet_send (your user OKs the reply in the duet card). Your plain-text replies reach only your own user.";
 
-// Claude Code (clientInfo "claude-code", F35) gets claude.ai's connectors synced in: there the duet
-// plugin is the way, so this server lists it no tools. Stateless otherwise: only such a client gets a
-// session id (Streamable HTTP: it sends it back on every request), so we know it later.
-const plainSessions = new Set();
-const NO_TOOLS = "duet: use the duet plugin in Claude Code";
+// Stateless, no session ids, the same tools for every client. (0.9.0 gave Claude Code a session id that
+// meant "no tools"; claude.ai reaches the server through Anthropic's cloud too, and its connector then showed
+// "no tools available". Claude Code may list these tools beside the plugin's: harmless.)
 
 async function rpc(msg, ip, conn = {}) {
 	const { id, method, params } = msg ?? {};
@@ -515,11 +513,6 @@ async function rpc(msg, ip, conn = {}) {
 	try {
 		switch (method) {
 			case "initialize":
-				if (params?.clientInfo?.name === "claude-code") {
-					conn.newSession = randomBytes(18).toString("base64url");
-					plainSessions.add(conn.newSession);
-					if (plainSessions.size > 10_000) plainSessions.delete(plainSessions.values().next().value);
-				}
 				// Which chat apps connect and whether they draw panels: the app's name only, nothing of the user.
 				console.log(`duet hosted: initialize from ${String(params?.clientInfo?.name ?? "?").replace(/[^\w .-]/g, "").slice(0, 40)}, ${params?.capabilities?.extensions?.["io.modelcontextprotocol/ui"] ? "draws panels" : "no MCP Apps capability"}`);
 				return ok({
@@ -531,7 +524,7 @@ async function rpc(msg, ip, conn = {}) {
 			case "ping":
 				return ok({});
 			case "tools/list":
-				return ok({ tools: conn.claudeCode ? [] : [hostedRoomTool, sendTool, ...appTools] });
+				return ok({ tools: [hostedRoomTool, sendTool, ...appTools] });
 			case "resources/list":
 				return ok({ resources: resourceEntries });
 			case "resources/templates/list":
@@ -539,7 +532,6 @@ async function rpc(msg, ip, conn = {}) {
 			case "resources/read":
 				return resourceContents(params?.uri, VERSION) ? ok(resourceContents(params.uri, VERSION)) : err(-32002, "resource not found");
 			case "tools/call":
-				if (conn.claudeCode) return ok(text(NO_TOOLS, true));
 				return ok(await callTool(String(params?.name ?? ""), params?.arguments, ip));
 			default:
 				return err(-32601, `method not found: ${method}`);
@@ -586,10 +578,7 @@ export function handler(req, res) {
 	if (url.pathname !== "/mcp") return res.writeHead(404, { "content-type": "text/plain" }).end("not found\n");
 	// No server-to-client stream (GET) and no sessions to end (DELETE): the panel polls.
 	if (req.method === "GET") return res.writeHead(405, { ...cors, allow: "POST, DELETE" }).end();
-	if (req.method === "DELETE") {
-		plainSessions.delete(String(req.headers["mcp-session-id"] ?? ""));
-		return res.writeHead(200, cors).end();
-	}
+	if (req.method === "DELETE") return res.writeHead(200, cors).end();
 	if (req.method !== "POST") return res.writeHead(405, { ...cors, allow: "POST, DELETE" }).end();
 	const pool = cls === LIMIT.shared ? "shared" : "normal";
 	const mine = inflight.get(address) ?? { n: 0, bytes: 0 };
@@ -640,18 +629,14 @@ export function handler(req, res) {
 		if (messages.length > LIMIT.batch) return res.writeHead(400, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: `at most ${LIMIT.batch} messages per request` } }));
 		// Each message in a batch counts against the address's limit, like a request of its own.
 		if (messages.length > 1 && !allow(`ip ${address}`, cls.perMin, 60_000, messages.length - 1)) return res.writeHead(429, { ...cors, "retry-after": "30" }).end();
-		const sid = String(req.headers["mcp-session-id"] ?? "");
-		// A session id we gave out and no longer know (a restart): the client initializes again.
-		if (sid && !plainSessions.has(sid) && !messages.some((m) => m?.method === "initialize")) return res.writeHead(404, cors).end();
-		const conn = { claudeCode: plainSessions.has(sid) };
+		const conn = {};
 		const out = [];
 		for (const m of messages) {
 			const r = await rpc(m, ip, conn); // one at a time: a batch can't run its sends in parallel
 			if (r) out.push(r);
 		}
-		const session = conn.newSession ? { "mcp-session-id": conn.newSession } : {};
-		if (!out.length) return res.writeHead(202, { ...cors, ...session }).end(); // only notifications or responses
-		res.writeHead(200, { ...cors, ...session, "content-type": "application/json" }).end(JSON.stringify(batch ? out : out[0]));
+		if (!out.length) return res.writeHead(202, cors).end(); // only notifications or responses
+		res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify(batch ? out : out[0]));
 	});
 }
 
