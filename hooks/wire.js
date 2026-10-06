@@ -34,9 +34,10 @@ export function isRelayUrl(url) {
 // Words that mean "leave" in /duet (pi uses /duet off). None of them can be a room name.
 export const LEAVE_WORDS = ["off", "leave", "stop", "disable", "quit", "exit"];
 
-// A room code is the shared secret: letters, digits and dashes, 3 to 64 characters.
+// A room code is the shared secret: 3-64 letters, digits, . _ -, not a leave word. The same rule as
+// transport.js isRoomCode (Codex, pi, the MCP servers, the join file): test/mod-unit.mjs compares them.
 export const isRoomCode = (room) =>
-	typeof room === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$/.test(room) && !LEAVE_WORDS.includes(room.toLowerCase());
+	typeof room === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(room) && !LEAVE_WORDS.includes(room.toLowerCase());
 
 // The join file (~/.duet/join.json) the website's prompt writes: { agent, room, name, relay, cwd,
 // pcwd, at } with `at` in Unix seconds. What a client does with its text: "take" ({ room, name,

@@ -13,7 +13,7 @@
 // the look is a subset of Basecoat (basecoat.js), inlined: the panel loads nothing from anywhere.
 import { randomBytes } from "node:crypto";
 import { BASECOAT_CSS } from "./basecoat.js";
-import { cleanText } from "./transport.js";
+import { cleanText, LEAVE_WORDS } from "./transport.js";
 
 export const PANEL_URI = "ui://duet/room";
 export const SEND_URI = "ui://duet/send";
@@ -482,6 +482,7 @@ ${STYLE}
 ${BRIDGE}
 	const NAME = /^[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N}._-]{0,39}$/u;
 	const ROOM = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/;
+	const LEAVE = ${JSON.stringify(LEAVE_WORDS)}; // with ROOM: transport.js isRoomCode
 	const WORDS = ["amber","birch","cedar","delta","ember","fjord","grove","heron","indigo","juniper","kelp","lumen","maple","nectar","onyx","pebble","quartz","raven","sage","tidal","umber","violet","willow","zephyr","otter","lynx","falcon","badger","marten","osprey","puffin","walrus","yak","gecko","bison","crane"];
 	const store = (kind, k, v) => { try { const s = kind === "local" ? localStorage : sessionStorage; if (v === undefined) return s.getItem(k) || ""; if (v === null) s.removeItem(k); else s.setItem(k, v); } catch {} return ""; };
 
@@ -517,12 +518,22 @@ ${BRIDGE}
 			$("room").value = j.room; $("name").value = j.name;
 		}
 	};
-	function joinAsked() {
+	// A panel already in a room never moves by itself: the model can be asked to call duet_room by a
+	// request from the other side, on any host. The new room waits for the user: Leave, then Join.
+	let switchTo = null;
+	async function joinAsked() {
 		if (!autoJoin) return;
-		$("room").value = autoJoin.room; $("name").value = autoJoin.name;
-		store("session", "duet-joined", autoJoin.room + " " + autoJoin.name);
-		if (autoJoin.id) store("local", "duet-auto", [autoJoin.id, ...usedJoins()].slice(0, 20).join(" "));
+		const j = autoJoin;
 		autoJoin = null;
+		store("session", "duet-joined", j.room + " " + j.name);
+		if (j.id) store("local", "duet-auto", [j.id, ...usedJoins()].slice(0, 20).join(" "));
+		try { const s = await call("duet_room_state", {}); state = s; draw(); } catch {}
+		if (state && state.inRoom) {
+			switchTo = j;
+			showError("Still in this room · to join " + shortRoom(j.room) + " as " + j.name + ": Leave, then Join");
+			return schedule();
+		}
+		$("room").value = j.room; $("name").value = j.name;
 		join();
 	}
 
@@ -755,7 +766,7 @@ ${BRIDGE}
 	};
 	const join = async () => {
 		const room = $("room").value.trim(), name = $("name").value.trim();
-		if (!ROOM.test(room)) return showError("Room code: 3-64 letters, digits, . _ -");
+		if (!ROOM.test(room) || LEAVE.includes(room.toLowerCase())) return showError("Room code: 3-64 letters, digits, . _ -");
 		if (!NAME.test(name) || /^your[-_ ]?name$/i.test(name)) return showError("Name: letters, digits, . _ - (up to 40)");
 		$("join-btn").disabled = true; showError("");
 		try {
@@ -771,7 +782,10 @@ ${BRIDGE}
 	for (const id of ["room", "name"]) $(id).addEventListener("keydown", (ev) => { if (ev.key === "Enter") join(); });
 	$("leave").onclick = async () => {
 		showError("");
-		try { state = await call("duet_room_leave"); store("session", "duet-room", null); $("room").value = ""; modelToldFor = ""; draw(); } catch (e) { showError(e.message); }
+		try {
+			state = await call("duet_room_leave"); store("session", "duet-room", null); $("room").value = ""; modelToldFor = ""; draw();
+			if (switchTo) { $("room").value = switchTo.room; $("name").value = switchTo.name; switchTo = null; } // filled in: the user presses Join
+		} catch (e) { showError(e.message); }
 	};
 
 	// ---------- polling: there is no server push to a panel ----------

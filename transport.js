@@ -111,6 +111,12 @@ const NAME = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._-]{0,39}$/u; // starts with a lette
 // No hidden characters either (\p{M} holds the variation selectors and the grapheme joiner): a name
 // goes into every prompt and form unchanged.
 export const isName = (name) => typeof name === "string" && NAME.test(name) && !stripHidden(name).hidden;
+// Words that mean "leave" in /duet (Claude Code, pi). None of them can be a room code.
+export const LEAVE_WORDS = ["off", "leave", "stop", "disable", "quit", "exit"];
+// A room code is the shared secret: 3-64 letters, digits, . _ -, starting with a letter or digit, and
+// not a leave word. One rule for every client (hooks/wire.js keeps a copy: test/mod-unit.mjs compares).
+/** @param {unknown} r */
+export const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(r) && !LEAVE_WORDS.includes(r.toLowerCase());
 // The site's stand-in before a name is typed; joining under it means the commands were copied too early.
 /** @param {unknown} name */
 export const isPlaceholderName = (name) => typeof name === "string" && /^your[-_ ]?name$/i.test(name);
