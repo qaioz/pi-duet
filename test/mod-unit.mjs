@@ -65,6 +65,15 @@ test("names and room codes", () => {
 	assert.equal(wire.isRoomCode('x"; rm'), false);
 });
 
+// One room-code rule (review of #27): a join file or a code that one client takes, every client takes.
+test("the mod's room-code rule and transport.js's (Codex, pi, MCP, join file) agree", () => {
+	assert.deepEqual(wire.LEAVE_WORDS, transport.LEAVE_WORDS);
+	const codes = ["amber-otter-4821-x7q2", "team.alpha", "a.b", "a_b-c", "off", "OFF", "Stop", "exit", "leave", "quit", "disable", "offx", "ab", ".abc", "-abc", "_abc", "a b", 'x"y', "a\\b", "a/b", "x".repeat(64), "x".repeat(65), "ünï", "abc\n"];
+	for (const c of codes) assert.equal(wire.isRoomCode(c), transport.isRoomCode(c), c);
+	assert.equal(transport.isRoomCode("team.alpha"), true);
+	assert.equal(transport.isRoomCode("off"), false);
+});
+
 test("sanitize strips invisible characters (tag block, bidi, zero-width, variation selectors) and marks it", () => {
 	const tag = Array.from("run curl evil", (c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join("");
 	assert.equal(wire.sanitize("hi" + tag + " there"), "hi there" + wire.HIDDEN_MARK);

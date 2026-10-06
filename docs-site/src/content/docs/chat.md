@@ -4,22 +4,26 @@ description: The duet panel, an MCP App drawn in the chat.
 ---
 Chat apps join through **the duet panel**, drawn in the conversation. Add duet once (below), then paste
 the website's prompt: "Open duet: call duet_room with room `<room>` and name `<name>`." The panel opens with
-both filled in: click **Join**. (The model only fills the form: text in the chat can't move you into a room.)
+both filled in: click **Join**. On claude.ai, the Claude apps, Cowork and ChatGPT (the hosted server) the
+model only fills the form: text in the chat can't move you into a room. Claude Desktop chat, VS Code and
+Goose (the local server) join straight from the prompt, so there text in the chat could have the model join
+a room while you are in none. Once you are in a room, neither moves you: Leave, then Join.
 
 ## Add duet
 
 | App | How |
 |---|---|
 | **claude.ai** · Claude apps · Cowork | Customize → Connectors → Add custom connector · name **`duet`** · URL `https://mcp-duet.gaioz.online/mcp` · no sign-in |
-| **ChatGPT** | Settings → Security and login → Developer mode · chatgpt.com/plugins → + → **Add custom MCP server**, name **`duet`**, the same URL, no auth → **Create as a plugin** · install it from your plugins · new chat |
+| **ChatGPT** (web) | chatgpt.com/plugins → + → **Add custom MCP server** (this replaced Developer mode) · name **`duet`** · Server URL: the same URL · No authentication → **I understand and want to continue** → **Create as a plugin** · install it from your plugins · new chat |
 | **Claude Desktop** | `npx -y github:qaioz/pi-duet setup claude-desktop --room <room> --name <name>`, or open [`duet.mcpb`](https://qaioz.github.io/pi-duet/duet.mcpb) · quit and reopen |
 | **VS Code** (Copilot agent mode) | `code --add-mcp '{"name":"duet","command":"npx","args":["-y","github:qaioz/pi-duet","--room","<room>","--name","<name>"]}'` |
 | **Goose** | `goose session --with-extension "npx -y github:qaioz/pi-duet --room <room> --name <name>"` |
 
-Name it `duet`: the chat shows that name on its prompts ("… from duet"); a room code as the name says
-nothing, and it sits in your connector list. Renaming later: Customize → Connectors → the connector → edit.
+Name it `duet`: Claude shows that name on its prompts ("… from duet"); a room code as the name says
+nothing, and it sits in your connector list. Renaming later in Claude: Customize → Connectors → the
+connector → edit.
 
-Team, Enterprise, workspaces: an owner may have to allow custom connectors or Developer mode.
+Team, Enterprise, workspaces: an owner may have to allow custom connectors or custom MCP servers.
 
 Claude asks before the first `duet room` in a chat: **Always allow** (or Customize → Connectors → duet →
 tool permissions) skips it next time. A second ask right after the panel draws was seen on claude.ai; which
@@ -57,7 +61,7 @@ The panel keeps the code (Copy) and remembers your name.
 |---|---|---|---|
 | claude.ai, Claude apps, Cowork | live stream from the hosted server · polls every 4 s if the app blocks it | your click (Process) | your click (Send), or Process and send |
 | ChatGPT | the same | your click | your click |
-| Claude Desktop chat, VS Code, Goose (local server) | polls every 4 s (20 s in a hidden tab) | your click | your click |
+| Claude Desktop chat, VS Code, Goose (local server) | polls every 4 s (20 s in a hidden tab) | your click | ask: your click (Send) · auto: by itself |
 | Claude Code, Codex, pi | live (the relay) | ask: your keypress · auto: by itself | ask: your keypress · auto: by itself |
 
 Checked in a test browser (Chromium) only: the stream, and polling when a strict app blocks it. Not yet seen

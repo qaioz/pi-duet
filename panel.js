@@ -13,7 +13,7 @@
 // the look is a subset of Basecoat (basecoat.js), inlined: the panel loads nothing from anywhere.
 import { randomBytes } from "node:crypto";
 import { BASECOAT_CSS } from "./basecoat.js";
-import { cleanText } from "./transport.js";
+import { cleanText, LEAVE_WORDS } from "./transport.js";
 
 export const PANEL_URI = "ui://duet/room";
 export const SEND_URI = "ui://duet/send";
@@ -205,9 +205,12 @@ export const roomProps = {
 export const roomTool = {
 	name: "duet_room",
 	title: "duet room",
-	// It opens the panel. On the local server a room and name in the call join that room (a write, and only
-	// on the user's own turn); the hosted server only fills the panel's form with them (the user clicks
-	// Join) and overrides this as read-only (hosted.js).
+	// It opens the panel. On the local server a room and name in the call join that room (a write). mcp.js
+	// refuses it in a turn Codex marks as the other side's request, and refuses to move a session already in
+	// a room unless Codex marks the turn as the user's; in a chat app (Claude Desktop, VS Code, Goose) no turn
+	// is marked, so text in the chat can still steer the model into joining while not in a room. The hosted
+	// server only fills the panel's form with them (the user clicks Join) and overrides this as read-only
+	// (hosted.js).
 	annotations: SENDS,
 	description:
 		"Open the duet panel in the chat. duet pairs your user with another developer's coding agent through a shared room; the panel shows the room, " +
@@ -511,6 +514,7 @@ ${STYLE}
 ${BRIDGE}
 	const NAME = /^[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N}._-]{0,39}$/u;
 	const ROOM = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/;
+	const LEAVE = ${JSON.stringify(LEAVE_WORDS)}; // with ROOM: transport.js isRoomCode
 	const WORDS = ["amber","birch","cedar","delta","ember","fjord","grove","heron","indigo","juniper","kelp","lumen","maple","nectar","onyx","pebble","quartz","raven","sage","tidal","umber","violet","willow","zephyr","otter","lynx","falcon","badger","marten","osprey","puffin","walrus","yak","gecko","bison","crane"];
 	const store = (kind, k, v) => { try { const s = kind === "local" ? localStorage : sessionStorage; if (v === undefined) return s.getItem(k) || ""; if (v === null) s.removeItem(k); else s.setItem(k, v); } catch {} return ""; };
 
@@ -529,13 +533,19 @@ ${BRIDGE}
 	// The local server's key for this panel: in duet_room's result (_meta), which the model doesn't see.
 	let key = store("session", "duet-key");
 	// The hosted server's room and name from duet_room (from the chat): they only fill the form. The
-	// user's Join click joins: the model, which text in the chat can steer, never moves the user into a
-	// room (or out of the one they are in) by itself.
+	// user's Join click joins: on the hosted server the model, which text in the chat can steer, never
+	// moves the user into a room (or out of the one they are in) by itself. A panel already in a room
+	// stays: the new room is filled in after the user's Leave. (The local server, mcp.js, joins from
+	// duet_room's room and name itself: see roomTool above.)
+	let switchTo = null;
 	handlers["ui/notifications/tool-result"] = (r) => {
 		const k = r && r._meta && r._meta[${JSON.stringify(PANEL_KEY_META)}];
 		if (typeof k === "string" && k && k !== key) { key = k; store("session", "duet-key", k); if (ready) refresh(true); }
 		const j = r && r._meta && r._meta[${JSON.stringify(JOIN_META)}];
-		if (j && typeof j.room === "string" && typeof j.name === "string") { $("room").value = j.room; $("name").value = j.name; }
+		if (j && typeof j.room === "string" && typeof j.name === "string") {
+			if (state && state.inRoom) { switchTo = j; showError("Still in this room · to join " + shortRoom(j.room) + " as " + j.name + ": Leave, then Join"); }
+			else { $("room").value = j.room; $("name").value = j.name; }
+		}
 	};
 
 	async function call(name, args) {
@@ -766,7 +776,7 @@ ${BRIDGE}
 	};
 	const join = async () => {
 		const room = $("room").value.trim(), name = $("name").value.trim();
-		if (!ROOM.test(room)) return showError("Room code: 3-64 letters, digits, . _ -");
+		if (!ROOM.test(room) || LEAVE.includes(room.toLowerCase())) return showError("Room code: 3-64 letters, digits, . _ -");
 		if (!NAME.test(name) || /^your[-_ ]?name$/i.test(name)) return showError("Name: letters, digits, . _ - (up to 40)");
 		$("join-btn").disabled = true; showError("");
 		try {
@@ -782,7 +792,10 @@ ${BRIDGE}
 	for (const id of ["room", "name"]) $(id).addEventListener("keydown", (ev) => { if (ev.key === "Enter") join(); });
 	$("leave").onclick = async () => {
 		showError("");
-		try { const s = await call("duet_room_leave"); store("session", "duet-room", null); $("room").value = ""; modelToldFor = ""; take(s); } catch (e) { showError(e.message); }
+		try {
+			take(await call("duet_room_leave")); store("session", "duet-room", null); $("room").value = ""; modelToldFor = "";
+			if (switchTo) { $("room").value = switchTo.room; $("name").value = switchTo.name; switchTo = null; showError(""); } // filled in: the user presses Join
+		} catch (e) { showError(e.message); }
 	};
 
 	// ---------- keeping up: a live stream from the hosted server where the host allows it, else polling ----------
@@ -795,6 +808,7 @@ ${BRIDGE}
 	const LIVE = ${JSON.stringify(live)}, HOSTED = ${hosted ? "true" : "false"}, SERVER = ${JSON.stringify(server)};
 	let pollTimer;
 	let failures = 0;
+	const FIRST_GRACE_MS = 8000;
 	let stream = null; // { ctl, live } while a stream is open
 	let liveFails = 0, liveTimer, liveOff = !LIVE;
 	// foreign: "not in a room" from a stream that never showed the room, while the chat app's call says in
@@ -922,6 +936,9 @@ ${BRIDGE}
 		if (!store("session", "duet-room")) { state = { inRoom: false }; return draw(); }
 		if (liveOff) return refresh(true);
 		state = { inRoom: true }; schedule();
+		// A host or proxy can accept the stream and hold it back with no error: then nothing would show
+		// until the 45 s silence check. A stream not live after a short grace: ask once (polling until it is).
+		setTimeout(() => { if (!torn && !dormant && inRoom() && !streaming()) refresh(true); }, FIRST_GRACE_MS);
 	}
 	start(${JSON.stringify(version)}, ["inline", "fullscreen"]).then(firstLoad);
 })();

@@ -51,6 +51,21 @@ main() {
 		fi
 	fi
 
+	# This folder's own settings can turn mods off too (disableAllHooks in .claude/settings.json or
+	# settings.local.json): `claude plugin test` reads the settings of the folder it runs in, and tests
+	# the (empty) folder it is given.
+	dir=$(mktemp -d)
+	out=$(claude plugin test "$dir" 2>&1 || true)
+	rmdir "$dir"
+	case $out in
+	*"no hooks module to load"*) ;;
+	*)
+		echo "duet: Claude Code's mods are off in this folder (disableAllHooks in its .claude/settings.json" >&2
+		echo "      or settings.local.json, or a policy). Remove that, or start duet in another folder." >&2
+		exit 1
+		;;
+	esac
+
 	echo "duet: starting Claude Code in room $(printf '%s' "$room" | cut -c1-4)… as $name"
 	# Piped into sh, stdin is this script: give Claude Code the terminal. Use the real device
 	# (/dev/ttys003, /dev/pts/0): on macOS, Claude Code crashes reading /dev/tty (kqueue EINVAL).

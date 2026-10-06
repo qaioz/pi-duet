@@ -241,10 +241,10 @@ const AGENTS = {
 			where: "paste into Claude Code, open in your project folder",
 			text: `Set up duet and join room {room} as {name}. ${RUN}
 
-${joinFile("claude-code")} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(cd "$d" && claude plugin test 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off' ;; esac && rmdir "$d"
+${joinFile("claude-code")} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(claude plugin test "$d" 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off here' ;; esac && rmdir "$d"
 
 Then reply with only: Type /reload-plugins to join (not needed if duet already said “joined”).
-If it printed "duet: mods are off", reply only: Claude Code's mods are off for your account, so duet can't run here yet. If it failed, say which step failed instead.`,
+If it printed "duet: mods are off here", reply only: Claude Code's mods are off in this folder (disableAllHooks in its .claude settings or yours, or a switch by your organization or Anthropic), so duet can't run here yet. If it failed, say which step failed instead.`,
 			note: "Approve its one command · then /reload-plugins · Claude Code 2.1.287+ · the code stays in the session history: the terminal line keeps it out",
 		},
 		cases: [
@@ -338,7 +338,7 @@ If it failed, say which step failed instead.`,
 		prompt: {
 			where: "then say, in a new chat",
 			text: "Open duet: call duet_room with room {room} and name {name}.",
-			note: "The panel opens with it filled in: click Join · the code stays in the chat history · private: say “open duet”, type it into the panel",
+			note: "The panel opens with it filled in: click Join · the code stays in the chat history · private: say “open duet”, type it into the panel · already in a room: Leave, then Join",
 		},
 		cases: [
 			{
@@ -364,7 +364,7 @@ If it failed, say which step failed instead.`,
 					["connector URL", HOSTED],
 					["room code, the private way: into the duet panel", "{room}"],
 				],
-				note: "Settings → Security and login → Developer mode (not every plan) · chatgpt.com/plugins → + → Add custom MCP server · name: duet · paste the URL, no auth → Create as a plugin · install it from your plugins · new chat{hosted-relay}",
+				note: "ChatGPT on the web · chatgpt.com/plugins → + → Add custom MCP server (it replaced Developer mode) · name: duet · paste the URL, No authentication → I understand and want to continue → Create as a plugin · install it from your plugins · new chat{hosted-relay}",
 			},
 			{
 				key: "vscode",

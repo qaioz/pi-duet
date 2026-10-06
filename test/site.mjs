@@ -8,7 +8,7 @@
 //      DUET_SITE_COMMANDS (write the page's commands, as shown, to this JSON file for the pair tests).
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { envelope, publish, topicFor } from "../transport.js";
@@ -62,8 +62,8 @@ const RUN = "Run this as one shell command:";
 const PROMPTS = (r, n, relay) =>
 	Object.fromEntries(
 		Object.entries({
-			claude: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("claude-code", relay)} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(cd "$d" && claude plugin test 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off' ;; esac && rmdir "$d"\n\nThen reply with only: Type /reload-plugins to join (not needed if duet already said “joined”).
-If it printed "duet: mods are off", reply only: Claude Code's mods are off for your account, so duet can't run here yet. If it failed, say which step failed instead.`,
+			claude: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("claude-code", relay)} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(claude plugin test "$d" 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off here' ;; esac && rmdir "$d"\n\nThen reply with only: Type /reload-plugins to join (not needed if duet already said “joined”).
+If it printed "duet: mods are off here", reply only: Claude Code's mods are off in this folder (disableAllHooks in its .claude settings or yours, or a switch by your organization or Anthropic), so duet can't run here yet. If it failed, say which step failed instead.`,
 			codex: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server ${relay}) and stop. Otherwise run this as one shell command:\n\n${JOIN("codex", relay)} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet\n\nThen reply with only: Start a new Codex session in this folder and say "join duet" (first time: trust duet's hooks).\nIf it failed, say which step failed instead.`,
 			pi: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("pi", relay)} && pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet\n\nThen reply with only: Type /reload to join.\nIf it failed, say which step failed instead.`,
 			chat: "Open duet: call duet_room with room {room} and name {name}.",
@@ -254,41 +254,49 @@ try {
 	// Bash tool replays the user's shell options): mods on/off, duet enabled/disabled here, a failed install.
 	const runs = {};
 	for (const shell of ["bash", "zsh"].filter((sh) => { try { execFileSync("sh", ["-c", `command -v ${sh}`]); return true; } catch { return false; } })) {
-		for (const [what, env] of Object.entries({ on: {}, disabled: { STUB_LIST: "disabled" }, modsOff: { STUB_TEST: "off" }, installFails: { STUB_INSTALL: "1" } })) {
+		for (const [what, env] of Object.entries({ on: {}, disabled: { STUB_LIST: "disabled" }, modsOff: { STUB_TEST: "off" }, folderOff: {}, localOff: {}, installFails: { STUB_INSTALL: "1" } })) {
 			const dir = mkdtempSync(join(tmpdir(), "duet-cmd-"));
 			mkdirSync(join(dir, "bin"));
+			mkdirSync(join(dir, "tmp")); // mktemp's folder, checked empty afterwards
+			// The project's own settings turn mods off (review of #27: the check ran in an empty folder).
+			if (what === "folderOff" || what === "localOff") {
+				mkdirSync(join(dir, ".claude"));
+				writeFileSync(join(dir, ".claude", what === "folderOff" ? "settings.json" : "settings.local.json"), '{"disableAllHooks":true}');
+			}
 			writeFileSync(join(dir, "bin/claude"), `#!/bin/sh
 echo "$*" >> "${dir}/calls"
 case "$*" in
 "plugin install"*) exit \${STUB_INSTALL:-0} ;;
 "plugin list") printf 'Installed plugins:\n\n  ❯ duet@pi-duet\n    Version: 0.10.0\n    Scope: user\n    Status: %s\n' "$( [ "$STUB_LIST" = disabled ] && echo '✘ disabled' || echo '✔ enabled')" ;;
-"plugin test") [ "$STUB_TEST" = off ] && echo "mods are turned off" || echo "claude plugin test: $PWD: no hooks module to load"; exit 1 ;;
+"plugin test"*) if [ "$STUB_TEST" = off ] || cat .claude/settings.json .claude/settings.local.json 2>/dev/null | grep -q disableAllHooks; then echo "claude plugin test: hooks modules are turned off here (disableAllHooks, allowManagedHooksOnly or a policy)"; elif [ -n "$(ls -A "\${3:-.}")" ]; then echo "STUB: ran the tests of \${3:-.}"; else echo "claude plugin test: \${3:-$PWD}: no hooks module to load"; fi; exit 1 ;;
 esac
 exit 0
 `, { mode: 0o755 });
 			const line = after.claude.text.split("\n\n")[1];
 			let out = "", code = 0;
 			try {
-				out = execFileSync(shell, ["-o", "pipefail", "-c", line], { cwd: dir, env: { ...process.env, HOME: dir, PATH: `${dir}/bin:${process.env.PATH}`, ...env }, encoding: "utf8" });
+				out = execFileSync(shell, ["-o", "pipefail", "-c", line], { cwd: dir, env: { ...process.env, HOME: dir, TMPDIR: join(dir, "tmp"), PATH: `${dir}/bin:${process.env.PATH}`, ...env }, encoding: "utf8" });
 			} catch (e) {
 				code = e.status ?? 1;
 				out = String(e.stdout ?? "");
 			}
 			const calls = existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8") : "";
-			runs[`${shell} ${what}`] = { out: out.trim(), code, enabled: calls.includes("plugin enable duet@pi-duet --scope local"), tested: calls.includes("plugin test") };
+			// The test folder is removed again (it holds a copy of the project's settings).
+			const leftover = readdirSync(join(dir, "tmp")).length > 0;
+			runs[`${shell} ${what}`] = { out: out.trim(), code, enabled: calls.includes("plugin enable duet@pi-duet --scope local"), tested: calls.includes("plugin test"), leftover };
 			rmSync(dir, { recursive: true, force: true });
 		}
 	}
 	const cmdOk = (r, want) => r && r.out === want.out && r.enabled === want.enabled && (want.code === undefined ? r.code === 0 : r.code !== 0) && r.tested === (want.tested ?? true);
 	check(
-		"the Claude Code command (bash, zsh, pipefail): quiet when mods are on, enables duet only where disabled, says mods are off, stops on a failed install",
-		Object.keys(runs).length >= 4 &&
+		"the Claude Code command (bash, zsh, pipefail): quiet when mods are on, enables duet only where disabled, says mods are off (account, or this folder's .claude settings / settings.local), stops on a failed install",
+		Object.keys(runs).length >= 6 && Object.values(runs).every((r) => !r.leftover) &&
 			Object.entries(runs).every(([k, r]) =>
 				k.endsWith(" on") ? cmdOk(r, { out: "", enabled: false })
 				: k.endsWith(" disabled") ? cmdOk(r, { out: "", enabled: true })
-				: k.endsWith(" modsOff") ? cmdOk(r, { out: "duet: mods are off", enabled: false })
+				: /( modsOff| folderOff| localOff)$/.test(k) ? cmdOk(r, { out: "duet: mods are off here", enabled: false })
 				: cmdOk(r, { out: "", enabled: false, code: 1, tested: false })),
-		JSON.stringify(runs).slice(0, 600),
+		JSON.stringify(runs).slice(0, 900),
 	);
 	// Tabs: Claude Code, Codex, pi, then chat apps; each agent tab starts with one line for a terminal.
 	const tabOrder = await friend.$$eval(".tabs button", (bs) => bs.map((b) => b.dataset.agent).join());
@@ -330,7 +338,7 @@ exit 0
 			vscodeJson?.name === "duet" && vscodeJson.args.join(" ") === `-y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}` &&
 			chat.goose[0].cmd === `goose session --with-extension "npx -y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}"` &&
 			notesFilled && /Nothing starts your agent by itself/.test(chatText) && /Process · Process and send · Ignore/.test(chatText) && /Send · Don't send/.test(chatText) &&
-			(SERVER === "https://duet.gaioz.online" || (/hosted server uses duet\.gaioz\.online/.test(chatText) && /duet\.mcpb uses duet\.gaioz\.online/.test(chatText))) && !/guard|fence/i.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && /Developer mode/.test(chatText) &&
+			(SERVER === "https://duet.gaioz.online" || (/hosted server uses duet\.gaioz\.online/.test(chatText) && /duet\.mcpb uses duet\.gaioz\.online/.test(chatText))) && !/guard|fence/i.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && !/Security and login/.test(chatText) &&
 			/Add custom MCP server/.test(chatText) && /Create as a plugin/.test(chatText) && /stays in the chat history/.test(chatText),
 		JSON.stringify(Object.fromEntries(Object.entries(chat).map(([k, v]) => [k, v.map((c) => c.cmd.replace(room, "<room>"))]))).slice(0, 400),
 	);
@@ -356,7 +364,7 @@ exit 0
 		const all = await allCommands(evil);
 		const note = await evil.textContent("#relay");
 		// The commands always name a relay: a hostile one must give way to the default, untouched.
-		const shell = all.replaceAll("$(pwd -P)", "").replaceAll("$(date +%s)", "").replaceAll("$(mktemp -d)", "").replaceAll(`$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')`, "").replaceAll(`$(cd "$d" && claude plugin test 2>&1)`, ""); // the prompts' own
+		const shell = all.replaceAll("$(pwd -P)", "").replaceAll("$(date +%s)", "").replaceAll("$(mktemp -d)", "").replaceAll(`$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')`, "").replaceAll(`$(claude plugin test "$d" 2>&1)`, ""); // the prompts' own
 		if (/PWNED|\$\(|`|"q|'q|u:p@|javascript|\$&/.test(shell) || !all.includes("--server https://duet.gaioz.online") || !all.includes('"relay":"https://duet.gaioz.online"') || !all.includes("server https://duet.gaioz.online) and stop") || !/ignored/.test(note)) leaks.push(relay);
 	}
 	await evil.goto(`${site}?relay=${encodeURIComponent("https://ntfy.example.com/")}#${room}`);

@@ -268,6 +268,21 @@ async function localTests() {
 			!joinedR.isError && joinedR.content[0].text.includes("as gaioz") && !joinedR.content[0].text.includes(askedRoom) && inSt.name === "gaioz" && !!badRoom._meta?.["duet/key"],
 		`bad room: ${badRoom.content[0].text}; bad name: ${badName.content[0].text}; then: ${joinedR.content[0].text}; connected: ${!!inSt.connected}`,
 	);
+	// In a room, duet_room never moves it (a request from the other side can ask the model for the call,
+	// and Claude Desktop/VS Code/Goose don't say whose turn it is): the user leaves in the panel first.
+	const otherRoom = `t-${randomUUID()}`;
+	const moved = await asked.open({ room: otherRoom, name: "mallory" });
+	const sameAgain = await asked.open({ room: askedRoom, name: "gaioz" });
+	const stay = data(await asked.call("duet_room_state"));
+	await asked.call("duet_room_leave");
+	const afterLeave = await asked.open({ room: otherRoom, name: "gaioz" });
+	const nowOther = data(await asked.call("duet_room_state"));
+	check(
+		"stdio: duet_room in a room doesn't switch it (refused, the room stays); the same room is fine; after Leave it joins",
+		moved.isError && /^Not joined · still in/.test(moved.content[0].text) && !moved.content[0].text.includes(otherRoom) && !sameAgain.isError && stay.inRoom && stay.name === "gaioz" && stay.room === askedRoom.slice(0, 4) + "…" &&
+			!afterLeave.isError && nowOther.inRoom && nowOther.room === otherRoom.slice(0, 4) + "…",
+		`switch: ${moved.content[0].text}; same: ${sameAgain.content[0].text.slice(0, 50)}; stayed ${stay.room} as ${stay.name}; after leave: ${nowOther.room}`,
+	);
 	asked.stop();
 }
 
@@ -959,6 +974,24 @@ addEventListener("message", async (ev) => {
 				filled[0] === askedRoom && filled[1] === "zura" && heardBefore === 0 && shownCode === askedRoom && sub.includes("zura") && !r.errors.length,
 				`form ${JSON.stringify(filled)}; heard in the room before the click: ${heardBefore}; shown after: ${JSON.stringify(sub)}; error: ${JSON.stringify(await r.panel.locator("#error").textContent())}; page errors: ${JSON.stringify(r.errors)}`,
 			);
+			// A second duet_room (e.g. a request from the other side asked the model for it) while in a room:
+			// the panel stays; after the user's Leave the new room is filled in, not joined.
+			const otherRoom = `t-${randomUUID()}`;
+			const second = await client(h2.url).model("duet_room", { room: otherRoom, name: "mallory" });
+			await r.page.evaluate((p) => document.getElementById("f").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: p }, "*"), second);
+			await r.panel.locator("#error", { hasText: "Still in this room" }).waitFor({ timeout: 10_000 }).catch(() => {});
+			const stayErr = await r.panel.locator("#error").textContent().catch(() => "");
+			const stayCode = await r.panel.locator("#sub .code").textContent().catch(() => "");
+			await r.panel.locator("#leave").click();
+			await r.panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 }).catch(() => {});
+			await sleep(1500);
+			const filled2 = [await r.panel.locator("#room").inputValue(), await r.panel.locator("#name").inputValue()];
+			const stillOut = await r.panel.locator("#join:not(.hidden)").count();
+			check(
+				"browser: a second duet_room while in a room doesn't move the panel; after Leave it is filled in, the user presses Join",
+				stayCode === askedRoom && /Still in this room/.test(stayErr) && !stayErr.includes(otherRoom) && filled2[0] === otherRoom && filled2[1] === "mallory" && stillOut === 1 && !r.errors.length,
+				`stayed in asked: ${stayCode === askedRoom}; note: ${JSON.stringify(stayErr)}; after Leave: filled other ${filled2[0] === otherRoom} as ${filled2[1]}, form shown ${stillOut}; page errors ${JSON.stringify(r.errors)}`,
+			);
 			await r.page.close();
 			h2.proc.kill();
 		}
@@ -1462,6 +1495,40 @@ addEventListener("message", async (ev) => {
 				calls.length === 0 && kept === null,
 				`tool calls: ${JSON.stringify(calls)}; duet-room after: ${JSON.stringify(kept)}`,
 			);
+			await page.close();
+		}
+		// A tab that joined before, whose stream a host or proxy accepts but holds back with no error: after a
+		// short grace the panel asks once and shows the room (not 45 s of nothing until the silence check).
+		{
+			const page = await browser.newPage({ viewport: { width: 400, height: 900 } });
+			await page.goto(base);
+			await page.evaluate((src) => (document.getElementById("f").srcdoc = src), html);
+			const panel = page.frameLocator("#f");
+			const room = `t-${randomUUID()}`;
+			await panel.locator("#room").fill(room);
+			await panel.locator("#name").fill("lin");
+			await panel.locator("#join-btn").click();
+			await panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 });
+			// From now on every new /live request hangs: no answer, no error.
+			const held = [];
+			await page.route(`${h.url}/live`, (route) => { held.push(route); });
+			const n0 = await page.evaluate(() => window.calls.length);
+			const t0 = Date.now();
+			await page.evaluate((src) => (document.getElementById("f2").srcdoc = src), html);
+			const two = page.frameLocator("#f2");
+			await two.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 20_000 }).catch(() => {});
+			const took = Date.now() - t0;
+			const shown = await two.locator("#sub .code").textContent().catch(() => "");
+			const calls = await page.evaluate((n) => window.calls.slice(n), n0);
+			check(
+				"live browser: a held-back stream (no error) on a tab that joined before: after a short grace the panel asks once and shows the room",
+				held.length >= 1 && shown === room && calls.includes("duet_room_state") && took < 15_000,
+				`held streams ${held.length}; shown ${JSON.stringify(shown)} after ${Math.round(took / 1000)} s; calls ${JSON.stringify(calls)}`,
+			);
+			await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
+			// Leave: the seat would count toward the per-address room cap (3) of the checks below.
+			await panel.locator("#leave").click();
+			await panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 }).catch(() => {});
 			await page.close();
 		}
 		// Room switch with the same token (as duet_room_join from a second panel): the panel keeps streaming

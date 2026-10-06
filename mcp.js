@@ -829,7 +829,8 @@ function toolList() {
 				"Your plain-text replies are seen only by your own user. Do not send pure thank-you or acknowledgement messages. " +
 				"Send one complete reply when you are done, not progress updates or several small messages; one message can be long (up to ~200 KB). " +
 				(drawsPanels(clientCaps, host) ? SEND_NOTE : "In ask mode your user sees the whole reply and chooses Send or Don't send; if they don't send it, don't send it again unless they ask."),
-			// In a chat app: annotated (not destructive: the reply waits for the user's Send in the duet card).
+			// In a chat app: annotated, not destructive: in ask mode the reply waits for the user's Send in the duet
+			// card. In auto mode (no gates, as on every surface) it goes out at once.
 			...(drawsPanels(clientCaps, host) ? { title: "duet send", _meta: sendToolMeta, annotations: SENDS } : {}),
 			inputSchema: {
 				type: "object",
@@ -1261,6 +1262,10 @@ async function callTool(tool, a, ctx) {
 				const n = String(a.name ?? "").trim();
 				if (!isRoomCode(r)) return keyed("Not joined · room code: 3-64 letters, digits, . _ - · your user can type it into the panel", true);
 				if (!isName(n) || isPlaceholderName(n)) return keyed("Not joined · name: letters, digits, . _ - · up to 40 · your user can type it into the panel", true);
+				// Already in a room: only a turn the host says is the user's own (Codex) moves it. Elsewhere
+				// (Claude Desktop, VS Code, Goose) a request from the other side could ask the model for this
+				// call, and nothing tells the turns apart: the user leaves in the panel and joins there.
+				if (room && name && !(r === room && n === name) && !ctx.userTurn) return keyed(`Not joined · still in "${shortRoom(room)}" as ${name} · to switch, your user presses Leave in the panel, then joins "${shortRoom(r)}" there`, true);
 				if (!(sub && r === room && n === name)) {
 					try {
 						await joinAsUser(r, n, server);
