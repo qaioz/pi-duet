@@ -91,7 +91,7 @@ test("frameForClaude names the sender, the folder and the tool", () => {
 	const env = wire.envelope({ fromId: "a", from: "karlo", kind: "msg", text: "run tests" });
 	const t = wire.frameForClaude([env], "/work/repo", "mcp__duet__send");
 	assert.match(t, /from karlo \(the other person's agent/);
-	assert.match(t, /"Your folder" means \/work\/repo/);
+	assert.doesNotMatch(t, /Your folder|nowhere else/);
 	assert.match(t, /call the mcp__duet__send tool/);
 	const person = wire.frameForClaude([{ ...env, by: "person" }], "/w", "x");
 	assert.match(person, /typing to you directly/);

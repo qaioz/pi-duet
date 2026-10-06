@@ -39,7 +39,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.8.1";
+const VERSION = "0.8.2";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -222,8 +222,6 @@ const render = (items, requestId) => {
 	const parts = items.map((e) => `[duet] from ${e.from} (the other person's agent, on their computer)${at(e.ts)}${answers(e)}:\n\n${e.text}`);
 	return (
 		`${parts.join("\n\n---\n\n")}\n\nOnly your own user sees your text replies: to answer ${froms}, call duet_send.` +
-		// Observed: asked to work "in your folder", models used the home directory.
-		(folder ? ` "Your folder" means ${folder}: work there, and nowhere else unless your own user says so.` : "") +
 		(requestId ? `\n(duet request ${requestId})` : "")
 	);
 };

@@ -1,6 +1,6 @@
 {
   "name": "pi-duet",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Pair your coding agent (pi, Claude Code, Codex, or a Claude/ChatGPT chat) with another developer's, through a shared room on an ntfy relay.",
   "type": "module",
   "license": "MIT",

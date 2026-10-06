@@ -62,6 +62,7 @@ let permissionMode = ""; // "" until Claude Code reports it (classic.* events)
 let room = null; // { code, name, key, fromId, topic, lockKey, fileLock, mode, cursor, server, riskOk }
 let generation = 0; // bumped on every join and leave; loops of an older room stop
 let joinEpoch = 0; // bumped by /duet off: a join still in flight then gives up
+let joinedAt = 0; // when this window's own join went out: a join just after it is the others' answer
 let wakeSupervisor = null;
 let child = null; // the running curl stream
 let connected = false;
@@ -365,8 +366,8 @@ function onEnvelope($, r, env) {
 		if (isNew) {
 			const via = viaLabel(env.via);
 			remember($, { text: `${env.from} joined${via ? " · " + via : ""}`, note: true });
-			// Answer once, so a newcomer learns who is here.
-			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code", place: r.place })).catch(() => {});
+			// Answer once, so a newcomer learns who is here; not a join that answers ours (sent twice otherwise).
+			if (Date.now() - joinedAt > 5000) void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code", place: r.place })).catch(() => {});
 		}
 		redraw($);
 		return;
@@ -606,6 +607,7 @@ async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 		// network requests from mods, duet doesn't join.
 		r.place = await placeFor(cwd, topic, host);
 		await publish($, relay, topic, envelope({ fromId, from: name, kind: "join", via: "claude-code", place: r.place }));
+		joinedAt = Date.now();
 	} catch (err) {
 		const cur = await $.store.get(lockKey);
 		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
@@ -644,7 +646,7 @@ async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 	heartbeat?.cancel?.();
 	heartbeat = $.clock.every(2000, () => void beat($).catch(() => {}));
 	wakeSupervisor?.();
-	if (!quiet) remember($, { text: `you joined as ${name}`, note: true });
+	remember($, { text: quiet ? `you rejoined as ${name}` : `you joined as ${name}`, note: true });
 	let copied = false;
 	if (copy) {
 		try {

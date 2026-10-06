@@ -201,7 +201,7 @@ async function localTests() {
 		"stdio: Hand to agent: framed like every other path, the peer's words between random markers",
 		taken.text.startsWith("[duet] from nika (the other person's agent, on their computer)") &&
 			tag && taken.text.includes(`⟦${tag}⟧\n<img`) && taken.text.includes(`\n⟦/${tag}⟧\n\nOnly your own user sees your text replies: to answer nika, call duet_send once; your user OKs it in the duet card.`) &&
-			taken.text.includes('"Your folder" means /work/proj') && !/[\u202e\u200b\u0085\ufe0f\u3164]|\u{e0101}/u.test(taken.text),
+			!taken.text.includes("Your folder") && !/[\u202e\u200b\u0085\ufe0f\u3164]|\u{e0101}/u.test(taken.text),
 		JSON.stringify(taken.text.slice(0, 300)),
 	);
 	const twice = await desk.call("duet_take", { id: st.waiting[0].id });
