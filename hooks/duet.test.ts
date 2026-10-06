@@ -1468,3 +1468,18 @@ test("join file: a /duet <room> typed after the prompt empties it, so a reload d
 	expect(did.fs.get(JOIN_FILE)).toBe("{}");
 	expect(did.logs).not.toContain("joined test-room-86 as nika");
 });
+
+test("join file: from a subfolder (the shell cd'd) it is taken on start or reload, not by the poll", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await settle(clock, 20);
+	const sub = joinFile({ cwd: CWD + "/sub", pcwd: "/real/repo/sub", room: "test-room-88" });
+	did.fs.set(JOIN_FILE, sub);
+	await clock.advance(6000);
+	await settle(clock, 20);
+	expect(did.posts.length).toBe(0);
+	expect(did.fs.get(JOIN_FILE)).toBe(sub);
+	await $.session.start(start()); // /reload-plugins
+	await until(clock, () => did.logs.includes("joined test-room-88 as nika"));
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+});

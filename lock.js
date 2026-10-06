@@ -117,13 +117,30 @@ const noSlash = (p) => String(p ?? "").replace(/[\\/]+$/, "");
  * "stale" may be cleared; any other skip is left for the client (or folder) it is for.
  * @param {any} j @param {{ agent: string, folder: string, now?: number }} me
  */
-export function acceptJoin(j, { agent, folder, now = Date.now() }) {
+// A folder as both sides write it: Git Bash's /c/x and Windows' C:\x are one folder; no trailing slash.
+const folderKey = (p) => {
+	if (typeof p !== "string" || !p) return "";
+	let s = p.replace(/\\/g, "/").replace(/^\/([A-Za-z])(?=\/|$)/, "$1:");
+	if (/^[A-Za-z]:/.test(s)) s = s.toLowerCase();
+	return s.replace(/\/+$/, "") || "/";
+};
+// The join file's folder is this one or, on this window's own start or reload (nested), one inside it:
+// the agent's shell may have cd'd into a subfolder. A poll takes only its own folder, so a window open
+// in ~ doesn't take every prompt pasted below it.
+export const sameFolder = (paths, folder, nested = false) => {
+	const here = folderKey(folder);
+	return !!here && paths.some((p) => {
+		const k = folderKey(p);
+		return !!k && (k === here || (nested && here !== "/" && k.startsWith(here + "/")));
+	});
+};
+export function acceptJoin(j, { agent, folder, nested = false, now = Date.now() }) {
 	if (!j || typeof j !== "object" || !j.agent) return { skip: "empty" };
 	const age = now / 1000 - Number(j.at);
 	if (!(age <= JOIN_FRESH_S)) return { skip: "stale" };
 	if (j.agent !== agent) return { skip: "agent" };
 	if (age < -5 * 60) return { skip: "future" };
-	if (!folder || ![j.cwd, j.pcwd].some((p) => p && noSlash(p) === noSlash(folder))) return { skip: "folder" };
+	if (!sameFolder([j.cwd, j.pcwd], folder, nested)) return { skip: "folder" };
 	const relay = noSlash(j.relay);
 	if (!isRoomCode(j.room) || !isName(j.name) || isPlaceholderName(j.name) || !isRelayUrl(relay)) return { skip: "invalid" };
 	return { room: j.room, name: j.name, relay };

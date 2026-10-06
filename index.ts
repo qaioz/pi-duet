@@ -172,9 +172,9 @@ export default function (pi: ExtensionAPI) {
 	// The site's prompt wrote ~/.duet/join.json for pi in this folder (lock.js), and the user typed
 	// /reload. Never over a room this window is in, or an env join (DUET_ROOM).
 	let joining = false;
-	async function fromJoinFile() {
+	async function fromJoinFile(nested = false) {
 		if (joining || sub || process.env.DUET_ROOM) return;
-		const j = takeJoinFile({ agent: "pi", folder: process.cwd() });
+		const j = takeJoinFile({ agent: "pi", folder: process.cwd(), nested });
 		if (!j) return;
 		joining = true;
 		await joinAs({ room: j.room, name: j.name, server: j.relay }, true).finally(() => (joining = false));
@@ -189,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 		clearInterval(poll);
 		poll = setInterval(() => void fromJoinFile().catch(() => {}), 2500);
 		poll.unref?.();
-		await fromJoinFile();
+		await fromJoinFile(true);
 		if (sub || !room || !name) return;
 		await joinRoom();
 		// A join from the environment (the site's "start fresh" command) says hello like /duet does.
@@ -230,6 +230,7 @@ export default function (pi: ExtensionAPI) {
 			if (parts[0] === "off") {
 				const owner = !sub && lockOwner();
 				if (owner) return notify(`duet: this window is not in the room; ${heldBy(owner)}`, "error"); // leave its settings alone
+				takeJoinFile({ agent: "pi", folder: process.cwd(), nested: true }); // leaving: a join file mustn't put the window straight back
 				leave();
 				// Forget the cursor too: rejoining later must not replay hours of backlog as turns.
 				updateConfig((c) => (delete c.cursors[cursorKey()], delete c.room, delete c.name));
@@ -240,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
 			if (isPlaceholderName(parts[1])) return notify(`duet: "${parts[1]}" is the website's placeholder: use your own name`, "error");
 			if (parts[2] && !isRelayUrl(parts[2].replace(/\/+$/, ""))) return notify("duet: the server must be an http(s) URL", "error");
-			takeJoinFile({ agent: "pi", folder: process.cwd() }); // newer than a pasted prompt's join file: that one goes
+			takeJoinFile({ agent: "pi", folder: process.cwd(), nested: true }); // newer than a pasted prompt's join file: that one goes
 			await joinAs({ room: parts[0], name: fitName(parts[1]), server: (parts[2] || process.env.DUET_SERVER || DEFAULT_SERVER).replace(/\/+$/, "") }, !!parts[2]);
 		},
 	});

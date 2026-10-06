@@ -444,16 +444,22 @@ async function hostedTests() {
 	// joins with its own token), never joined or kept here.
 	const d = client(h.url);
 	const askedRoom = `t-${randomUUID()}`;
+	// Anything the server publishes to that room (a join would be the first thing) is heard here.
+	const overheard = [];
+	const ear = subscribe({ server: SERVER, topic: topicFor(askedRoom), onEnvelope: (e) => overheard.push(e) });
+	await new Promise((r) => setTimeout(r, 800));
 	const toPanel = await d.model("duet_room", { room: askedRoom, name: "zura", seat: "nope" });
 	const badHosted = await d.model("duet_room", { room: "x!", name: "zura" });
 	const badHostedName = await d.model("duet_room", { room: askedRoom, name: "YOUR_NAME" });
-	const notJoined = data(await d.call("duet_room_state"));
+	await new Promise((r) => setTimeout(r, 2500));
+	ear.stop();
+	const meta = toPanel._meta?.["duet/join"] ?? {};
 	check(
-		"hosted: duet_room with room and name hands them to the panel (_meta duet/join) without joining or logging; a bad one: a clear refusal, no _meta",
-		toPanel._meta?.["duet/join"]?.room === askedRoom && toPanel._meta["duet/join"].name === "zura" && !toPanel.isError && !toPanel.content[0].text.includes(askedRoom) &&
+		"hosted: duet_room with room and name hands them to the panel (_meta duet/join, with a time and a one-time id) without joining (nothing reaches the room) or logging; a bad one: a clear refusal, no _meta",
+		meta.room === askedRoom && meta.name === "zura" && Math.abs(Date.now() - meta.at) < 60_000 && /^[0-9a-f]{16}$/.test(meta.id ?? "") && !toPanel.isError && !toPanel.content[0].text.includes(askedRoom) &&
 			badHosted.isError && /^Not joined · room code/.test(badHosted.content[0].text) && !badHosted._meta && badHostedName.isError && !badHostedName._meta &&
-			notJoined.inRoom === false && !h.logs().includes(askedRoom),
-		`${toPanel.content[0].text} / ${badHosted.content[0].text} / ${badHostedName.content[0].text}`,
+			overheard.length === 0 && !h.logs().includes(askedRoom),
+		`heard in the room: ${overheard.length} · ${toPanel.content[0].text} / ${badHosted.content[0].text} / ${badHostedName.content[0].text}`,
 	);
 
 	// Custody: the room code (or its topic hash, as good for reaching the room) and the panel tokens never

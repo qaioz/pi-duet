@@ -499,14 +499,17 @@ ${BRIDGE}
 	$("name").value = store("local", "duet-name");
 	// The local server's key for this panel: in duet_room's result (_meta), which the model doesn't see.
 	let key = store("session", "duet-key");
-	// The hosted server's room and name from duet_room (the user's own message): the panel joins with them,
-	// once per tab (a redrawn chat replays the result).
+	// The hosted server's room and name from duet_room (the user's own message): the panel joins with them
+	// once, and only within 10 minutes of the call. A redrawn or reopened chat replays the result: that
+	// doesn't join again, nor after a Leave (each result's id is remembered in this browser).
 	let autoJoin = null;
+	const usedJoins = () => store("local", "duet-auto").split(" ").filter(Boolean);
 	handlers["ui/notifications/tool-result"] = (r) => {
 		const k = r && r._meta && r._meta[${JSON.stringify(PANEL_KEY_META)}];
 		if (typeof k === "string" && k && k !== key) { key = k; store("session", "duet-key", k); if (ready) refresh(true); }
 		const j = r && r._meta && r._meta[${JSON.stringify(JOIN_META)}];
-		if (j && typeof j.room === "string" && typeof j.name === "string" && store("session", "duet-joined") !== j.room + " " + j.name) {
+		const fresh = j && (j.at === undefined || Math.abs(Date.now() - j.at) < 10 * 60_000) && !(j.id && usedJoins().includes(j.id));
+		if (fresh && typeof j.room === "string" && typeof j.name === "string" && store("session", "duet-joined") !== j.room + " " + j.name) {
 			autoJoin = j;
 			if (ready) joinAsked();
 		}
@@ -515,6 +518,7 @@ ${BRIDGE}
 		if (!autoJoin) return;
 		$("room").value = autoJoin.room; $("name").value = autoJoin.name;
 		store("session", "duet-joined", autoJoin.room + " " + autoJoin.name);
+		if (autoJoin.id) store("local", "duet-auto", [autoJoin.id, ...usedJoins()].slice(0, 20).join(" "));
 		autoJoin = null;
 		join();
 	}

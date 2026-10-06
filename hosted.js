@@ -398,7 +398,8 @@ async function callTool(name, a, ip) {
 			if (!isName(name) || isPlaceholderName(name)) return text("Not joined · name: letters, digits, . _ - · up to 40 · your user can type it into the panel", true);
 			return {
 				...text(`The duet panel is open in the chat and joins "${shortRoom(room)}" as ${name}. (If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)`),
-				_meta: { [JOIN_META]: { room, name } },
+				// Once and soon: a chat reopened later replays this result, and must not join again by itself.
+				_meta: { [JOIN_META]: { room, name, at: Date.now(), id: randomBytes(8).toString("hex") } },
 			};
 		}
 		// With the seat code (from the duet note in the model's context): how many wait and from whom, no text.

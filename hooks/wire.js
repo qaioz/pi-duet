@@ -42,7 +42,24 @@ export const isRoomCode = (room) =>
 // pcwd, at } with `at` in Unix seconds. What a client does with its text: "take" ({ room, name,
 // relay }), "clear" (stale: nobody will take it) or null (leave it: another client or folder may).
 export const JOIN_FRESH_S = 30 * 60;
-export function readJoinFile(text, agent, folder, nowMs) {
+// A folder as both sides write it: Git Bash's /c/x and Windows' C:\x are one folder; no trailing slash.
+const folderKey = (p) => {
+	if (typeof p !== "string" || !p) return "";
+	let s = p.replace(/\\/g, "/").replace(/^\/([A-Za-z])(?=\/|$)/, "$1:");
+	if (/^[A-Za-z]:/.test(s)) s = s.toLowerCase();
+	return s.replace(/\/+$/, "") || "/";
+};
+// The join file's folder is this one or, on this window's own start or reload (nested), one inside it:
+// the agent's shell may have cd'd into a subfolder. A poll takes only its own folder, so a window open
+// in ~ doesn't take every prompt pasted below it.
+export const sameFolder = (paths, folder, nested = false) => {
+	const here = folderKey(folder);
+	return !!here && paths.some((p) => {
+		const k = folderKey(p);
+		return !!k && (k === here || (nested && here !== "/" && k.startsWith(here + "/")));
+	});
+};
+export function readJoinFile(text, agent, folder, nowMs, nested = false) {
 	let j;
 	try {
 		j = JSON.parse(text);
@@ -53,9 +70,7 @@ export function readJoinFile(text, agent, folder, nowMs) {
 	const age = nowMs / 1000 - j.at;
 	if (age > JOIN_FRESH_S) return { clear: true };
 	if (age < -5 * 60 || j.agent !== agent) return null;
-	const bare = (p) => (typeof p === "string" ? p.replace(/[\\/]+$/, "") || "/" : null);
-	const here = bare(folder);
-	if (!here || (bare(j.cwd) !== here && bare(j.pcwd) !== here)) return null;
+	if (!sameFolder([j.cwd, j.pcwd], folder, nested)) return null;
 	if (!isRoomCode(j.room) || typeof j.name !== "string" || !j.name || isPlaceholderName(j.name) || (j.relay !== undefined && !isRelayUrl(j.relay))) return null;
 	return { take: { room: j.room, name: j.name, relay: j.relay } };
 }

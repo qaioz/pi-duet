@@ -682,8 +682,10 @@ async function joinFileTests() {
 		takes(good) && takes(good, "/real/proj/") && acceptJoin(good, { agent: "codex", folder: "/work/proj", now }).relay === "https://duet.example" &&
 			!takes({ ...good, agent: "claude-code" }) && acceptJoin({ ...good, at: at - 31 * 60 }, { agent: "codex", folder: "/work/proj", now }).skip === "stale" &&
 			!takes({ ...good, at: at + 10 * 60 }) && !takes(good, "/work/other") && !takes({ ...good, name: "YOUR_NAME" }) && !takes({ ...good, room: "a b" }) &&
-			!takes({ ...good, relay: "file:///x" }) && !takes({}),
-		"accepted for /work/proj and /real/proj/; refused for another agent, stale, future, another folder, a placeholder name, a bad room or relay, {}",
+			!takes({ ...good, relay: "file:///x" }) && !takes({}) &&
+			!takes({ ...good, cwd: "/work/proj/sub", pcwd: "/real/proj/sub" }) && !acceptJoin({ ...good, cwd: "/work/proj/sub", pcwd: "/real/proj/sub" }, { agent: "codex", folder: "/work/proj", nested: true, now }).skip &&
+			!acceptJoin({ ...good, cwd: "/d/w/proj", pcwd: "/d/w/proj" }, { agent: "codex", folder: "D:\\w\\proj", now }).skip,
+		"accepted for /work/proj and /real/proj/, a subfolder at session start, Git Bash /d/w/proj for D:\\w\\proj; refused for another agent, stale, future, another folder, a placeholder name, a bad room or relay, {}",
 	);
 
 	const session = async (tag, file, { poll = false } = {}) => {

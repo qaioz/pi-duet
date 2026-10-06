@@ -913,7 +913,7 @@ async function openPane($) {
 
 // Back in the room after a restart, without asking: the folder remembers its room until /duet off.
 async function autoRejoin($) {
-	if (room || !(await canDraw($))) return;
+	if (room || joinsInFlight || !(await canDraw($))) return;
 	const rec = await $.store.get("room:" + cwd);
 	if (!rec?.code) return;
 	await join($, rec.code, rec.name, "ask", true, rec.relay);
@@ -924,7 +924,7 @@ async function autoRejoin($) {
 // takes it too. A file for another agent or folder is left alone; a stale one is emptied.
 // The newest thing the user did wins: after a reload the window first takes up its room again, then a
 // join file pasted since moves it (switch); a /duet typed after the prompt empties the file (dropJoinFile).
-async function takeJoinFile($, switchRoom = false) {
+async function takeJoinFile($, switchRoom = false, nested = false) {
 	if ((room && !switchRoom) || joinsInFlight) return false;
 	const path = `${duetDir}/join.json`;
 	let text;
@@ -935,7 +935,7 @@ async function takeJoinFile($, switchRoom = false) {
 	} catch {
 		return false;
 	}
-	const got = readJoinFile(text, "claude-code", cwd, Date.now());
+	const got = readJoinFile(text, "claude-code", cwd, Date.now(), nested);
 	if (!got || (room && !switchRoom) || joinsInFlight) return false;
 	try {
 		await $.fs.write(path, "{}");
@@ -952,7 +952,7 @@ async function dropJoinFile($) {
 	const path = `${duetDir}/join.json`;
 	try {
 		if (!(await $.fs.exists(path))) return;
-		if (readJoinFile(String(await $.fs.read(path)), "claude-code", cwd, Date.now())) await $.fs.write(path, "{}");
+		if (readJoinFile(String(await $.fs.read(path)), "claude-code", cwd, Date.now(), true)) await $.fs.write(path, "{}");
 	} catch {}
 }
 
@@ -1309,12 +1309,12 @@ export function register(on) {
 			if (active && owner?.token === active.token && !owner.released) {
 				token = active.token;
 				void join($, active.code, active.name, active.mode, true, active.relay)
-					.then(() => takeJoinFile($, true))
+					.then(() => takeJoinFile($, true, true))
 					.catch(() => {});
 			} else if (envRoom) {
 				// Started as DUET_ROOM=<room> DUET_NAME=<name> claude (the website's line).
 				void join($, envRoom, envName || undefined, "ask", false).catch(() => {});
-			} else if (!(await takeJoinFile($).catch(() => false))) {
+			} else if (!(await takeJoinFile($, false, true).catch(() => false))) {
 				void autoRejoin($).catch(() => {});
 			}
 			watchJoin = true;
@@ -1419,6 +1419,7 @@ export function register(on) {
 		}
 		else if (LEAVE_WORDS.includes(arg)) {
 			joinEpoch++;
+			await dropJoinFile($); // leaving: a join file written meanwhile mustn't put the window straight back
 			if (room) void leave($, "left", true).catch(() => {});
 			else {
 				await $.store.delete("room:" + cwd);

@@ -553,9 +553,9 @@ async function rejoinFolder() {
 // The site's prompt wrote ~/.duet/join.json for Codex in this folder (lock.js): join from it, in ask
 // mode. Never over a room this session has; checked again every few seconds while it has none.
 let joinPoll;
-async function fromJoinFile() {
+async function fromJoinFile(nested = false) {
 	if (!PLUGIN || !isCodex() || room || joining || !folder || oneOffRun()) return false;
-	const j = takeJoinFile({ agent: "codex", folder });
+	const j = takeJoinFile({ agent: "codex", folder, nested });
 	if (!j) return false;
 	try {
 		await joinAsUser(j.room, j.name, j.relay);
@@ -697,7 +697,7 @@ const hookContext = (event, text) => (text ? JSON.stringify({ hookSpecificOutput
 
 async function hello(a) {
 	learn(a);
-	const fromFile = await fromJoinFile();
+	const fromFile = await fromJoinFile(true);
 	await rejoinFolder();
 	// A room from the command line (setup codex): a new session in a folder takes it from an older one there.
 	if (room && name && !sub) await joinRoom({ steal: !oneOffRun() });
@@ -1239,12 +1239,13 @@ async function callTool(tool, a, ctx) {
 			if (!a.name || isPlaceholderName(a.name)) throw new Error("No name · ask your user for their name in the room");
 			if (!isRelayUrl(s)) throw new Error("Relay: a plain http(s) URL only");
 			if (sub && r === room && n === name && s === server) return `Already in "${shortRoom(r)}" as ${n}`;
-			if (PLUGIN && folder) takeJoinFile({ agent: "codex", folder }); // newer than a pasted prompt's join file: that one goes
+			if (PLUGIN && folder) takeJoinFile({ agent: "codex", folder, nested: true }); // newer than a pasted prompt's join file: that one goes
 			await joinAsUser(r, n, s);
 			return `Joined "${shortRoom(r)}" as ${n} · ask · your user gives the other person the same code`;
 		}
 		case "duet_leave": {
 			needUser(ctx, "leaving the room happens");
+			if (PLUGIN && folder) takeJoinFile({ agent: "codex", folder, nested: true }); // leaving: a join file mustn't put the session straight back
 			if (!room) return "Not in a room";
 			leaveAsUser();
 			return "Left the room";

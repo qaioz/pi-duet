@@ -324,4 +324,10 @@ test("readJoinFile: own agent, fresh, this folder (cwd or pwd -P, trailing slash
 	assert.equal(wire.readJoinFile("not json", "claude-code", "/w/repo", now), null);
 	assert.equal(wire.readJoinFile("null", "claude-code", "/w/repo", now), null);
 	assert.ok(wire.readJoinFile(file({ cwd: "/", pcwd: "/" }), "claude-code", "/", now).take);
+	// Git Bash writes /c/x for C:\x; a subfolder counts on the window's own start or reload (nested) only.
+	assert.ok(wire.readJoinFile(file({ cwd: "/c/Users/Nika/repo", pcwd: "/c/Users/Nika/repo" }), "claude-code", "C:\\Users\\nika\\repo", now).take);
+	assert.equal(read({ cwd: "/w/repo/sub", pcwd: "/real/repo/sub" }), null);
+	assert.ok(wire.readJoinFile(file({ cwd: "/w/repo/sub", pcwd: "/real/repo/sub" }), "claude-code", "/w/repo", now, true).take);
+	assert.equal(wire.readJoinFile(file({ cwd: "/w/repository", pcwd: "/w/repository" }), "claude-code", "/w/repo", now, true), null);
+	assert.equal(wire.readJoinFile(file({ cwd: "/w/repo", pcwd: "/w/repo" }), "claude-code", "/", now, true), null); // / is no one's project
 });
