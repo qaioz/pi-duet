@@ -332,7 +332,7 @@ test("no fencing: a peer's request runs under the user's own permissions, every 
 	did.feeding = false;
 });
 
-test("gate 1: a card '<peer> · <via> · HH:MM' with 1 Do it / 2 Ignore; one press starts it at once", async ($, on) => {
+test("gate 1: a card '<peer> · <via> · HH:MM' with 1 Process / 2 Ignore / 3 Process and send; one press starts it at once", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
 	await join($, clock, "test-room-6 gaioz");
@@ -344,7 +344,8 @@ test("gate 1: a card '<peer> · <via> · HH:MM' with 1 Do it / 2 Ignore; one pre
 	expect(await band.find({ type: "Text", text: "karlo" })).toBeDefined();
 	expect(await band.find({ type: "Text", text: /^ · pi · \d\d:\d\d$/ })).toBeDefined();
 	expect(await band.find({ type: "Text", text: /please run the tests/ })).toBeDefined();
-	expect(await band.find({ key: "take" })).toMatchObject({ props: { label: "Do it", hotkey: "1" } });
+	expect(await band.find({ key: "take" })).toMatchObject({ props: { label: "Process", hotkey: "1" } });
+	expect(await band.find({ key: "take-send" })).toMatchObject({ props: { label: "Process and send", hotkey: "3" } });
 	expect(await band.find({ key: "ignore" })).toMatchObject({ props: { label: "Ignore", hotkey: "2" } });
 	await band.press({ key: "take" });
 	await band.unmount();
@@ -355,6 +356,187 @@ test("gate 1: a card '<peer> · <via> · HH:MM' with 1 Do it / 2 Ignore; one pre
 	// The spinner says whose turn it is.
 	const spin = await $.ui.mount({ plugin: "duet", component: "Spinner", surface: "terminal", props: { suffix: "" } } as any);
 	await spin.unmount();
+	did.feeding = false;
+});
+
+// ---------- Process and send: the user's OK for one reply ahead ----------
+
+// A request from karlo (in the room alone, or with \`others\`), taken with \`key\`, its turn started.
+async function taken($: any, on: any, roomName: string, key: string, others: string[] = []) {
+	const w = world(on, { feed: true });
+	await $.session.start(w.start());
+	await join($, w.clock, roomName + " gaioz");
+	for (const n of ["karlo", ...others]) w.did.push(joinOf(n));
+	w.did.push(msg("run the tests"));
+	await w.clock.advance(50);
+	await settle(w.clock);
+	await press($, w.clock, key);
+	await duetTurn($, w.did, w.clock, "p1");
+	return w;
+}
+const cardUp = async ($: any) => {
+	const band = await $.ui.mount(BAND as any);
+	const up = await band.find({ key: "send" });
+	await band.unmount();
+	return !!up;
+};
+
+test("Process keeps gate 2: the reply waits for Send", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps1", "take");
+	const { p } = await sendWaiting($, clock, { text: "2 failures" });
+	expect(await cardUp($)).toBe(true);
+	expect(msgPosts(did).length).toBe(0);
+	await press($, clock, "send");
+	expect(((await withClock(clock, p)) as any).result).toBe("Sent to karlo");
+	did.feeding = false;
+});
+
+test("Process and send: the linked reply goes out once with no gate 2 card; it shows in history; Claude reads 'Sent to karlo'", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps2", "take-send");
+	const r: any = await withClock(clock, $.tool.call({ tool: "mcp__duet__send", text: "2 failures" } as any));
+	expect(r.result).toBe("Sent to karlo");
+	// No `to`: what was OK'd goes to the sender only.
+	expect(msgPosts(did)[0].body).toMatchObject({ kind: "msg", text: "2 failures", to: "karlo", re: "id-run the tests" });
+	expect(did.toasts.join("\n")).not.toMatch(/reply to karlo waiting/);
+	expect(await cardUp($)).toBe(false);
+	// History: name · time · text.
+	await $.command.run({ command: "duet", args: "", origin: USER } as any);
+	await settle(clock, 4);
+	const pane = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+	expect(await pane.find({ type: "Text", text: "2 failures" })).toBeDefined();
+	await pane.unmount();
+	// A second send in the same turn waits at gate 2.
+	const { p } = await sendWaiting($, clock, { text: "one more thing" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	expect(((await withClock(clock, p)) as any).result).toMatch(/^Not sent/);
+	expect(msgPosts(did).length).toBe(1);
+	did.feeding = false;
+});
+
+test("Process and send: a send to someone else, or to the whole room, still waits; the reply to the sender doesn't", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps3", "take-send", ["nika"]);
+	let w = await sendWaiting($, clock, { text: "hi nika", to: "nika" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, w.p);
+	w = await sendWaiting($, clock, { text: "to everyone" }); // no `to`: reaches nika too
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, w.p);
+	expect(msgPosts(did).length).toBe(0);
+	const r: any = await withClock(clock, $.tool.call({ tool: "mcp__duet__send", text: "done", to: "karlo" } as any));
+	expect(r.result).toBe("Sent to karlo");
+	expect(msgPosts(did)[0].body).toMatchObject({ text: "done", to: "karlo", re: "id-run the tests" });
+	did.feeding = false;
+});
+
+test("Process and send ends with its turn: a later turn, and the next request, ask again", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps4", "take-send");
+	await $.turn.complete(done("p1"));
+	await settle(clock, 2);
+	// The user's own turn: not the request's.
+	await $.prompt.submit({ text: "anything", origin: USER } as any);
+	await $.turn.start({ turnId: "u1", text: "anything" } as any);
+	let w = await sendWaiting($, clock, { text: "late reply", to: "karlo" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, w.p);
+	await $.turn.complete(done("u1"));
+	await settle(clock, 2);
+	// The next request, taken with Process: gate 2 again.
+	did.push(msg("and the linter"));
+	await settle(clock);
+	await press($, clock, "take");
+	await duetTurn($, did, clock, "p2");
+	w = await sendWaiting($, clock, { text: "lint ok" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, w.p);
+	expect(msgPosts(did).length).toBe(0);
+	did.feeding = false;
+});
+
+test("Process and send can't be reached by Claude: the frame is the same as Process, and nothing in the tool's input skips gate 2", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps5", "take");
+	const w = await sendWaiting($, clock, { text: "x", preSend: true, preApproved: true, approved: true, user_asked: true });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, w.p);
+	expect(msgPosts(did).length).toBe(0);
+	await $.turn.complete(done("p1"));
+	await settle(clock, 2);
+	did.push(msg("run the linter"));
+	await settle(clock);
+	await press($, clock, "take-send");
+	const strip = (t: string) => t.replace(/\d\d?:\d\d(:\d\d)?( ?[AP]M)?/g, "").replace(/run the (tests|linter)/g, "REQ");
+	expect(strip(duetSubmits(did)[1])).toBe(strip(duetSubmits(did)[0]));
+	expect(duetSubmits(did)[1]).not.toMatch(/approv|pre-?send|without asking|and send/i);
+	did.feeding = false;
+});
+
+test("Process and send: a subagent the turn started may send the reply; one started before it (a background agent) waits", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps7", "take-send");
+	const bg = await sendWaiting($, clock, { text: "from an older agent", to: "karlo", agentId: "bg-old" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, bg.p);
+	await $.turn.start({ turnId: "sub-1", agentId: "sub-a", text: "subtask" } as any);
+	await settle(clock, 2);
+	const r: any = await withClock(clock, $.tool.call({ tool: "mcp__duet__send", text: "from the subagent", agentId: "sub-a" } as any));
+	expect(r.result).toBe("Sent to karlo");
+	expect(msgPosts(did).map((p: any) => p.body.text)).toEqual(["from the subagent"]);
+	did.feeding = false;
+});
+
+test("Process and send: a peer turn left over from a turn that isn't running gives no OK", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps8", "take-send");
+	// The user's own turn starts without turn.complete for the peer's (a missed event).
+	await $.prompt.submit({ text: "mine", origin: USER } as any);
+	await $.turn.start({ turnId: "u9", text: "mine" } as any);
+	const w = await sendWaiting($, clock, { text: "late", to: "karlo" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, w.p);
+	expect(msgPosts(did).length).toBe(0);
+	did.feeding = false;
+});
+
+test("Process and send: a turn duet can't match to its frame (text changed on the way) gets no OK ahead", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-ps6 gaioz");
+	did.push(joinOf("karlo"));
+	did.push(msg("run the tests"));
+	await settle(clock);
+	await press($, clock, "take-send");
+	await $.turn.start({ turnId: "p1", text: "something else entirely" } as any);
+	did.gates.shift()?.();
+	await settle(clock, 2);
+	const w = await sendWaiting($, clock, { text: "2 failures" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, w.p);
+	expect(msgPosts(did).length).toBe(0);
+	did.feeding = false;
+});
+
+test("our own name from another client (another computer): a toast and a history line, once; not a replay of our own older session", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-same gaioz");
+	// Sent before this window joined (our own earlier session, replayed): no warning.
+	did.push({ ...msg("old", "gaioz"), fromId: "old-me", ts: new Date(Date.now() - 600_000).toISOString() });
+	did.push({ ...joinOf("gaioz"), fromId: "other-gaioz", via: "chat" });
+	did.push({ ...msg("hi", "Gaioz"), fromId: "other-gaioz" });
+	await settle(clock);
+	const warns = did.toasts.filter((t: string) => /another gaioz/.test(t));
+	expect(warns).toEqual(["duet: another gaioz is in this room (chat panel) · use another name"]);
+	await $.command.run({ command: "duet", args: "", origin: USER } as any);
+	await settle(clock, 4);
+	const pane = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+	expect(await pane.find({ type: "Text", text: /another gaioz is in this room \(chat panel\) · use another name/ })).toBeDefined();
+	await pane.unmount();
 	did.feeding = false;
 });
 

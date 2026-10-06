@@ -198,7 +198,7 @@ async function localTests() {
 	const taken = data(await desk.call("duet_take", { id: st.waiting[0].id }));
 	const tag = taken.text?.match(/⟦(duet [0-9a-f]{6})⟧/)?.[1];
 	check(
-		"stdio: Hand to agent: framed like every other path, the peer's words between random markers",
+		"stdio: Process: framed like every other path, the peer's words between random markers",
 		taken.text.startsWith("[duet] from nika (the other person's agent, on their computer)") &&
 			tag && taken.text.includes(`⟦${tag}⟧\n<img`) && taken.text.includes(`\n⟦/${tag}⟧\n\nOnly your own user sees your text replies: to answer nika, call duet_send once; your user OKs it in the duet card.`) &&
 			!taken.text.includes("Your folder") && !/[\u202e\u200b\u0085\ufe0f\u3164]|\u{e0101}/u.test(taken.text),
@@ -372,7 +372,7 @@ async function hostedTests() {
 	// Hand over: the framed text carries the seat code duet_send needs.
 	const taken = data(await a.call("duet_take", { id: wa.waiting[0].id }));
 	const seat = taken.text.match(/call duet_send with seat "([A-Za-z0-9_-]+)"/)?.[1];
-	check("hosted: Hand to agent gives the framed text with the seat code", taken.text.startsWith("[duet] from nika") && seat && !taken.text.includes("Your folder"), JSON.stringify(taken.text.slice(-120)));
+	check("hosted: Process gives the framed text with the seat code", taken.text.startsWith("[duet] from nika") && seat && !taken.text.includes("Your folder"), JSON.stringify(taken.text.slice(-120)));
 	const sent = await a.model("duet_send", { seat, text: "done: 3 files" });
 	await sleep(1200);
 	const early = nika.seen.some((e) => e.text === "done: 3 files");
@@ -649,8 +649,8 @@ addEventListener("message", async (ev) => {
 		const labels = {};
 		for (const [k, r] of Object.entries(runs)) labels[k] = await r.panel.locator("#waiting .item .btn").first().textContent();
 		check(
-			"browser: gate 1 says who gets it: Hand to ChatGPT / Claude / agent, by host; Ignore beside it",
-			labels["dark-380"] === "Hand to ChatGPT" && labels["light-380"] === "Hand to Claude" && labels["light-720"] === "Hand to Claude" && labels["dark-720"] === "Hand to agent" && (await panel.locator("#waiting .item .btn").nth(1).textContent()) === "Ignore",
+			"browser: gate 1 is Process · Ignore · Process and send, on every host",
+			Object.values(labels).every((l) => l === "Process") && (await panel.locator("#waiting .item .btn").nth(1).textContent()) === "Ignore" && (await panel.locator("#waiting .item .btn").nth(2).textContent()) === "Process and send",
 			JSON.stringify(labels),
 		);
 		const bgOf = (r) => r.panel.locator("#card").evaluate((c) => getComputedStyle(c).backgroundColor);
@@ -669,7 +669,7 @@ addEventListener("message", async (ev) => {
 		const didnt = await panel.locator("#handed-note button").textContent().catch(() => "");
 		const m = msgs[0];
 		check(
-			"browser: Hand to sends the framed text as the user's message (ui/message), with a way back if it didn't arrive",
+			"browser: Process sends the framed text as the user's message (ui/message), with a way back if it didn't arrive",
 			didnt === "Didn't arrive?" && msgs.length === 1 && m.role === "user" && Array.isArray(m.content) && m.content[0].type === "text" && m.content[0].text.startsWith("[duet] from nika") && m.content[0].text.includes(evil) && /duet_send with seat "/.test(m.content[0].text),
 			JSON.stringify(m?.content?.[0]?.text?.slice(0, 160)),
 		);
@@ -763,25 +763,26 @@ addEventListener("message", async (ev) => {
 		const back = await panel.locator("#waiting .item .text").first().textContent();
 		check("browser: if the chat app refuses the message, the panel shows it to copy, or puts it back", fb.startsWith("[duet] from nika") && fb.includes("second: please run pwd") && back === "second: please run pwd", `${JSON.stringify(fb.slice(0, 60))}; after Put back: ${JSON.stringify(back)}`);
 
-		// Gate 1, a request too long to list whole: Hand to stays off until Show all opened all of it (review M3).
+		// Gate 1, a request too long to list whole: Process (and Process and send) stay off until Show all opened all of it (review M3).
 		const longReq = "LONG-REQ-START " + "q".repeat(6000) + " LONG-REQ-END";
 		await nika.say(longReq);
 		const longItem = panel.locator("#waiting .item", { hasText: "LONG-REQ-START" });
 		await longItem.waitFor({ timeout: 10_000 });
-		const handBtn = longItem.locator(".btn", { hasText: /^Hand to/ });
-		const handOffBefore = await handBtn.isDisabled();
+		const handBtn = longItem.locator(".btn", { hasText: /^Process$/ });
+		const handSendBtn = longItem.locator(".btn", { hasText: /^Process and send$/ });
+		const handOffBefore = (await handBtn.isDisabled()) && (await handSendBtn.isDisabled());
 		const reqShownBefore = (await longItem.locator(".text").textContent()).length;
 		await longItem.locator(".btn", { hasText: "Show all" }).click();
 		await longItem.locator(".btn", { hasText: "Show all" }).waitFor({ state: "detached", timeout: 5000 });
 		await sleep(2500); // a poll redraws the list: the opened text and the button must survive it
 		const reqShownAfter = await longItem.locator(".text").textContent();
-		const handOnAfter = !(await handBtn.isDisabled());
+		const handOnAfter = !(await handBtn.isDisabled()) && !(await handSendBtn.isDisabled());
 		await longItem.locator(".btn", { hasText: "Ignore" }).click();
 		await longItem.waitFor({ state: "detached", timeout: 10_000 });
 		check(
-			"browser: a long request in the panel: Hand to is off until Show all shows all of it",
+			"browser: a long request in the panel: Process and Process and send are off until Show all shows all of it",
 			handOffBefore && reqShownBefore < longReq.length && reqShownAfter === longReq && handOnAfter,
-			`Hand to off before: ${handOffBefore} (${reqShownBefore} of ${longReq.length} shown); after Show all: ${reqShownAfter.length} shown, Hand to on: ${handOnAfter}`,
+			`both off before: ${handOffBefore} (${reqShownBefore} of ${longReq.length} shown); after Show all: ${reqShownAfter.length} shown, both on: ${handOnAfter}`,
 		);
 
 		// Gate 2: the reply card (duet_send's view), drawn by the host with the tool's input and result.
@@ -843,6 +844,50 @@ addEventListener("message", async (ev) => {
 		await twin.close();
 		nika.stop();
 
+		// Check: the room now; nothing waiting says so; a waiting request is brought into view. Then
+		// Process and send: the reply to it goes out with no card; the agent's note says only who waits.
+		{
+			const psRoom = `t-${randomUUID()}`;
+			const ana = peer(psRoom, "ana");
+			const r = await open({ theme: "light", width: 380, hostName: "Claude" });
+			await joinPanel(r.panel, psRoom, "pia", r.errors);
+			await r.panel.locator("#check").click();
+			const none = await r.panel.locator("#none-waiting").textContent();
+			const noneFlash = await r.panel.locator("#none-waiting.flash").count();
+			await sleep(500);
+			await ana.say("PS-BROWSER-REQ secret words");
+			await r.panel.locator("#check").click();
+			await r.panel.locator("#waiting .item").first().waitFor({ timeout: 10_000 });
+			const flash = await r.panel.locator("#waiting .item.flash").count();
+			await shot(r.page, "panel-process-and-send-light-380.png");
+			const ctx = await until(async () => (await r.page.evaluate(() => window.contexts.map((c) => c.content[0].text))).find((t) => t.includes("1 waiting · from ana")), 10_000, "note with the count").catch(() => "");
+			await r.panel.locator("#waiting .item .btn", { hasText: /^Process and send$/ }).click();
+			await until(() => r.page.evaluate(() => window.messages.length), 10_000, "ui/message");
+			const handed = (await r.page.evaluate(() => window.messages[0].content[0].text));
+			const psSeat = handed.match(/seat "([^"]+)"/)[1];
+			const pcl = client(h.url);
+			const out = await pcl.model("duet_send", { seat: psSeat, text: "PS-BROWSER-REPLY" });
+			const arrived = await until(() => ana.seen.find((e) => e.text === "PS-BROWSER-REPLY"), 10_000, "reply at ana").catch(() => null);
+			const c = await open({ theme: "light", width: 380, hostName: "Claude", src: cardHtml, tool: { args: { seat: psSeat, text: "PS-BROWSER-REPLY" }, result: out } });
+			await c.panel.locator("#status", { hasText: "Sent" }).waitFor({ timeout: 10_000 });
+			const cardTitle = await c.panel.locator("#title").textContent();
+			const cardActs = await c.panel.locator("#acts.hidden").count();
+			await shot(c.page, "card-sent-by-process-and-send-light-380.png");
+			check(
+				"browser: Check says Nothing waiting, then brings a waiting request into view; the agent's note says how many and from whom, not what",
+				none === "Nothing waiting" && noneFlash === 1 && flash === 1 && !!ctx && !ctx.includes("secret words") && !ctx.includes("PS-BROWSER-REQ"),
+				`none: ${none} (flash ${noneFlash}); waiting flash: ${flash}; note: ${JSON.stringify(ctx.slice(0, 160))}`,
+			);
+			check(
+				"browser: Process and send: the reply goes out with no Send click; the card shows it sent",
+				out.content[0].text === "Sent to ana" && !out._meta?.["duet/hold"] && !!arrived && cardTitle === "Sent to ana" && cardActs === 1 && !handed.includes("and send") && !r.errors.length && !c.errors.length,
+				`duet_send: ${out.content[0].text}; at ana: ${!!arrived}; card: ${cardTitle}; errors: ${JSON.stringify([...r.errors, ...c.errors])}`,
+			);
+			ana.stop();
+			await r.page.close();
+			await c.page.close();
+		}
+
 		// The local server (mcp.js over stdio, as Claude Desktop runs it): the panel gets its key from
 		// duet_room's result (_meta) and works with it; a panel with no key gets nothing from the room.
 		const sd = stdio("browser-stdio", { args: ["--folder="] });
@@ -885,6 +930,168 @@ addEventListener("message", async (ev) => {
 	}
 }
 
+// ---------- Process and send, "check", the same name: stdio and hosted ----------
+
+async function presendTests() {
+	// stdio (Claude Desktop's chat): a short OK-ahead window here, to see it end.
+	const sd = stdio("presend", { args: ["--folder="], env: { DUET_PRESEND_MS: "4000" } });
+	await sd.init("claude-ai", UI_CAPS);
+	await sd.open();
+	const room = `t-${randomUUID()}`;
+	const nika = peer(room, "nika");
+	const dato = peer(room, "dato");
+	await sd.call("duet_room_join", { room, name: "gaioz" });
+	await until(async () => data(await sd.call("duet_room_state")).connected, 15_000, "connected");
+	await sleep(500);
+	await dato.say("DATO-HELLO");
+	const waitFor = async (what) => until(async () => data(await sd.call("duet_room_state")).waiting.find((m) => m.text.includes(what)), 10_000, what);
+	let w = await waitFor("DATO-HELLO");
+	await sd.call("duet_ignore", { id: w.id });
+	await nika.say("PS-REQ-1 secret words");
+	w = await waitFor("PS-REQ-1");
+	// "check": the model learns how many and from whom, never the text.
+	const roomText = (await sd.call("duet_room")).content[0].text;
+	const inboxText = (await sd.call("duet_inbox")).content[0].text;
+	const note = data(await sd.call("duet_room_state")).modelNote;
+	const desc = (await sd.request("tools/list")).result.tools.find((t) => t.name === "duet_room").description;
+	check(
+		"stdio: check: duet_room, duet_inbox and the panel's note say '1 waiting · from nika · Process it in the duet panel', none of the request's text",
+		roomText.includes("1 waiting · from nika · Process it in the duet panel") && inboxText === "1 waiting · from nika · Process it in the duet panel" && note.includes("1 waiting · from nika") &&
+			![roomText, inboxText, note].some((t) => t.includes("PS-REQ-1") || t.includes("secret")) && /check, check duet, anything new/.test(desc),
+		`duet_room: ${JSON.stringify(roomText)}; duet_inbox: ${JSON.stringify(inboxText)}`,
+	);
+	// The model can't take a request (no key), with or without send.
+	const bareTake = await sd.bare("duet_take", { id: w.id, send: true });
+	const taken = data(await sd.call("duet_take", { id: w.id, send: true }));
+	const toDato = await sd.bare("duet_send", { text: "PS-TO-DATO", to: "dato" });
+	const toAll = await sd.bare("duet_send", { text: "PS-TO-ALL" }); // no `to`: two others in the room
+	const linked = await sd.bare("duet_send", { text: "PS-REPLY-1", to: "nika" });
+	const second = await sd.bare("duet_send", { text: "PS-SECOND", to: "nika" });
+	const got = await until(() => nika.seen.find((e) => e.text === "PS-REPLY-1"), 10_000, "PS-REPLY-1 at nika").catch(() => null);
+	const reqId = nika.seen.find((e) => e.text?.startsWith("PS-REQ-1"))?.id;
+	const held = (r) => r.content[0].text === "Waiting for your OK in the duet card" && typeof r._meta?.["duet/hold"] === "string";
+	check(
+		"stdio: Process and send: the linked reply to nika goes out at once (no card); to dato, to everyone, and a second send wait for Send",
+		bareTake.isError && taken.text.startsWith("[duet] from nika") && !/and send|approv/i.test(taken.text) &&
+			linked.content[0].text === "Sent to nika" && !linked._meta?.["duet/hold"] && got?.re === reqId && held(toDato) && held(toAll) && held(second),
+		`model's take: ${bareTake.isError ? "refused" : "taken"}; linked: ${linked.content[0].text}, re ok: ${got?.re === reqId}; dato/all/second held: ${held(toDato)}/${held(toAll)}/${held(second)}`,
+	);
+	for (const r of [toDato, toAll, second]) await sd.call("duet_reply", { id: r._meta["duet/hold"], action: "drop" });
+	// Process keeps gate 2; the OK ahead doesn't carry to the next request; nothing in duet_send's arguments makes one.
+	await nika.say("PS-REQ-2");
+	w = await waitFor("PS-REQ-2");
+	await sd.call("duet_take", { id: w.id });
+	const processed = await sd.bare("duet_send", { text: "PS-PROCESS", to: "nika", send: true, preSend: true, approved: true, user_asked: true });
+	// Unlinked: OK'd ahead, but another message from nika came after it: the reply answers that one.
+	await nika.say("PS-REQ-3");
+	w = await waitFor("PS-REQ-3");
+	await sd.call("duet_take", { id: w.id, send: true });
+	await nika.say("PS-REQ-4");
+	await waitFor("PS-REQ-4");
+	const unlinked = await sd.bare("duet_send", { text: "PS-UNLINKED", to: "nika" });
+	// Expired: OK'd ahead, the reply comes after the window.
+	const w4 = await waitFor("PS-REQ-4");
+	await sd.call("duet_take", { id: w4.id, send: true });
+	await sleep(4500);
+	const late = await sd.bare("duet_send", { text: "PS-LATE", to: "nika" });
+	await sleep(1500);
+	const leaked = nika.seen.some((e) => ["PS-TO-ALL", "PS-SECOND", "PS-PROCESS", "PS-UNLINKED", "PS-LATE"].includes(e.text)) || dato.seen.some((e) => e.text === "PS-TO-DATO" || e.text === "PS-TO-ALL");
+	check(
+		"stdio: Process keeps the card (whatever duet_send's arguments say); a reply not linked to the OK'd request, or after its window, waits; nothing held leaked",
+		held(processed) && held(unlinked) && held(late) && !leaked,
+		`Process: held ${held(processed)}; unlinked: held ${held(unlinked)}; late: held ${held(late)}; leaked: ${leaked}`,
+	);
+	// An OK not used yet: a later Process (another request) clears it; so does Put back.
+	await nika.say("PS-REQ-5");
+	const w5 = await waitFor("PS-REQ-5");
+	await sd.call("duet_take", { id: w5.id, send: true });
+	await nika.say("PS-REQ-6");
+	const w6 = await waitFor("PS-REQ-6");
+	await sd.call("duet_take", { id: w6.id, undo: false }); // Process: no OK for anything
+	await sd.call("duet_take", { id: w6.id, undo: true }); // put PS-REQ-6 back (the reply would answer it anyway)
+	await sd.call("duet_ignore", { id: w6.id });
+	const afterProcess = await sd.bare("duet_send", { text: "PS-AFTER-PROCESS", to: "nika" });
+	await nika.say("PS-REQ-7");
+	const w7 = await waitFor("PS-REQ-7");
+	await sd.call("duet_take", { id: w7.id, send: true });
+	await sd.call("duet_take", { id: w7.id, undo: true }); // Put back: the OK goes with it
+	const afterPutBack = await sd.bare("duet_send", { text: "PS-AFTER-PUTBACK", to: "nika" });
+	await sleep(1500);
+	check(
+		"stdio: an OK not used yet is cleared by a later Process and by Put back",
+		held(afterProcess) && held(afterPutBack) && !nika.seen.some((e) => e.text === "PS-AFTER-PROCESS" || e.text === "PS-AFTER-PUTBACK"),
+		`after Process: held ${held(afterProcess)}; after Put back: held ${held(afterPutBack)}`,
+	);
+	// Our own name from another client: a warning line in the panel.
+	await publish(SERVER, topicFor(room), envelope({ fromId: "other-gaioz", from: "Gaioz", kind: "join", via: "claude-code" }));
+	const warned = await until(async () => data(await sd.call("duet_room_state")).warnings.find((t) => t.startsWith("another gaioz")), 10_000, "same-name warning").catch(() => "");
+	check("stdio: same name from another client: the panel warns 'another gaioz is in this room (Claude Code) · use another name'", warned === "another gaioz is in this room (Claude Code) · use another name", warned);
+	nika.stop();
+	dato.stop();
+	sd.stop();
+
+	// hosted: the same, per seat.
+	const h = await hosted();
+	const a = client(h.url);
+	const hroom = `t-${randomUUID()}`;
+	const lev = peer(hroom, "lev");
+	const joined = data(await a.call("duet_room_join", { room: hroom, name: "maya" }));
+	const hseat = joined.modelNote.match(/seat "([^"]+)"/)[1];
+	await until(async () => data(await a.call("duet_room_state")).connected, 15_000, "hosted connected");
+	await sleep(500);
+	await lev.say("H-REQ-1 secret words");
+	const hw = await until(async () => data(await a.call("duet_room_state")).waiting[0], 10_000, "hosted request");
+	const hRoom = (await a.model("duet_room", { seat: hseat })).content[0].text;
+	const hNote = data(await a.call("duet_room_state")).modelNote;
+	const hDesc = (await a.request("tools/list")).result.tools.find((t) => t.name === "duet_room");
+	check(
+		"hosted: check: duet_room with the seat code and the panel's note say '1 waiting · from lev', none of the text",
+		hRoom.includes("1 waiting · from lev · Process it in the duet panel") && hNote.includes("1 waiting · from lev") && ![hRoom, hNote].some((t) => t.includes("H-REQ-1") || t.includes("secret")) && !!hDesc.inputSchema.properties.seat,
+		JSON.stringify(hRoom),
+	);
+	const hTaken = data(await a.call("duet_take", { id: hw.id, send: true }));
+	const hOther = await a.model("duet_send", { seat: hseat, text: "H-TO-ANA", to: "ana" });
+	const hLinked = await a.model("duet_send", { seat: hseat, text: "H-REPLY-1" });
+	const hSecond = await a.model("duet_send", { seat: hseat, text: "H-SECOND" });
+	const hGot = await until(() => lev.seen.find((e) => e.text === "H-REPLY-1"), 10_000, "H-REPLY-1").catch(() => null);
+	const hReq = lev.seen.find((e) => e.text?.startsWith("H-REQ-1"))?.id;
+	const hHistory = data(await a.call("duet_room_state")).history.some((m) => m.mine && m.text === "H-REPLY-1");
+	await lev.say("H-REQ-2");
+	const hw2 = await until(async () => data(await a.call("duet_room_state")).waiting[0], 10_000, "hosted request 2");
+	await a.call("duet_take", { id: hw2.id });
+	const hProcessed = await a.model("duet_send", { seat: hseat, text: "H-PROCESS", send: true });
+	await sleep(1500);
+	const hLeak = lev.seen.some((e) => ["H-SECOND", "H-PROCESS", "H-TO-ANA"].includes(e.text));
+	check(
+		"hosted: Process and send: the linked reply goes out once (no card, in the conversation); to someone else, a second send and a Process request wait",
+		hTaken.text.includes("H-REQ-1") && hLinked.content[0].text === "Sent to lev" && !hLinked._meta && hGot?.re === hReq && hHistory &&
+			hOther._meta?.["duet/hold"] && hSecond._meta?.["duet/hold"] && hProcessed._meta?.["duet/hold"] && !hLeak,
+		`linked: ${hLinked.content[0].text} (re ok ${hGot?.re === hReq}, in history ${hHistory}); other/second/Process held: ${!!hOther._meta}/${!!hSecond._meta}/${!!hProcessed._meta}; leaked: ${hLeak}`,
+	);
+	// Our own name from another client.
+	await publish(SERVER, topicFor(hroom), envelope({ fromId: "other-maya", from: "maya", kind: "join", via: "claude-code" }));
+	const hWarn = await until(async () => data(await a.call("duet_room_state")).warnings.find((t) => t.startsWith("another maya")), 10_000, "hosted same-name").catch(() => "");
+	check("hosted: same name from another client: the panel warns", hWarn === "another maya is in this room (Claude Code) · use another name", hWarn);
+	// Claude Code (claude.ai's connectors synced in): no duet tools from here; the plugin is the way.
+	const cc = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "claude-code", version: "2.1.290" } } }) });
+	const sid = cc.headers.get("mcp-session-id");
+	const ccPost = (body, id = sid) => fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json", ...(id ? { "mcp-session-id": id } : {}) }, body: JSON.stringify(body) });
+	const ccTools = await (await ccPost({ jsonrpc: "2.0", id: 2, method: "tools/list" })).json();
+	const ccCall = await (await ccPost({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "duet_send", arguments: { seat: hseat, text: "CC-SEND" } } })).json();
+	const stale = await ccPost({ jsonrpc: "2.0", id: 4, method: "tools/list" }, "not-a-session");
+	const aiInit = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: UI_CAPS, clientInfo: { name: "claude-ai", version: "1" } } }) });
+	const claudeAi = { result: (await aiInit.json()).result, sid: aiInit.headers.get("mcp-session-id") };
+	const aiTools = (await a.request("tools/list")).result.tools.length;
+	await sleep(1000);
+	check(
+		"hosted: Claude Code gets no duet tools (empty list; a call is refused: use the duet plugin); other clients get no session id and all tools",
+		!!sid && ccTools.result.tools.length === 0 && ccCall.result.isError && ccCall.result.content[0].text === "duet: use the duet plugin in Claude Code" && !lev.seen.some((e) => e.text === "CC-SEND") && stale.status === 404 && !!claudeAi.result && claudeAi.sid === null && aiTools > 3,
+		`session: ${!!sid}; tools: ${ccTools.result.tools.length}; call: ${ccCall.result.content[0].text}; unknown session: ${stale.status}; claude-ai tools: ${aiTools}`,
+	);
+	lev.stop();
+	h.proc.kill();
+}
+
 // The Claude Desktop installs: the bundle on the site holds today's server, and setup writes the app's config.
 async function installTests() {
 	const { execFileSync } = await import("node:child_process");
@@ -923,6 +1130,7 @@ try {
 	await installTests();
 	await localTests();
 	await hostedTests();
+	await presendTests();
 	await browserTests();
 } catch (err) {
 	check("harness", false, err.stack);

@@ -123,7 +123,7 @@ The panel keeps the code (Copy) and remembers your name.</p>
 <tr>
 <td>Request in</td>
 <td>the panel</td>
-<td><strong>Hand to Claude</strong> / <strong>Hand to ChatGPT</strong> / <strong>Hand to agent</strong> · <strong>Ignore</strong></td>
+<td><strong>Process</strong> · <strong>Ignore</strong> · <strong>Process and send</strong></td>
 </tr>
 <tr>
 <td>Reply out</td>
@@ -135,14 +135,16 @@ The panel keeps the code (Copy) and remembers your name.</p>
 <ul>
 <li>Gate 2: <code dir="auto">duet_send</code> draws its own card with the full reply. The server holds the message until you click.
 The model is told “Waiting for your OK in the duet card” and doesn’t resend.</li>
-<li>A long request shows its start · <strong>Hand to</strong> waits for <strong>Show all</strong>.</li>
+<li><strong>Process and send</strong>: the reply to that request goes out without the card’s Send · once · 15 min.</li>
+<li><strong>Check</strong> (panel) or “check” (chat): what waits, and from whom · your agent never reads a request before you click.</li>
+<li>A long request shows its start · <strong>Process</strong> waits for <strong>Show all</strong>.</li>
 <li>Hidden characters are removed, here and in what your agent gets: <code dir="auto">[hidden characters removed]</code>.</li>
 <li><strong>Conversation · N</strong>: one row · opens the room’s history.</li>
 <li>Nothing starts your agent by itself: no chat app lets a panel start the model.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="apps-that-draw-no-panel">Apps that draw no panel</h2><a class="sl-anchor-link" href="#apps-that-draw-no-panel"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Apps that draw no panel”</span></a></div>
-<p>Goose CLI and other hosts without MCP Apps: say “check duet”. With forms, each request asks <strong>Do it</strong> /
-<strong>Ignore</strong> first. No forms: in ask, requests wait unread · start duet with <code dir="auto">--mode auto</code> to take them.
+<p>Goose CLI and other hosts without MCP Apps: say “check duet”. With forms, each request asks <strong>Process</strong> /
+<strong>Process and send</strong> / <strong>Ignore</strong> first. No forms: in ask, requests wait unread · start duet with <code dir="auto">--mode auto</code> to take them.
 There is no card for gate 2 there, so read what your agent sends.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-hosted-server">The hosted server</h2><a class="sl-anchor-link" href="#the-hosted-server"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The hosted server”</span></a></div>
 <p><code dir="auto">mcp-duet.gaioz.online</code>, run by duet’s author, for apps that only reach public HTTPS servers.</p>

@@ -25,20 +25,22 @@ The panel keeps the code (Copy) and remembers your name.
 
 | | Where | Choices |
 |---|---|---|
-| Request in | the panel | **Hand to Claude** / **Hand to ChatGPT** / **Hand to agent** · **Ignore** |
+| Request in | the panel | **Process** · **Ignore** · **Process and send** |
 | Reply out | a duet card in the chat | **Send** · **Don't send** |
 
 - Gate 2: `duet_send` draws its own card with the full reply. The server holds the message until you click.
   The model is told "Waiting for your OK in the duet card" and doesn't resend.
-- A long request shows its start · **Hand to** waits for **Show all**.
+- **Process and send**: the reply to that request goes out without the card's Send · once · 15 min.
+- **Check** (panel) or "check" (chat): what waits, and from whom · your agent never reads a request before you click.
+- A long request shows its start · **Process** waits for **Show all**.
 - Hidden characters are removed, here and in what your agent gets: `[hidden characters removed]`.
 - **Conversation · N**: one row · opens the room's history.
 - Nothing starts your agent by itself: no chat app lets a panel start the model.
 
 ## Apps that draw no panel
 
-Goose CLI and other hosts without MCP Apps: say "check duet". With forms, each request asks **Do it** /
-**Ignore** first. No forms: in ask, requests wait unread · start duet with `--mode auto` to take them.
+Goose CLI and other hosts without MCP Apps: say "check duet". With forms, each request asks **Process** /
+**Process and send** / **Ignore** first. No forms: in ask, requests wait unread · start duet with `--mode auto` to take them.
 There is no card for gate 2 there, so read what your agent sends.
 
 ## The hosted server

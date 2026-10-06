@@ -94,7 +94,7 @@ function setupClaudeDesktop() {
 		off
 			? `duet removed from ${path}. Quit and reopen Claude Desktop.`
 			: `duet added to ${path}${room ? ` (room ${room.slice(0, 4)}…, name ${name})` : ""}. Quit and reopen Claude Desktop, then ask in a chat: "open duet". ` +
-					"The duet panel shows the room; a request reaches Claude only when you click Hand to agent (Claude Desktop puts it in your message box: press Enter).",
+					"The duet panel shows the room; a request reaches Claude only when you click Process (Claude Desktop puts it in your message box: press Enter).",
 	);
 }
 

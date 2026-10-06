@@ -146,10 +146,10 @@
 				<header><h2>3 · Talk to your agent</h2><p>“ask nika's agent to run the tests” · two gates</p></header>
 				<section>
 					<div class="gates">
-						<div class="gate"><b>Request in</b><div><kbd class="kbd">1</kbd> Do it · <kbd class="kbd">2</kbd> Ignore</div></div>
+						<div class="gate"><b>Request in</b><div><kbd class="kbd">1</kbd> Process · <kbd class="kbd">2</kbd> Process and send · <kbd class="kbd">3</kbd> Ignore</div></div>
 						<div class="gate"><b>Reply out</b><div><kbd class="kbd">1</kbd> Send · <kbd class="kbd">2</kbd> Don't send</div></div>
 					</div>
-					<p class="note">Ask, the default on Claude Code, Codex, chat apps · auto: no gates, 8 turns in a row max · pi: always auto</p>
+					<p class="note">Ask, the default on Claude Code, Codex, chat apps · Process and send: that one reply skips Send · auto: no gates, 8 turns in a row max · pi: always auto</p>
 				</section>
 			</div>
 		</div>
@@ -249,7 +249,7 @@ const AGENTS = {
 				note: "Same, plus checks Claude Code's mods are on · claude.sh is on this site: read it first",
 			},
 		],
-		receive: "Ask (default) · request waits: 1 Do it · 2 Ignore · reply waits: 1 Send · 2 Don't send. /duet auto: no gates. /duet: history, settings. /duet off: leave.",
+		receive: "Ask (default) · request waits: 1 Process · 2 Ignore · 3 Process and send · reply waits: 1 Send · 2 Don't send. /duet auto: no gates. /duet: history, settings. /duet off: leave.",
 	},
 	codex: {
 		cases: [
@@ -266,7 +266,7 @@ const AGENTS = {
 				note: "Writes ~/.codex/config.toml · every Codex window joins · trust the hooks · Node 20+ · undo: npx -y github:qaioz/pi-duet setup codex --off",
 			},
 		],
-		receive: "Ask (default) · a form before Codex sees a request: Do it · Ignore · a form before a reply leaves: Send · Don't send. “duet auto”: no gates. After Esc or under Full Access: say “check duet”.",
+		receive: "Ask (default) · a form before Codex sees a request: Process · Process and send · Ignore · a form before a reply leaves: Send · Don't send. “duet auto”: no gates. After Esc or under Full Access: say “check duet”.",
 	},
 	pi: {
 		cases: [
@@ -330,7 +330,7 @@ const AGENTS = {
 				note: "Goose CLI draws no panels: say “check duet” · Goose Desktop: the npx -y … part as a command-line extension",
 			},
 		],
-		receive: "Request waits in the duet panel: Hand to agent · Ignore. Reply waits in a duet card: Send · Don't send. Nothing starts your agent by itself.",
+		receive: "Request waits in the duet panel: Process · Process and send · Ignore. Reply waits in a duet card: Send · Don't send. Nothing starts your agent by itself.",
 	},
 };
 
