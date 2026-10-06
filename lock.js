@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isName, isPlaceholderName, isRelayUrl } from "./transport.js";
+import { isName, isPlaceholderName, isRelayUrl, isRoomCode } from "./transport.js";
 
 export const LOCK_FRESH_MS = 60_000;
 export const LOCK_BEAT_MS = 20_000;
@@ -107,8 +107,7 @@ export function releaseLock(path, me) {
 // The client it names takes it once, in that folder, within 30 minutes, and only when not in a room.
 
 export const JOIN_FRESH_S = 30 * 60;
-// A room code is the shared secret: the same rule as the plugin's and setup's.
-export const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(r);
+export { isRoomCode }; // transport.js: one rule for every client
 export const joinFilePath = (dir = duetHome()) => join(dir, "join.json");
 const noSlash = (p) => String(p ?? "").replace(/[\\/]+$/, "");
 

@@ -25,9 +25,9 @@ import { createServer } from "node:http";
 import { BlockList, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
 import { appTools, cleanText, handOver, heldResult, JOIN_META, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomProps, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
-import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
+import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, isRoomCode, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.10.1"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.10.2"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -96,7 +96,6 @@ const HANDED_MAX = 3; // requests a seat keeps after a hand-over, for "Put it ba
 const RECENT_MS = 30 * 60_000;
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
-const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(r);
 const isToken = (t) => typeof t === "string" && /^[A-Za-z0-9_-]{20,100}$/.test(t);
 const sha = (s) => createHash("sha256").update(s).digest("hex");
 
@@ -397,7 +396,7 @@ async function callTool(name, a, ip) {
 			if (!isRoomCode(room)) return text("Not joined · room code: 3-64 letters, digits, . _ - · your user can type it into the panel", true);
 			if (!isName(name) || isPlaceholderName(name)) return text("Not joined · name: letters, digits, . _ - · up to 40 · your user can type it into the panel", true);
 			return {
-				...text(`The duet panel is open in the chat and joins "${shortRoom(room)}" as ${name}. (If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)`),
+				...text(`The duet panel is open in the chat and joins "${shortRoom(room)}" as ${name}, unless it is already in a room: then it stays, and your user presses Leave, then Join, to switch. (If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)`),
 				// Once and soon: a chat reopened later replays this result, and must not join again by itself.
 				_meta: { [JOIN_META]: { room, name, at: Date.now(), id: randomBytes(8).toString("hex") } },
 			};

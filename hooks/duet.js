@@ -578,7 +578,7 @@ async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 
 async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	if (!isRoomCode(code)) {
-		$.ui.log("room code: 3–64 letters, digits, - or _ · or /duet new");
+		$.ui.log("room code: 3–64 letters, digits, . _ - · or /duet new");
 		return;
 	}
 	if (isPlaceholderName(nameArg)) {

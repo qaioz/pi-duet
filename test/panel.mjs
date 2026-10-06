@@ -268,6 +268,21 @@ async function localTests() {
 			!joinedR.isError && joinedR.content[0].text.includes("as gaioz") && !joinedR.content[0].text.includes(askedRoom) && inSt.name === "gaioz" && !!badRoom._meta?.["duet/key"],
 		`bad room: ${badRoom.content[0].text}; bad name: ${badName.content[0].text}; then: ${joinedR.content[0].text}; connected: ${!!inSt.connected}`,
 	);
+	// In a room, duet_room never moves it (a request from the other side can ask the model for the call,
+	// and Claude Desktop/VS Code/Goose don't say whose turn it is): the user leaves in the panel first.
+	const otherRoom = `t-${randomUUID()}`;
+	const moved = await asked.open({ room: otherRoom, name: "mallory" });
+	const sameAgain = await asked.open({ room: askedRoom, name: "gaioz" });
+	const stay = data(await asked.call("duet_room_state"));
+	await asked.call("duet_room_leave");
+	const afterLeave = await asked.open({ room: otherRoom, name: "gaioz" });
+	const nowOther = data(await asked.call("duet_room_state"));
+	check(
+		"stdio: duet_room in a room doesn't switch it (refused, the room stays); the same room is fine; after Leave it joins",
+		moved.isError && /^Not joined · still in/.test(moved.content[0].text) && !moved.content[0].text.includes(otherRoom) && !sameAgain.isError && stay.inRoom && stay.name === "gaioz" && stay.room === askedRoom.slice(0, 4) + "…" &&
+			!afterLeave.isError && nowOther.inRoom && nowOther.room === otherRoom.slice(0, 4) + "…",
+		`switch: ${moved.content[0].text}; same: ${sameAgain.content[0].text.slice(0, 50)}; stayed ${stay.room} as ${stay.name}; after leave: ${nowOther.room}`,
+	);
 	asked.stop();
 }
 
@@ -941,6 +956,24 @@ addEventListener("message", async (ev) => {
 			const shownCode = await r.panel.locator("#sub .code").textContent().catch(() => "");
 			const sub = await r.panel.locator("#sub").textContent().catch(() => "");
 			check("browser: duet_room with room and name: the panel joins by itself", shownCode === askedRoom && sub.includes("zura") && !r.errors.length, `shown: ${JSON.stringify(sub)}; error: ${JSON.stringify(await r.panel.locator("#error").textContent())}; page errors: ${JSON.stringify(r.errors)}`);
+			// A second duet_room (e.g. a request from the other side asked the model for it) while in a room:
+			// the panel stays; after the user's Leave the new room is filled in, not joined.
+			const otherRoom = `t-${randomUUID()}`;
+			const second = await client(h2.url).model("duet_room", { room: otherRoom, name: "mallory" });
+			await r.page.evaluate((p) => document.getElementById("f").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: p }, "*"), second);
+			await r.panel.locator("#error", { hasText: "Still in this room" }).waitFor({ timeout: 10_000 }).catch(() => {});
+			const stayErr = await r.panel.locator("#error").textContent().catch(() => "");
+			const stayCode = await r.panel.locator("#sub .code").textContent().catch(() => "");
+			await r.panel.locator("#leave").click();
+			await r.panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 }).catch(() => {});
+			await sleep(1500);
+			const filled = [await r.panel.locator("#room").inputValue(), await r.panel.locator("#name").inputValue()];
+			const stillOut = await r.panel.locator("#join:not(.hidden)").count();
+			check(
+				"browser: a second duet_room while in a room doesn't move the panel; after Leave it is filled in, the user presses Join",
+				stayCode === askedRoom && /Still in this room/.test(stayErr) && !stayErr.includes(otherRoom) && filled[0] === otherRoom && filled[1] === "mallory" && stillOut === 1 && !r.errors.length,
+				`stayed in asked: ${stayCode === askedRoom}; note: ${JSON.stringify(stayErr)}; after Leave: filled other ${filled[0] === otherRoom} as ${filled[1]}, form shown ${stillOut}; page errors ${JSON.stringify(r.errors)}`,
+			);
 			await r.page.close();
 			h2.proc.kill();
 		}
