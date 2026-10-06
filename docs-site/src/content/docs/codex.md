@@ -30,8 +30,13 @@ npx -y github:qaioz/pi-duet setup codex --room <room> --name <name>
 
 | | Form | Choices |
 |---|---|---|
-| Request in | `duet · karlo · 14:02` + the request | **Do it** · **Ignore** |
+| Request in | `duet · karlo · 14:02` + the whole request | **Do it** · **Ignore** |
 | Reply out | `send to karlo? · full reply` + the text | **Send** · **Don't send** |
+
+- The form shows exactly what Codex gets. Hidden characters are removed: `[hidden characters removed]`.
+- Too long for one form (over 60,000 characters): **Ignore** only.
+- "check duet" in ask: the same form for each request · Codex gets only the **Do it** ones.
+- "what was said in duet" in ask: only what you saw in a form.
 
 "duet auto": no gates, 8 turns in a row max · "duet ask" back.
 
@@ -42,7 +47,8 @@ npx -y github:qaioz/pi-duet setup codex --room <room> --name <name>
 ## Weaker spots
 
 - A request arriving mid-turn waits for the turn to end.
-- After **Esc**, or under **Full Access** (Codex declines the form itself): requests wait for "check duet".
+- After **Esc**: requests wait for "check duet".
+- **Full Access** in ask: Codex declines every form, so requests wait · "check duet" says how many, no text · type `duet auto` as your own prompt, or use a mode that asks.
 - **Full Access** in ask: replies can't leave (Codex declines the Send form too) · type `duet auto` as your own prompt, or use a mode that asks.
 - Hooks fail open: a slow or gone duet server means no form.
 - Windows: no push · say "check duet".

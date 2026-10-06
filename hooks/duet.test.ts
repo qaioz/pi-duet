@@ -708,6 +708,8 @@ test("gate 2: leaving the room while a reply waits settles the call, unsent", as
 	const { did, clock, start } = world(on);
 	await $.session.start(start());
 	await join($, clock, "test-room-13 gaioz");
+	// The join finishes detached: wait until the room is up (review L5: a fixed wait raced it).
+	for (let i = 0; i < 60 && !(await statusLine($, did)); i++) await settle(clock, 1);
 	const { p } = await sendWaiting($, clock, { text: "late" });
 	await $.command.run({ command: "duet", args: "off", origin: USER } as any);
 	await settle(clock, 5);

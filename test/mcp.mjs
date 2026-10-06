@@ -11,7 +11,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, sy
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { envelope, fitName, isForMe, isName, publish, topicFor } from "../transport.js";
+import { cleanText, envelope, fitName, isForMe, isName, publish, topicFor } from "../transport.js";
 
 const SERVER = (process.env.DUET_SERVER || "http://127.0.0.1:18080").replace(/\/+$/, "");
 const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test-v2/mcp");
@@ -42,7 +42,8 @@ const live = new Set();
 export function startServer(name, room, { home = join(ROOT, name), args = [], env = {}, bin = [process.execPath, BIN] } = {}) {
 	mkdirSync(home, { recursive: true });
 	const proc = spawn(bin[0], [...bin.slice(1), "--room", room, "--name", name, "--server", SERVER, ...args], {
-		env: { HOME: home, PATH: process.env.PATH, LANG: "C.UTF-8", ...env },
+		// Auto by default: these hosts draw no form, and in ask mode duet_inbox hands them no peer text.
+		env: { HOME: home, PATH: process.env.PATH, LANG: "C.UTF-8", DUET_MODE: "auto", ...env },
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	const s = { name, home, proc, notes: [], pending: new Map(), nextId: 1, stderr: "", exited: false };
@@ -130,12 +131,12 @@ async function main() {
 	);
 	await Promise.all([waitConnected(a), waitConnected(b)]);
 
-	// Send and receive, with unicode and U+2028 (a line separator inside JSON).
+	// Send and receive, with unicode and U+2028 (a line separator inside JSON: received cleaned, with the mark).
 	const text = "héllo ünïcode   line-sep — 17*23?";
 	const t0 = Date.now();
 	await a.call("duet_send", { text, user_asked: true });
 	const got = await b.recv(20);
-	check("send → the other side receives it", got.text.includes(text) && got.text.includes("[duet] from alice"), `${Date.now() - t0}ms: ${JSON.stringify(got.text.slice(0, 140))}`);
+	check("send → the other side receives it", got.text.includes(cleanText(text)) && !got.text.includes("\u2028") && got.text.includes("[duet] from alice"), `${Date.now() - t0}ms: ${JSON.stringify(got.text.slice(0, 140))}`);
 	check("no own echo", !(await a.call("duet_inbox")).text.includes(text), "alice's inbox after her own send: no new messages");
 
 	// Inbox: queued until read, read once.
@@ -409,6 +410,23 @@ async function main() {
 		!tsInbox.isError && !tsInbox.text.includes("TS-OBJECT") && tsInbox.text.includes("[duet] from oz (the other person's agent, on their computer):") && tsInbox.text.includes("TS-NORMAL") && tsAgain.text === "No new duet messages.",
 		JSON.stringify(tsInbox.text.replace(/\n+/g, " ").slice(0, 260)),
 	);
+	// Ask mode in a host with no form and no panel: duet_inbox can't run gate 1, so it hands over no
+	// peer text, only how many wait (review M2).
+	const askRoom = freshRoom();
+	const k1 = startServer("kim", askRoom, { env: { DUET_MODE: "ask" } });
+	await k1.init();
+	await waitConnected(k1);
+	await publish(SERVER, topicFor(askRoom), envelope({ fromId: "p-ask", from: "pat", kind: "msg", text: "ASK-NO-FORM-SECRET" }));
+	await sleep(1500);
+	const askInbox = await k1.call("duet_inbox");
+	const askStatus = await k1.call("duet_status");
+	check(
+		"ask mode, no form: duet_inbox says how many wait and hands over no peer text",
+		!askInbox.text.includes("ASK-NO-FORM-SECRET") && /^1 waiting · this app shows no form/.test(askInbox.text) && askStatus.text.includes("messages waiting: 1"),
+		`${askInbox.text} / ${askStatus.text.slice(-40)}`,
+	);
+	await k1.stop();
+
 	// The sender refuses a NUL itself (receivers would drop it).
 	const nulOut = await t1.call("duet_send", { text: "a\u0000b", user_asked: true });
 	check("a NUL is refused by the sender", nulOut.isError && nulOut.text.includes("NUL"), nulOut.text);
@@ -590,7 +608,7 @@ async function gateTwo() {
 	const said = (t) => peerSeen.some((e) => e.kind === "msg" && e.text === t);
 
 	// A host with forms: the whole reply in the form.
-	const f = startServer("formhost", room);
+	const f = startServer("formhost", room, { env: { DUET_MODE: "ask" } });
 	await f.init("some-ide", { caps: { elicitation: { form: {} } } });
 	await waitConnected(f);
 	await sleep(500);
@@ -617,7 +635,7 @@ async function gateTwo() {
 
 	// A chat app (draws MCP Apps): duet_send only holds; the card's click sends.
 	const UI = { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } };
-	const c = startServer("chatapp", room, { env: { DUET_HOLD_MS: "4000" } });
+	const c = startServer("chatapp", room, { env: { DUET_MODE: "ask", DUET_HOLD_MS: "4000" } });
 	await c.init("claude-ai", { caps: UI });
 	await waitConnected(c);
 	await sleep(500);

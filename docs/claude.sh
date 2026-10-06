@@ -52,11 +52,15 @@ main() {
 	fi
 
 	echo "duet: starting Claude Code in room $(printf '%s' "$room" | cut -c1-4)… as $name"
-	# Piped into sh, stdin is this script: give Claude Code the terminal.
+	# Piped into sh, stdin is this script: give Claude Code the terminal. Use the real device
+	# (/dev/ttys003, /dev/pts/0): on macOS, Claude Code crashes reading /dev/tty (kqueue EINVAL).
+	tty_dev=/dev/tty
+	t=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')
+	case $t in '' | '?' | '??') ;; *) [ -c "/dev/$t" ] && tty_dev=/dev/$t ;; esac
 	if [ "$relay" = https://duet.gaioz.online ]; then
-		DUET_ROOM=$room DUET_NAME=$name exec claude </dev/tty
+		DUET_ROOM=$room DUET_NAME=$name exec claude <"$tty_dev"
 	else
-		DUET_ROOM=$room DUET_NAME=$name DUET_SERVER=$relay exec claude </dev/tty
+		DUET_ROOM=$room DUET_NAME=$name DUET_SERVER=$relay exec claude <"$tty_dev"
 	fi
 }
 main "$@"
