@@ -30,7 +30,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { LOCK_BEAT_MS, describeHolder, duetHome, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeLock } from "./lock.js";
+import { LOCK_BEAT_MS, describeHolder, duetHome, isRoomCode, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeJoinFile, takeLock } from "./lock.js";
 import { appTools, drawsPanels, handOver, heldResult, makeHolds, outgoingItem, PANEL_KEY_META, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { cleanText, envelope, firstLine, fitName, isEnvelope, isForMe, isName, isPlaceholderName, isRelayUrl, placeFor, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
@@ -39,7 +39,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.9.1";
+const VERSION = "0.10.0";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -68,9 +68,7 @@ if (name !== undefined && !isName(name)) {
 	console.error(`duet: --name may only use letters, digits, . _ -, must start with a letter or digit, at most 40; got ${JSON.stringify(name)}`);
 	process.exit(1);
 }
-// A room code is the shared secret: the same rule as the plugin's and setup's.
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
-const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(r);
 // Unattended back-and-forth allowed before the agent must check with its user.
 const MAX_AUTO = Math.max(1, Number(process.env.DUET_MAX_AUTO) || 8);
 const CODEX = process.env.DUET_CODEX_BIN || "codex";
@@ -80,6 +78,7 @@ const WINDOWS = (process.env.DUET_TEST_PLATFORM || process.platform) === "win32"
 // Started by the Codex plugin: our cwd is the plugin's folder; the session's folder comes from Codex.
 const PLUGIN = process.env.DUET_PLUGIN === "1";
 const REJOIN_MS = 12 * 3600_000; // a new session in the same folder rejoins quietly within this
+const JOIN_POLL_MS = Number(process.env.DUET_JOIN_POLL_MS) || 2500; // the join file, while not in a room
 // A turn with no hook call for this long is taken as over (a closed window, a lost Stop).
 const BUSY_MS = Number(process.env.DUET_BUSY_MS) || 10 * 60_000;
 const LOCK_CHECK_MS = Number(process.env.DUET_LOCK_CHECK_MS) || 5000;
@@ -551,10 +550,31 @@ async function rejoinFolder() {
 	else updateJson("rooms.json", (all) => (all[folder] = { ...rec, at: Date.now() }));
 }
 
+// The site's prompt wrote ~/.duet/join.json for Codex in this folder (lock.js): join from it, in ask
+// mode. Never over a room this session has; checked again every few seconds while it has none.
+let joinPoll;
+async function fromJoinFile() {
+	if (!PLUGIN || !isCodex() || room || joining || !folder || oneOffRun()) return false;
+	const j = takeJoinFile({ agent: "codex", folder });
+	if (!j) return false;
+	try {
+		await joinAsUser(j.room, j.name, j.relay);
+		return true;
+	} catch {
+		return false; // held by another window here: status says so
+	}
+}
+
 // Where Codex says the session is: a hook's input, or a model call's turn metadata.
 function learn({ thread, folder: where } = {}) {
 	if (typeof thread === "string" && thread) codexThread = thread;
 	if (PLUGIN && !folder && typeof where === "string" && /^([A-Za-z]:)?[\\/]/.test(where)) folder = where;
+	if (PLUGIN && folder && !joinPoll) {
+		joinPoll = setInterval(async () => {
+			if (await fromJoinFile()) helloDone = false; // joined between prompts: the next prompt gets the catch-up
+		}, JOIN_POLL_MS);
+		joinPoll.unref();
+	}
 }
 
 // ---------- asking the user (Codex: an MCP form) ----------
@@ -677,11 +697,12 @@ const hookContext = (event, text) => (text ? JSON.stringify({ hookSpecificOutput
 
 async function hello(a) {
 	learn(a);
+	const fromFile = await fromJoinFile();
 	await rejoinFolder();
 	// A room from the command line (setup codex): a new session in a folder takes it from an older one there.
 	if (room && name && !sub) await joinRoom({ steal: !oneOffRun() });
 	helloDone = true;
-	return catchUp();
+	return { text: catchUp(), joined: fromFile ? `duet: joined "${shortRoom(room)}" as ${name} · ask` : "" };
 }
 
 async function onHook(a = {}) {
@@ -689,13 +710,15 @@ async function onHook(a = {}) {
 	const event = a.event;
 	const turn = typeof a.turn === "string" ? a.turn : "";
 	if (event === "SessionStart") {
-		const text = await hello(a);
+		const { text, joined } = await hello(a);
 		setImmediate(deliver);
+		// Joined from the site's prompt: the user sees it too.
+		if (joined) return JSON.stringify({ systemMessage: joined, ...(text ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } } : {}) });
 		return hookContext("SessionStart", text);
 	}
 	learn(a);
 	if (event === "UserPromptSubmit") {
-		const first = helloDone ? "" : await hello(a); // SessionStart may have run before we were ready
+		const first = helloDone ? "" : (await hello(a)).text; // SessionStart may have run before we were ready
 		promptHookSeen = true;
 		busy = { turn, at: Date.now() };
 		const prompt = String(a.prompt ?? "");
@@ -1216,6 +1239,7 @@ async function callTool(tool, a, ctx) {
 			if (!a.name || isPlaceholderName(a.name)) throw new Error("No name · ask your user for their name in the room");
 			if (!isRelayUrl(s)) throw new Error("Relay: a plain http(s) URL only");
 			if (sub && r === room && n === name && s === server) return `Already in "${shortRoom(r)}" as ${n}`;
+			if (PLUGIN && folder) takeJoinFile({ agent: "codex", folder }); // newer than a pasted prompt's join file: that one goes
 			await joinAsUser(r, n, s);
 			return `Joined "${shortRoom(r)}" as ${n} · ask · your user gives the other person the same code`;
 		}
@@ -1227,12 +1251,27 @@ async function callTool(tool, a, ctx) {
 		}
 		// ---------- the panel (panel.js): duet_room opens it; the rest only the panel calls ----------
 		case "duet_room": {
+			const keyed = (text, isError) => ({ content: [{ type: "text", text }], _meta: { [PANEL_KEY_META]: panelKey }, ...(isError ? { isError } : {}) });
+			// A room and name from the user's own message (the site's prompt): join with them.
+			if (a.room || a.name) {
+				const r = String(a.room ?? "").trim();
+				const n = String(a.name ?? "").trim();
+				if (!isRoomCode(r)) return keyed("Not joined · room code: 3-64 letters, digits, . _ - · your user can type it into the panel", true);
+				if (!isName(n) || isPlaceholderName(n)) return keyed("Not joined · name: letters, digits, . _ - · up to 40 · your user can type it into the panel", true);
+				if (!(sub && r === room && n === name)) {
+					try {
+						await joinAsUser(r, n, server);
+					} catch (err) {
+						return keyed(`${err.message} · the panel is open`, true);
+					}
+				}
+			}
 			if (room && name && !sub) await joinRoom();
 			const said =
 				!room || !name
 					? "duet panel open · your user joins there (room code in the panel, not the chat)"
 					: `duet panel open · "${shortRoom(room)}" as ${name} · ${status} · ${waitingLine(inbox)}`;
-			return { content: [{ type: "text", text: said }], _meta: { [PANEL_KEY_META]: panelKey } };
+			return keyed(said);
 		}
 		case "duet_room_state": {
 			if (room && name && !sub) await joinRoom();

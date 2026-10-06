@@ -29,7 +29,7 @@
 // validator refuses `$` passed to an imported function. wire.js is pure.
 import {
 	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
-	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, sanitize, stripHidden, HIDDEN_MARK, sha256hex, timeOf, topicFor,
+	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, readJoinFile, sanitize, stripHidden, HIDDEN_MARK, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
 const PANE = "duet";
@@ -37,6 +37,7 @@ const SEND_TOOL = "mcp__duet__send";
 const REPAIR_POLL_MS = 10_000; // ntfy.sh writes its cache in batches; re-poll a resumed range once
 const MAX_BACKOFF_MS = 30_000;
 const LOCK_STALE_MS = 60_000;
+const JOIN_POLL_MS = 2500; // the join file, looked for while not in a room
 const HISTORY_MAX = 200; // per room, kept in $.store across restarts
 const HISTORY_TEXT_MAX = 1500; // characters of one history entry saved to $.store (memory keeps it whole)
 const HISTORY_BYTES_MAX = 512 * 1024; // one room's saved history, as JSON in UTF-8: 5 rooms stay well under $.store's 4 MiB
@@ -71,6 +72,8 @@ let child = null; // the running curl stream
 let connected = false;
 let connError = "";
 let heartbeat = null;
+let joinPoll = null; // the join file's timer, while not in a room (interactive sessions only)
+let watchJoin = false; // this session looks for the join file (it can draw): again after a leave
 let heldCursor = null; // the newest resume point, saved once nothing received is still open
 const seen = new Set();
 const peers = new Map(); // name -> { via, at, left }
@@ -562,7 +565,18 @@ const describeClient = (l) => ({ pi: "pi", codex: "Codex", mcp: "a duet MCP serv
 // Runs detached from the command or button that asked for it, so its waits count against no hook.
 // mode: "ask" or "auto" (a module reload keeps the mode it had); quiet: a rejoin nobody typed.
 // copy: /duet new puts the fresh code on the clipboard.
+// Joins on their way (a rejoin, the env room, /duet, the join file): the join file's poll waits for them.
+let joinsInFlight = 0;
 async function join($, code, nameArg, mode, quiet, relayArg, copy) {
+	joinsInFlight++;
+	try {
+		return await joinNow($, code, nameArg, mode, quiet, relayArg, copy);
+	} finally {
+		joinsInFlight--;
+	}
+}
+
+async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	if (!isRoomCode(code)) {
 		$.ui.log("room code: 3–64 letters, digits, - or _ · or /duet new");
 		return;
@@ -672,6 +686,8 @@ async function join($, code, nameArg, mode, quiet, relayArg, copy) {
 	defaultName = name;
 	heartbeat?.cancel?.();
 	heartbeat = $.clock.every(2000, () => void beat($).catch(() => {}));
+	joinPoll?.cancel?.();
+	joinPoll = null;
 	wakeSupervisor?.();
 	remember($, { text: quiet ? `you rejoined as ${name}` : `you joined as ${name}`, note: true });
 	let copied = false;
@@ -760,6 +776,7 @@ async function leave($, note, forget, lost) {
 	}
 	await $.store.delete("active:" + sessionId);
 	if (forget) await $.store.delete("room:" + cwd);
+	if (watchJoin) pollJoinFile($);
 	redraw($);
 }
 
@@ -900,6 +917,48 @@ async function autoRejoin($) {
 	const rec = await $.store.get("room:" + cwd);
 	if (!rec?.code) return;
 	await join($, rec.code, rec.name, "ask", true, rec.relay);
+}
+
+// The website's prompt writes ~/.duet/join.json and the user types /reload-plugins (or, with duet
+// already loaded, nothing: the poll finds it). Taken once: emptied before joining, so no other window
+// takes it too. A file for another agent or folder is left alone; a stale one is emptied.
+// The newest thing the user did wins: after a reload the window first takes up its room again, then a
+// join file pasted since moves it (switch); a /duet typed after the prompt empties the file (dropJoinFile).
+async function takeJoinFile($, switchRoom = false) {
+	if ((room && !switchRoom) || joinsInFlight) return false;
+	const path = `${duetDir}/join.json`;
+	let text;
+	try {
+		// Asked every 2.5 s: a missing file is the usual answer, and not an error.
+		if (!(await $.fs.exists(path))) return false;
+		text = String(await $.fs.read(path));
+	} catch {
+		return false;
+	}
+	const got = readJoinFile(text, "claude-code", cwd, Date.now());
+	if (!got || (room && !switchRoom) || joinsInFlight) return false;
+	try {
+		await $.fs.write(path, "{}");
+	} catch {
+		return false;
+	}
+	if (!got.take) return false;
+	void join($, got.take.room, got.take.name, "ask", false, got.take.relay).catch(() => {});
+	return true;
+}
+
+// A /duet <room> or /duet new typed by the user: a join file for this window is older than it, so it goes.
+async function dropJoinFile($) {
+	const path = `${duetDir}/join.json`;
+	try {
+		if (!(await $.fs.exists(path))) return;
+		if (readJoinFile(String(await $.fs.read(path)), "claude-code", cwd, Date.now())) await $.fs.write(path, "{}");
+	} catch {}
+}
+
+function pollJoinFile($) {
+	joinPoll?.cancel?.();
+	joinPoll = $.clock.every(JOIN_POLL_MS, () => void takeJoinFile($).catch(() => {}));
 }
 
 // ---------- the send tool ----------
@@ -1249,13 +1308,17 @@ export function register(on) {
 			const owner = active ? await $.store.get(active.lockKey) : null;
 			if (active && owner?.token === active.token && !owner.released) {
 				token = active.token;
-				void join($, active.code, active.name, active.mode, true, active.relay).catch(() => {});
+				void join($, active.code, active.name, active.mode, true, active.relay)
+					.then(() => takeJoinFile($, true))
+					.catch(() => {});
 			} else if (envRoom) {
 				// Started as DUET_ROOM=<room> DUET_NAME=<name> claude (the website's line).
 				void join($, envRoom, envName || undefined, "ask", false).catch(() => {});
-			} else {
+			} else if (!(await takeJoinFile($).catch(() => false))) {
 				void autoRejoin($).catch(() => {});
 			}
+			watchJoin = true;
+			if (!room) pollJoinFile($);
 		}
 		markReady();
 		try {
@@ -1350,7 +1413,10 @@ export function register(on) {
 		// Joining and moving wait on the relay and the other window: run them detached, so the
 		// command returns at once and no hook time limit applies.
 		if (!first) void openPane($).catch(() => {});
-		else if (arg === "new") void join($, newRoomCode(), second, "ask", false, undefined, true).catch(() => {});
+		else if (arg === "new") {
+			await dropJoinFile($);
+			void join($, newRoomCode(), second, "ask", false, undefined, true).catch(() => {});
+		}
 		else if (LEAVE_WORDS.includes(arg)) {
 			joinEpoch++;
 			if (room) void leave($, "left", true).catch(() => {});
@@ -1360,7 +1426,10 @@ export function register(on) {
 			}
 		} else if (arg === "ask" || arg === "auto") void setMode($, arg).catch(() => {});
 		else if (arg === "status") $.ui.log(room ? `${modeLabel()} · ${room.code} · you are ${room.name}` : "not in a room");
-		else if (isRoomCode(first)) void join($, first, second, "ask", false, third).catch(() => {});
+		else if (isRoomCode(first)) {
+			await dropJoinFile($);
+			void join($, first, second, "ask", false, third).catch(() => {});
+		}
 		else $.ui.log("usage: /duet new · /duet <code> [name] [relay] · /duet off · /duet ask|auto · /duet");
 		return {};
 	});

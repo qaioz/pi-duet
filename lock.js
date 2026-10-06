@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isName, isPlaceholderName, isRelayUrl } from "./transport.js";
 
 export const LOCK_FRESH_MS = 60_000;
 export const LOCK_BEAT_MS = 20_000;
@@ -98,4 +99,47 @@ export function releaseLock(path, me) {
 	try {
 		if (readLock(path)?.token === me.token) rmSync(path);
 	} catch {}
+}
+
+// ---------- the join file: ~/.duet/join.json ----------
+// The site's prompt writes it, then the user starts (or reloads) their agent in that folder:
+//   { agent: "claude-code" | "codex" | "pi", room, name, relay, cwd, pcwd, at }   (at: Unix seconds)
+// The client it names takes it once, in that folder, within 30 minutes, and only when not in a room.
+
+export const JOIN_FRESH_S = 30 * 60;
+// A room code is the shared secret: the same rule as the plugin's and setup's.
+export const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(r);
+export const joinFilePath = (dir = duetHome()) => join(dir, "join.json");
+const noSlash = (p) => String(p ?? "").replace(/[\\/]+$/, "");
+
+/**
+ * Whether this client takes the join file: { room, name, relay }, or { skip } with why not.
+ * "stale" may be cleared; any other skip is left for the client (or folder) it is for.
+ * @param {any} j @param {{ agent: string, folder: string, now?: number }} me
+ */
+export function acceptJoin(j, { agent, folder, now = Date.now() }) {
+	if (!j || typeof j !== "object" || !j.agent) return { skip: "empty" };
+	const age = now / 1000 - Number(j.at);
+	if (!(age <= JOIN_FRESH_S)) return { skip: "stale" };
+	if (j.agent !== agent) return { skip: "agent" };
+	if (age < -5 * 60) return { skip: "future" };
+	if (!folder || ![j.cwd, j.pcwd].some((p) => p && noSlash(p) === noSlash(folder))) return { skip: "folder" };
+	const relay = noSlash(j.relay);
+	if (!isRoomCode(j.room) || !isName(j.name) || isPlaceholderName(j.name) || !isRelayUrl(relay)) return { skip: "invalid" };
+	return { room: j.room, name: j.name, relay };
+}
+
+/** Take the join file if it is for this client: removed before the caller joins, so it joins once. */
+export function takeJoinFile(me, path = joinFilePath()) {
+	let j;
+	try {
+		j = JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return undefined; // missing (the usual case) or half written
+	}
+	const got = acceptJoin(j, me);
+	if (got.skip === "stale") rmSync(path, { force: true });
+	if (got.skip) return undefined;
+	rmSync(path, { force: true });
+	return got;
 }

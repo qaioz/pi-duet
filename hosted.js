@@ -24,10 +24,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { BlockList, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
-import { appTools, cleanText, handOver, heldResult, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
+import { appTools, cleanText, handOver, heldResult, JOIN_META, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomProps, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.9.1"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.10.0"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -309,7 +309,7 @@ const sendTool = {
 // duet_room here takes the seat code (optional): with it the answer says what waits.
 const hostedRoomTool = {
 	...roomTool,
-	inputSchema: { type: "object", properties: { seat: { type: "string", description: "The seat code from the duet note in your context, if you have one." } } },
+	inputSchema: { type: "object", properties: { ...roomProps, seat: { type: "string", description: "The seat code from the duet note in your context, if you have one." } } },
 };
 
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError } : {}) });
@@ -389,6 +389,18 @@ async function sendHeld(h) {
 async function callTool(name, a, ip) {
 	a = a && typeof a === "object" ? a : {};
 	if (name === "duet_room") {
+		// A room and name from the user's own message: checked here, joined by the panel (it holds the
+		// seat token). They go back in _meta only and are never kept here.
+		if (a.room || a.name) {
+			const room = String(a.room ?? "").trim();
+			const name = String(a.name ?? "").trim();
+			if (!isRoomCode(room)) return text("Not joined · room code: 3-64 letters, digits, . _ - · your user can type it into the panel", true);
+			if (!isName(name) || isPlaceholderName(name)) return text("Not joined · name: letters, digits, . _ - · up to 40 · your user can type it into the panel", true);
+			return {
+				...text(`The duet panel is open in the chat and joins "${shortRoom(room)}" as ${name}. (If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)`),
+				_meta: { [JOIN_META]: { room, name } },
+			};
+		}
 		// With the seat code (from the duet note in the model's context): how many wait and from whom, no text.
 		const seat = handles.get(String(a.seat ?? ""));
 		if (seat) return text(`duet panel open · ${seat.name} · ${waitingLine(seat.inbox)}`);

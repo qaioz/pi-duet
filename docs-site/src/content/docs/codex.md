@@ -2,7 +2,14 @@
 title: Codex
 description: duet for Codex CLI, the desktop app and the IDE extension.
 ---
-## Start · plugin (CLI, desktop app)
+## Start · prompt
+
+1. On [the website](https://qaioz.github.io/pi-duet/): **Copy prompt**, paste it into Codex, open in your project folder.
+2. duet already there: Codex calls `duet_join`, done. Otherwise approve its one shell command, then start a
+   new Codex session in this folder and say "join duet" (first time: trust duet's hooks). duet joins on that
+   first prompt: Codex tells duet the folder only when a turn starts.
+
+## Start · plugin, yourself (CLI, desktop app)
 
 One line, in your project folder:
 

@@ -38,6 +38,28 @@ export const LEAVE_WORDS = ["off", "leave", "stop", "disable", "quit", "exit"];
 export const isRoomCode = (room) =>
 	typeof room === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$/.test(room) && !LEAVE_WORDS.includes(room.toLowerCase());
 
+// The join file (~/.duet/join.json) the website's prompt writes: { agent, room, name, relay, cwd,
+// pcwd, at } with `at` in Unix seconds. What a client does with its text: "take" ({ room, name,
+// relay }), "clear" (stale: nobody will take it) or null (leave it: another client or folder may).
+export const JOIN_FRESH_S = 30 * 60;
+export function readJoinFile(text, agent, folder, nowMs) {
+	let j;
+	try {
+		j = JSON.parse(text);
+	} catch {
+		return null;
+	}
+	if (!j || typeof j !== "object" || typeof j.at !== "number") return null;
+	const age = nowMs / 1000 - j.at;
+	if (age > JOIN_FRESH_S) return { clear: true };
+	if (age < -5 * 60 || j.agent !== agent) return null;
+	const bare = (p) => (typeof p === "string" ? p.replace(/[\\/]+$/, "") || "/" : null);
+	const here = bare(folder);
+	if (!here || (bare(j.cwd) !== here && bare(j.pcwd) !== here)) return null;
+	if (!isRoomCode(j.room) || typeof j.name !== "string" || !j.name || isPlaceholderName(j.name) || (j.relay !== undefined && !isRelayUrl(j.relay))) return null;
+	return { take: { room: j.room, name: j.name, relay: j.relay } };
+}
+
 const hex = (bytes) => Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
 
 export async function sha256hex(text) {

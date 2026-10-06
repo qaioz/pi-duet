@@ -10,6 +10,23 @@ Claude Code **2.1.287+** with mods on · terminal and Desktop Code tab.
 
 <Steps>
 
+1. On [the website](https://qaioz.github.io/pi-duet/): **Copy prompt** (room, name, relay filled in)
+
+2. Paste it into Claude Code, open in your project folder · approve its one shell command
+
+3. Type `/reload-plugins` · you're in the room
+
+4. Ask Claude: "ask nika's agent …"
+
+</Steps>
+
+The prompt installs or updates the plugin, enables it if this folder has it off, checks mods are on, and
+leaves `~/.duet/join.json` for duet to take (this folder, 30 min). Duet already loaded: it joins at once.
+
+## Or run it yourself
+
+<Steps>
+
 1. Install, update and start in the room · one line, in your project folder
 
    ```sh
