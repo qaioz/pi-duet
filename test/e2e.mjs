@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { envelope, isForMe, MAX_BYTES, MAX_LONG_BYTES, publish, subscribe, topicFor } from "../transport.js";
@@ -320,6 +320,7 @@ async function plumbing() {
 	await Promise.all([bob.stop(), bob2.stop()]);
 
 	await printModeStaysOut(fake);
+	await joinFile();
 
 	// A name outside the rule is made to fit, or peers would drop everything it sends.
 	const odd = startAgent("bob", freshRoom(), { agentDir: join(ROOT, "fit-agent"), cwd: join(ROOT, "fit"), extraEnv: { DUET_NAME: "bob q@laptop" } });
@@ -371,6 +372,71 @@ async function printModeStaysOut(fake) {
 		printConnections === 0 && lockEvents.length === 0 && out.includes("can't use the duet room"),
 		`pi -p ${out}; lock file events: ${lockEvents.length}; subscriptions: ${printConnections}; RPC control opened ${paths.length - printConnections}`,
 	);
+}
+
+// The site's prompt writes ~/.duet/join.json and the user types /reload: pi joins from it at start, and
+// polls while not in a room. Only a fresh file for pi in this folder is taken.
+async function joinFile() {
+	const agentDir = join(ROOT, "joinfile-agent");
+	rmSync(agentDir, { recursive: true, force: true }); // no saved room
+	const cwd = join(ROOT, "jf");
+	mkdirSync(cwd, { recursive: true });
+	const path = join(agentDir, "home", ".duet", "join.json");
+	mkdirSync(join(path, ".."), { recursive: true });
+	const write = (fields) => {
+		const j = { agent: "pi", room: freshRoom(), name: "jo", relay: SERVER, cwd, pcwd: realpathSync(cwd), at: Math.floor(Date.now() / 1000), ...fields };
+		writeFileSync(path, JSON.stringify(j) + "\n");
+		return j;
+	};
+	const left = () => existsSync(path);
+
+	const first = write({});
+	const heard = [];
+	const listener = subscribe({ server: SERVER, topic: topicFor(first.room), onEnvelope: (env) => heard.push(env) });
+	await sleep(1000);
+	let a = startAgent("jo", "", { agentDir, cwd, extraEnv: { DUET_NAME: "" } });
+	const joined = await until(() => statusOf(a) === "duet: jo" && statusOf(a), 20_000, "join from the file").catch(() => statusOf(a));
+	await until(() => heard.some((e) => e.kind === "join" && e.from === "jo"), 10_000, "join announced").catch(() => {});
+	await until(() => notifies(a).includes("duet: joined as jo"), 10_000, "joined notice").catch(() => {});
+	listener.stop();
+	const saved = JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8"));
+	check(
+		"join file taken at start: joins, announces, deletes it, remembers the room",
+		joined === "duet: jo" && !left() && saved.room === first.room && saved.server === SERVER && heard.some((e) => e.kind === "join") && notifies(a).includes("duet: joined as jo"),
+		`status ${JSON.stringify(joined)}; file left: ${left()}; duet.json room matches: ${saved.room === first.room}; heard: ${heard.map((e) => `${e.kind} from ${e.from}`).join(", ") || "nothing"}`,
+	);
+	// In a room already: a new file is not taken.
+	write({});
+	await sleep(4000);
+	check("join file ignored while in a room", left() && JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8")).room === first.room, `file left: ${left()}; status ${JSON.stringify(statusOf(a))}`);
+	a.prompt("/duet off");
+	await until(() => notifies(a).includes("duet: left the room"), 10_000, "left");
+	rmSync(path, { force: true });
+	await a.stop();
+
+	// Not in a room, polling: another agent's, another folder's and a stale file are not taken.
+	a = startAgent("jo", "", { agentDir, cwd, extraEnv: { DUET_NAME: "" } });
+	await sleep(3000); // started
+	const refused = [];
+	for (const [what, fields] of [
+		["Claude Code's", { agent: "claude-code" }],
+		["another folder's", { cwd: "/elsewhere", pcwd: "/elsewhere" }],
+		["a stale", { at: Math.floor(Date.now() / 1000) - 31 * 60 }],
+	]) {
+		write(fields);
+		await sleep(4000);
+		refused.push({ what, left: left(), status: statusOf(a) });
+	}
+	check(
+		"join file for another agent / folder left alone; a stale one deleted; none joined",
+		refused[0].left && refused[1].left && !refused[2].left && refused.every((r) => !r.status),
+		refused.map((r) => `${r.what}: file left ${r.left}, status ${JSON.stringify(r.status)}`).join("; "),
+	);
+	// A file written after start is picked up by the poll.
+	const later = write({});
+	const polled = await until(() => statusOf(a) === "duet: jo" && statusOf(a), 15_000, "poll joins").catch(() => statusOf(a));
+	check("join file written after start is taken by the poll", polled === "duet: jo" && !left() && JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8")).room === later.room, `status ${JSON.stringify(polled)}; file left: ${left()}`);
+	await a.stop();
 }
 
 // Dedupe and watchdog need a misbehaving server, so they run against a local fake ntfy.

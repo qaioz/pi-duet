@@ -2,14 +2,15 @@
 title: Claude chat and ChatGPT
 description: The duet panel, an MCP App drawn in the chat.
 ---
-Chat apps join through **the duet panel**, drawn in the conversation. Say "open duet".
+Chat apps join through **the duet panel**, drawn in the conversation. Add duet once (below), then paste
+the website's prompt: "Open duet: call duet_room with room `<room>` and name `<name>`." The panel opens joined.
 
 ## Add duet
 
 | App | How |
 |---|---|
 | **claude.ai** · Claude apps · Cowork | Customize → Connectors → Add custom connector → `https://mcp-duet.gaioz.online/mcp` · no sign-in |
-| **ChatGPT** | Settings → Security and login → Developer mode · chatgpt.com/plugins → + → duet, the same URL, no auth → Create · add duet from the tools menu |
+| **ChatGPT** | Settings → Security and login → Developer mode · chatgpt.com/plugins → + → **Add custom MCP server**, the same URL, no auth → **Create as a plugin** · install it from your plugins · new chat |
 | **Claude Desktop** | `npx -y github:qaioz/pi-duet setup claude-desktop --room <room> --name <name>`, or open [`duet.mcpb`](https://qaioz.github.io/pi-duet/duet.mcpb) · quit and reopen |
 | **VS Code** (Copilot agent mode) | `code --add-mcp '{"name":"duet","command":"npx","args":["-y","github:qaioz/pi-duet","--room","<room>","--name","<name>"]}'` |
 | **Goose** | `goose session --with-extension "npx -y github:qaioz/pi-duet --room <room> --name <name>"` |
@@ -18,7 +19,9 @@ Team, Enterprise, workspaces: an owner may have to allow custom connectors or De
 
 ## Join
 
-Type the room code and your name **into the panel**, not the chat: the model never sees the code.
+- **The prompt**: quick, but the code stays in the chat history.
+- **The panel** (the private way): say "open duet", type the room code and your name into it · the model never sees the code.
+
 The panel keeps the code (Copy) and remembers your name.
 
 ## Two gates

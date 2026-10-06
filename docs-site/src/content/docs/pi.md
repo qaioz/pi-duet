@@ -4,6 +4,11 @@ description: The pi-duet extension.
 ---
 ## Start
 
+1. On [the website](https://qaioz.github.io/pi-duet/): **Copy prompt**, paste it into pi, open in your project folder.
+2. Type `/reload` · you're in the room.
+
+## Or run it yourself
+
 One line, in your project folder:
 
 ```sh

@@ -304,3 +304,33 @@ test("lock.js: one lock per room and name for every client; stale or dead owners
 	lock.releaseLock(path, a);
 	assert.equal(existsSync(path), false);
 });
+
+test("readJoinFile: own agent, fresh, this folder (cwd or pwd -P, trailing slashes ignored) and good fields only", () => {
+	const now = 2_000_000_000_000;
+	const file = (f = {}) => JSON.stringify({ agent: "claude-code", room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online", cwd: "/w/repo/", pcwd: "/real/repo", at: now / 1000 - 60, ...f });
+	const read = (f, folder = "/w/repo") => wire.readJoinFile(file(f), "claude-code", folder, now);
+	assert.deepEqual(read(), { take: { room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online" } });
+	assert.ok(read({}, "/w/repo//").take);
+	assert.ok(read({}, "/real/repo").take);
+	assert.ok(read({ at: now / 1000 + 120 }).take); // a clock a little ahead
+	assert.ok(read({ relay: undefined }).take);
+	assert.deepEqual(read({ at: now / 1000 - 31 * 60 }), { clear: true });
+	assert.deepEqual(read({ at: now / 1000 - 31 * 60, agent: "codex" }), { clear: true }); // stale: nobody takes it
+	for (const bad of [{ agent: "codex" }, { agent: undefined }, { at: now / 1000 + 600 }, { at: String(now / 1000) }, { room: "a;b" }, { room: "off" }, { name: "YOUR_NAME" }, { name: "" }, { name: 7 }, { relay: "ftp://x" }])
+		assert.equal(read(bad), null, JSON.stringify(bad));
+	assert.equal(read({}, "/w/other"), null);
+	assert.equal(read({ cwd: undefined, pcwd: undefined }), null);
+	assert.equal(wire.readJoinFile("{}", "claude-code", "/w/repo", now), null); // a taken one
+	assert.equal(wire.readJoinFile("not json", "claude-code", "/w/repo", now), null);
+	assert.equal(wire.readJoinFile("null", "claude-code", "/w/repo", now), null);
+	assert.ok(wire.readJoinFile(file({ cwd: "/", pcwd: "/" }), "claude-code", "/", now).take);
+	// Git Bash writes /c/x for C:\x; a subfolder counts on the window's own start or reload (nested) only.
+	assert.ok(wire.readJoinFile(file({ cwd: "/c/Users/Nika/repo", pcwd: "/c/Users/Nika/repo" }), "claude-code", "C:\\Users\\nika\\repo", now).take);
+	assert.equal(read({ cwd: "/w/repo/sub", pcwd: "/real/repo/sub" }), null);
+	assert.ok(wire.readJoinFile(file({ cwd: "/w/repo/sub", pcwd: "/real/repo/sub" }), "claude-code", "/w/repo", now, true).take);
+	assert.equal(wire.readJoinFile(file({ cwd: "/w/repository", pcwd: "/w/repository" }), "claude-code", "/w/repo", now, true), null);
+	assert.equal(wire.readJoinFile(file({ cwd: "/w/repo", pcwd: "/w/repo" }), "claude-code", "/", now, true), null); // / is no one's project
+	assert.equal(wire.readJoinFile(file({ cwd: "/c/proj", pcwd: "/c/proj" }), "claude-code", "C:\\", now, true), null); // nor C:\\
+	assert.equal(wire.sameFolder(["/w/Repo"], "/w/repo"), false); // Linux, macOS: as written
+	assert.equal(wire.sameFolder(["\\\\srv\\Share\\x"], "//srv/share/x"), true); // UNC: Windows, no case
+});

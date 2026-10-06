@@ -44,8 +44,11 @@
 	.box { flex: 1; min-width: 0; display: flex; align-items: center; border: 1px solid var(--input); border-radius: var(--radius-md, 8px); padding: 6px 10px; font-size: 13.5px; overflow-wrap: anywhere; background: var(--background); }
 	.cmd { display: flex; gap: 8px; align-items: stretch; }
 	.cmd > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-	.cmd code { display: block; font-size: 13px; line-height: 1.5; background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+	.cmd code, .prompt pre { display: block; margin: 0; font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5; background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 	.cmd > button { align-self: flex-end; }
+	.prompt { display: flex; flex-direction: column; gap: 6px; }
+	.prompt > button { align-self: flex-start; }
+	.or { font-weight: 600; margin: 4px 0 0; font-size: 14px; }
 	.where { font-size: 12px; color: var(--muted-foreground); }
 	.note { font-size: 13px; color: var(--muted-foreground); margin: 0; overflow-wrap: anywhere; }
 	.muted { color: var(--muted-foreground); }
@@ -221,10 +224,27 @@ function newRoom() {
 const roomFromHash = () => (/^#([a-z]{2,12}-[a-z]{2,12}-\d{4}-[a-z0-9]{4}|[a-z2-7]{20,64})$/.exec(location.hash) || [])[1];
 const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").replace(/^[_-]+/, "").slice(0, 24); // starts with a letter or digit
 
+// The prompt each agent tab leads with: pasted into the agent already open, it sets duet up, writes the
+// join file the agent's duet takes on its next start, and ends with the one step left for the person.
+// Shell-safe as filled in: room and name are [A-Za-z0-9_-], the relay passed relayOk (no quotes, no %).
+const joinFile = (agent) =>
+	`mkdir -p ~/.duet && printf '{"agent":"${agent}","room":"{room}","name":"{name}","relay":"{relay}","cwd":"%s","pcwd":"%s","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
+const RUN = "Run this as one shell command:";
+
 // Each case: [where it is typed, the command]. {room}, {name} and the relay are filled in. The first
 // case is the one line for a terminal in the project folder (each step is safe to run again).
 const AGENTS = {
 	claude: {
+		prompt: {
+			where: "paste into Claude Code, open in your project folder",
+			text: `Set up duet and join room {room} as {name}. ${RUN}
+
+${joinFile("claude-code")} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && { case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac; d=$(mktemp -d); case "$(cd "$d" && claude plugin test 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off' ;; esac; rmdir "$d"; }
+
+Then reply with only: Type /reload-plugins to join.
+If it printed "duet: mods are off", reply only: Claude Code's mods are off for your account, so duet can't run here yet. If it failed, say which step failed instead.`,
+			note: "Approve its one command · then /reload-plugins · Claude Code 2.1.287+",
+		},
 		cases: [
 			{
 				key: "fresh",
@@ -252,6 +272,16 @@ const AGENTS = {
 		receive: "Ask (default) · request waits: 1 Process · 2 Ignore · 3 Process and send · reply waits: 1 Send · 2 Don't send. /duet auto: no gates. /duet: history, settings. /duet off: leave.",
 	},
 	codex: {
+		prompt: {
+			where: "paste into Codex, open in your project folder",
+			text: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server {relay}) and stop. Otherwise run this as one shell command:
+
+${joinFile("codex")} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet
+
+Then reply with only: Start a new Codex session in this folder and say "join duet" (first time: trust duet's hooks).
+If it failed, say which step failed instead.`,
+			note: "Approve its one command · then a new Codex session: say “join duet”",
+		},
 		cases: [
 			{
 				key: "fresh",
@@ -269,6 +299,16 @@ const AGENTS = {
 		receive: "Ask (default) · a form before Codex sees a request: Process · Process and send · Ignore · a form before a reply leaves: Send · Don't send. “duet auto”: no gates. After Esc or under Full Access: say “check duet”.",
 	},
 	pi: {
+		prompt: {
+			where: "paste into pi, open in your project folder",
+			text: `Set up duet and join room {room} as {name}. ${RUN}
+
+${joinFile("pi")} && pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet
+
+Then reply with only: Type /reload to join.
+If it failed, say which step failed instead.`,
+			note: "Then /reload",
+		},
 		cases: [
 			{
 				key: "fresh",
@@ -291,6 +331,13 @@ const AGENTS = {
 	},
 	// Chat apps: the duet panel (an MCP App) in the conversation. Each host has its own case.
 	chat: {
+		// After the connector: the prompt goes last, the room code then sits in the chat.
+		after: true,
+		prompt: {
+			where: "then say, in a new chat",
+			text: "Open duet: call duet_room with room {room} and name {name}.",
+			note: "The code stays in the chat history · private: say “open duet”, type it into the panel",
+		},
 		cases: [
 			{
 				key: "desktop",
@@ -304,18 +351,18 @@ const AGENTS = {
 				title: "claude.ai, Claude apps, Cowork",
 				steps: [
 					["connector URL", HOSTED],
-					["room code: into the duet panel, not the chat", "{room}"],
+					["room code, the private way: into the duet panel", "{room}"],
 				],
-				note: "Customize → Connectors → Add custom connector · paste the URL · no sign-in · say “open duet” · join in the panel · Team, Enterprise: an owner may have to allow it{hosted-relay}",
+				note: "Customize → Connectors → Add custom connector · paste the URL · no sign-in · Team, Enterprise: an owner may have to allow it{hosted-relay}",
 			},
 			{
 				key: "chatgpt",
 				title: "ChatGPT",
 				steps: [
 					["connector URL", HOSTED],
-					["room code: into the duet panel, not the chat", "{room}"],
+					["room code, the private way: into the duet panel", "{room}"],
 				],
-				note: "Settings → Security and login → Developer mode (not every plan) · chatgpt.com/plugins → + → duet, paste the URL, no auth → Create · add duet from the tools menu · say “open duet”{hosted-relay}",
+				note: "Settings → Security and login → Developer mode (not every plan) · chatgpt.com/plugins → + → Add custom MCP server · paste the URL, no auth → Create as a plugin · install it from your plugins · new chat{hosted-relay}",
 			},
 			{
 				key: "vscode",
@@ -342,8 +389,9 @@ const name = () => typedName() || "YOUR_NAME";
 function fill(cmd) {
 	// Function replacements: a string one would expand $& and friends.
 	return cmd
-		.replace("{room}", () => room())
-		.replace("{name}", () => name())
+		.replaceAll("{room}", () => room())
+		.replaceAll("{name}", () => name())
+		.replaceAll("{relay}", () => RELAY)
 		.replace("{pi-srv}", () => " " + RELAY)
 		.replace("{env-srv}", () => `DUET_SERVER=${RELAY} `)
 		.replace("{claude-srv}", () => (custom ? `DUET_SERVER=${RELAY} ` : ""))
@@ -368,10 +416,14 @@ function render() {
 	box.textContent = "";
 	// The commands carry the name: until one is typed they show a stand-in and can't be copied.
 	if (!typedName()) box.append(el("p", "hint", "Type your name first · every command uses it"));
+	const prompt = el("div", "prompt");
+	const pre = el("pre", "", fill(a.prompt.text));
+	prompt.append(el("span", "where", a.prompt.where), pre, copyButton("Copy prompt", pre), el("p", "note", a.prompt.note));
+	if (!a.after) box.append(prompt, el("p", "or", "Or run it yourself"));
 	a.cases.forEach((c, ci) => {
 		const section = el("details", "case");
 		section.dataset.case = c.key;
-		section.open = opened[agent + c.key] ?? ci === 0;
+		section.open = opened[agent + c.key] ?? (!!a.after && ci === 0); // the agents lead with the prompt
 		section.addEventListener("toggle", () => (opened[agent + c.key] = section.open));
 		section.append(el("summary", "", c.title));
 		const body = el("div", "body");
@@ -380,14 +432,7 @@ function render() {
 			const wrap = el("div");
 			const code = el("code", "", fill(cmd));
 			wrap.append(el("span", "where", where), code);
-			const btn = el("button", "btn", "Copy");
-			btn.type = "button";
-			btn.dataset.variant = "outline";
-			btn.dataset.size = "sm";
-			btn.disabled = !typedName();
-			if (btn.disabled) btn.title = "Type your name first";
-			btn.addEventListener("click", () => copy(code.textContent, btn));
-			row.append(wrap, btn);
+			row.append(wrap, copyButton("Copy", code));
 			body.append(row);
 		});
 		if (c.link) {
@@ -402,8 +447,21 @@ function render() {
 		section.append(body);
 		box.append(section);
 	});
+	if (a.after) box.append(prompt);
 	box.append(el("p", "receive", a.receive));
 	document.querySelectorAll(".tabs [role=tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.agent === agent)));
+}
+
+// Copies what is shown; off until a name is typed (the text carries a stand-in until then).
+function copyButton(label, shown) {
+	const btn = el("button", "btn", label);
+	btn.type = "button";
+	btn.dataset.variant = "outline";
+	btn.dataset.size = "sm";
+	btn.disabled = !typedName();
+	if (btn.disabled) btn.title = "Type your name first";
+	btn.addEventListener("click", () => copy(shown.textContent, btn));
+	return btn;
 }
 
 async function copy(text, btn) {

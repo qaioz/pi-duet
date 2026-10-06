@@ -97,6 +97,9 @@ export const outgoingItem = (h) => ({ id: h.id, to: h.to, text: h.text.length <=
 // result's _meta out of the model's context), and every panel tool but duet_reply needs it. So even a
 // host that lists app-only tools to the model doesn't let the model read the room or hand itself a request.
 export const PANEL_KEY_META = "duet/key";
+// hosted only: duet_room's room and name for the panel to join with (it holds the seat token). Never
+// kept on the server.
+export const JOIN_META = "duet/join";
 
 // What duet_send answers while the reply waits in the card. The hold id is in _meta only: the card gets
 // it, the model doesn't (hosts keep a result's _meta out of the model's context).
@@ -184,8 +187,13 @@ const tokenProp = {
 	key: { type: "string", description: "The panel's key from duet_room's result (local server)." },
 };
 
-// The one tool the model sees: it opens the panel. No room code in its arguments: the code is typed
-// into the panel, so it never enters the chat (or the model's context).
+// The one tool the model sees: it opens the panel. The private way to join is the panel's form: the
+// code never enters the chat. A room and name the user put in their message (the site's prompt) join
+// at once; the code then sits in the chat history.
+export const roomProps = {
+	room: { type: "string", description: "Only when your user gave a room code in the chat: the code (3-64 letters, digits, . _ -)." },
+	name: { type: "string", description: "With room: your user's name in the room, as they gave it." },
+};
 export const roomTool = {
 	name: "duet_room",
 	title: "duet room",
@@ -193,8 +201,8 @@ export const roomTool = {
 		"Open the duet panel in the chat. duet pairs your user with another developer's coding agent through a shared room; the panel shows the room, " +
 		"each request waiting from the other agent (your user hands it to you with a click) and the conversation. Call it when your user asks to open duet, " +
 		"join a duet room, or says check, check duet, anything new, or duet. Its answer says how many requests wait and from whom: tell your user, and that they " +
-		"process them in the panel (you get a request only from their click). Never ask for the room code: your user types it into the panel.",
-	inputSchema: { type: "object", properties: {} },
+		"process them in the panel (you get a request only from their click). Pass room and name only when your user gave them in the chat; never ask for the code: your user can type it into the panel.",
+	inputSchema: { type: "object", properties: roomProps },
 	_meta: {
 		ui: { resourceUri: PANEL_URI },
 		"openai/outputTemplate": PANEL_URI,
@@ -491,10 +499,32 @@ ${BRIDGE}
 	$("name").value = store("local", "duet-name");
 	// The local server's key for this panel: in duet_room's result (_meta), which the model doesn't see.
 	let key = store("session", "duet-key");
+	// The hosted server's room and name from duet_room (the user's own message): the panel joins with them
+	// once, and only within 10 minutes of the call. A redrawn or reopened chat replays the result: that
+	// doesn't join again, nor after a Leave (each result's id is remembered in this browser).
+	let autoJoin = null;
+	const usedJoins = () => store("local", "duet-auto").split(" ").filter(Boolean);
 	handlers["ui/notifications/tool-result"] = (r) => {
 		const k = r && r._meta && r._meta[${JSON.stringify(PANEL_KEY_META)}];
 		if (typeof k === "string" && k && k !== key) { key = k; store("session", "duet-key", k); if (ready) refresh(true); }
+		const j = r && r._meta && r._meta[${JSON.stringify(JOIN_META)}];
+		const ok = j && typeof j.room === "string" && typeof j.name === "string" && !(j.id && usedJoins().includes(j.id)) && store("session", "duet-joined") !== j.room + " " + j.name;
+		if (ok && (j.at === undefined || Math.abs(Date.now() - j.at) < 10 * 60_000)) {
+			autoJoin = j;
+			if (ready) joinAsked();
+		} else if (ok && !store("session", "duet-room")) {
+			// Older than 10 minutes by this browser's clock: filled in, the user presses Join.
+			$("room").value = j.room; $("name").value = j.name;
+		}
 	};
+	function joinAsked() {
+		if (!autoJoin) return;
+		$("room").value = autoJoin.room; $("name").value = autoJoin.name;
+		store("session", "duet-joined", autoJoin.room + " " + autoJoin.name);
+		if (autoJoin.id) store("local", "duet-auto", [autoJoin.id, ...usedJoins()].slice(0, 20).join(" "));
+		autoJoin = null;
+		join();
+	}
 
 	async function call(name, args) {
 		const r = await rpc("tools/call", { name, arguments: Object.assign({ token }, key ? { key } : {}, args || {}) });
@@ -771,7 +801,7 @@ ${BRIDGE}
 	}
 	document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 
-	start(${JSON.stringify(version)}, ["inline", "fullscreen"]).then(() => refresh(true));
+	start(${JSON.stringify(version)}, ["inline", "fullscreen"]).then(() => (autoJoin ? joinAsked() : refresh(true)));
 })();
 </script>
 </body>

@@ -62,7 +62,7 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 			if (!did.feeding) break;
 			await new Promise<void>((r) => (wake = r));
 		}
-		return { code: 0, signal: null };
+		return { value: { code: 0, signal: null } };
 	});
 	did.push = (env: any, attachmentUrl?: string) => {
 		did.seq++;
@@ -150,6 +150,7 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 		if (!did.fs.has(e.path)) throw new Error("ENOENT: " + e.path);
 		return { value: did.fs.get(e.path) };
 	});
+	on("fs.exists", ($: any, e: any) => ({ value: did.fs.has(e.path) }));
 	on("fs.write", ($: any, e: any) => {
 		did.fs.set(e.path, e.text);
 		return { value: undefined };
@@ -283,6 +284,7 @@ test("an unreachable relay means no join", async ($, on) => {
 	const { did, clock, start } = world(on, { fetchStatus: 403 });
 	await $.session.start(start());
 	await join($, clock, "test-room-2 gaioz");
+	await until(clock, () => did.toasts.length > 0);
 	expect(did.logs.join("\n")).toMatch(/relay .* unreachable: relay HTTP 403 · not joined/);
 	expect(did.toasts.join("\n")).toMatch(/relay unreachable/);
 	expect(did.store.get("room:" + CWD)).toBeUndefined();
@@ -1344,11 +1346,153 @@ test("a room's saved history is capped in bytes, not characters: non-ASCII text 
 	await $.session.start(start());
 	await join($, clock, "test-room-90 gaioz");
 	await $.command.run({ command: "duet", args: "off", origin: USER } as any);
-	await settle(clock, 10);
+	const size = () => new TextEncoder().encode(JSON.stringify(did.store.get("history:" + key))).length;
+	await until(clock, () => size() <= 512 * 1024);
 	const saved: any[] = did.store.get("history:" + key) as any;
-	const bytes = new TextEncoder().encode(JSON.stringify(saved)).length;
+	const bytes = size();
 	expect(bytes).toBeLessThanOrEqual(512 * 1024);
 	expect(saved.length).toBeGreaterThan(50);
 	expect(saved.length).toBeLessThan(200);
 	expect(saved.at(-1).text.startsWith("left") || saved.some((h: any) => h.text.startsWith("199 "))).toBe(true);
+});
+
+// The join file the website's prompt writes (~/.duet/join.json; `at` in Unix seconds).
+const JOIN_FILE = "/home/g/.duet/join.json";
+// Move the mock clock until `done` holds (the test kit runs hooks in real time between steps).
+async function until(clock: any, done: () => boolean) {
+	for (let i = 0; i < 60 && !done(); i++) await clock.advance(100);
+}
+const joinFile = (fields: Record<string, unknown> = {}) => JSON.stringify({ agent: "claude-code", room: "test-room-80", name: "nika", relay: "http://127.0.0.1:18080", cwd: CWD + "/", pcwd: "/real/repo", at: Math.floor(Date.now() / 1000), ...fields }) + "\n";
+
+test("join file: taken on session.start (own agent, fresh, this folder): emptied, then joins in ask with its relay", async ($, on) => {
+	const { did, clock, start } = world(on);
+	did.fs.set(JOIN_FILE, joinFile());
+	await $.session.start(start());
+	await until(clock, () => did.logs.length > 0);
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+	expect(did.posts[0]?.url).toMatch(/^http:\/\/127\.0\.0\.1:18080\/duet_[0-9a-f]{40}$/);
+	expect(did.posts[0]?.body).toMatchObject({ kind: "join", from: "nika" });
+	expect(did.logs).toContain("joined test-room-80 as nika");
+	expect(String(((await statusLine($, did)) as any).text)).toMatch(/· ask/);
+	await $.command.run({ command: "duet", args: "status", origin: USER } as any);
+	expect(did.logs.at(-1)).toMatch(/test-room-80 · you are nika$/);
+});
+
+test("join file: the folder may match `pwd -P` only; it beats the folder's remembered room", async ($, on) => {
+	const { did, clock, start } = world(on, { store: { ["room:" + CWD]: { code: "test-room-19", name: "gaioz", relay: "https://duet.gaioz.online", at: Date.now() } } });
+	did.fs.set(JOIN_FILE, joinFile({ cwd: "/link/repo", pcwd: CWD }));
+	await $.session.start(start());
+	await until(clock, () => did.posts.length > 0);
+	await settle(clock, 20);
+	expect(did.posts.length).toBe(1);
+	expect(did.posts[0].body).toMatchObject({ kind: "join", from: "nika" });
+});
+
+for (const [what, bad] of Object.entries({ "another agent's": { agent: "codex" }, "another folder's": { cwd: "/work/other", pcwd: "/work/other" }, "a bad room": { room: "a;b" }, "a placeholder name": { name: "YOUR_NAME" }, "a bad relay": { relay: "ftp://x" }, "one from the future": { at: Math.floor(Date.now() / 1000) + 600 } }))
+	test(`join file: ${what} is not joined and left alone`, async ($, on) => {
+		const { did, clock, start } = world(on);
+		const text = joinFile(bad);
+		did.fs.set(JOIN_FILE, text);
+		await $.session.start(start());
+		await settle(clock, 20);
+		await clock.advance(3000);
+		await settle(clock, 20);
+		expect(did.posts.length).toBe(0);
+		expect(did.fs.get(JOIN_FILE)).toBe(text);
+	});
+
+test("join file: a stale one (over 30 min) is not joined, and is emptied", async ($, on) => {
+	const { did, clock, start } = world(on);
+	did.fs.set(JOIN_FILE, joinFile({ at: Math.floor(Date.now() / 1000) - 31 * 60 }));
+	await $.session.start(start());
+	await until(clock, () => did.fs.get(JOIN_FILE) === "{}");
+	await settle(clock, 20);
+	expect(did.posts.length).toBe(0);
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+});
+
+test("join file: in a room already it is ignored and left", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await join($, clock, "test-room-81 gaioz");
+	await until(clock, () => did.logs.includes("joined test-room-81 as gaioz"));
+	const text = joinFile();
+	did.fs.set(JOIN_FILE, text);
+	await clock.advance(6000);
+	await settle(clock, 20);
+	expect(did.posts.filter((p: any) => p.body?.kind === "join").length).toBe(1);
+	expect(did.fs.get(JOIN_FILE)).toBe(text);
+	await $.command.run({ command: "duet", args: "status", origin: USER } as any);
+	expect(did.logs.at(-1)).toMatch(/test-room-81 · you are gaioz$/);
+});
+
+test("join file: the poll takes one written after start; after /duet off it looks again", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await settle(clock, 20);
+	expect(did.posts.length).toBe(0);
+	did.fs.set(JOIN_FILE, joinFile());
+	await clock.advance(2600);
+	await until(clock, () => did.posts.length > 0);
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+	expect(did.posts[0]?.body).toMatchObject({ kind: "join", from: "nika" });
+	await $.command.run({ command: "duet", args: "off", origin: USER } as any);
+	await settle(clock, 10);
+	did.fs.set(JOIN_FILE, joinFile({ room: "test-room-82" }));
+	await clock.advance(2600);
+	await until(clock, () => did.logs.includes("joined test-room-82 as nika"));
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+	expect(did.logs).toContain("joined test-room-82 as nika");
+});
+
+test("join file: after a reload the window takes up its room, then a prompt pasted since moves it", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await join($, clock, "test-room-84 gaioz");
+	await until(clock, () => did.logs.includes("joined test-room-84 as gaioz"));
+	did.fs.set(JOIN_FILE, joinFile({ room: "test-room-85" }));
+	await $.session.start(start()); // /reload-plugins: session.start again in this process
+	await until(clock, () => did.logs.includes("joined test-room-85 as nika"));
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+	await $.command.run({ command: "duet", args: "status", origin: USER } as any);
+	expect(did.logs.at(-1)).toMatch(/test-room-85 · you are nika$/);
+});
+
+test("join file: a /duet <room> typed after the prompt empties it, so a reload doesn't move the window", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await settle(clock, 20);
+	did.fs.set(JOIN_FILE, joinFile({ room: "test-room-86" }));
+	await $.command.run({ command: "duet", args: "test-room-87 gaioz", origin: USER } as any);
+	await until(clock, () => did.logs.includes("joined test-room-87 as gaioz"));
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+	expect(did.logs).not.toContain("joined test-room-86 as nika");
+});
+
+test("join file: from a subfolder (the shell cd'd) it is taken on start or reload, not by the poll", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await settle(clock, 20);
+	const sub = joinFile({ cwd: CWD + "/sub", pcwd: "/real/repo/sub", room: "test-room-88" });
+	did.fs.set(JOIN_FILE, sub);
+	await clock.advance(6000);
+	await settle(clock, 20);
+	expect(did.posts.length).toBe(0);
+	expect(did.fs.get(JOIN_FILE)).toBe(sub);
+	await $.session.start(start()); // /reload-plugins
+	await until(clock, () => did.logs.includes("joined test-room-88 as nika"));
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+});
+
+test("join file: /duet off empties one written while in the room, so leaving doesn't join it", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await join($, clock, "test-room-89 gaioz");
+	await until(clock, () => did.logs.includes("joined test-room-89 as gaioz"));
+	did.fs.set(JOIN_FILE, joinFile({ room: "test-room-90" }));
+	await $.command.run({ command: "duet", args: "off", origin: USER } as any);
+	await clock.advance(6000);
+	await settle(clock, 20);
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+	expect(did.logs).not.toContain("joined test-room-90 as nika");
 });

@@ -108,8 +108,8 @@ function stdio(name, { args = [], env = {} } = {}) {
 		call: async (tool, a = {}) => (await request("tools/call", { name: tool, arguments: PANEL_TOOLS.includes(tool) && key ? { key, ...a } : a })).result,
 		// As the model would, if a host listed the app-only tools to it: no key.
 		bare: async (tool, a = {}) => (await request("tools/call", { name: tool, arguments: a })).result,
-		open: async () => {
-			const r = (await request("tools/call", { name: "duet_room", arguments: {} })).result;
+		open: async (a = {}) => {
+			const r = (await request("tools/call", { name: "duet_room", arguments: a })).result;
 			key = r?._meta?.["duet/key"];
 			return r;
 		},
@@ -248,6 +248,26 @@ async function localTests() {
 	const shortTexts = [shortRoomText, (await short.call("duet_status")).content[0].text];
 	check("stdio: a short room code is not shown at all", shortState.room === "…" && shortTexts.every((t) => !/\babc\b/.test(t)), JSON.stringify([shortState.room, ...shortTexts.map((t) => t.slice(0, 70))]));
 	short.stop();
+
+	// duet_room with a room and name from the user's message (the site's prompt): joins at once; a bad one doesn't.
+	const asked = stdio("asked");
+	await asked.init("claude-ai", UI_CAPS);
+	const askedRoom = `t-${randomUUID()}`;
+	const badRoom = await asked.open({ room: "x!", name: "gaioz" });
+	const badName = await asked.open({ room: askedRoom, name: "your-name" });
+	const notIn = data(await asked.call("duet_room_state"));
+	const joinedR = await asked.open({ room: askedRoom, name: "gaioz" });
+	const inSt = await until(async () => {
+		const st = data(await asked.call("duet_room_state"));
+		return st.connected && st;
+	}, 10_000, "stdio join from duet_room").catch(() => ({}));
+	check(
+		"stdio: duet_room with room and name joins directly; a bad room or name is refused, no join",
+		badRoom.isError && /^Not joined · room code/.test(badRoom.content[0].text) && badName.isError && /^Not joined · name/.test(badName.content[0].text) && !notIn.inRoom &&
+			!joinedR.isError && joinedR.content[0].text.includes("as gaioz") && !joinedR.content[0].text.includes(askedRoom) && inSt.name === "gaioz" && !!badRoom._meta?.["duet/key"],
+		`bad room: ${badRoom.content[0].text}; bad name: ${badName.content[0].text}; then: ${joinedR.content[0].text}; connected: ${!!inSt.connected}`,
+	);
+	asked.stop();
 }
 
 // ---------- hosted.js over HTTP ----------
@@ -419,6 +439,28 @@ async function hostedTests() {
 	await b.call("duet_room_leave");
 	const leftNote = await until(async () => (await lev.notes()).find((e) => e.note === "left" && e.from === "maya"), 10_000, "left").catch(() => null);
 	check("hosted: Ignore and Leave reach the other side", !!declined && !!leftNote, `declined: ${!!declined}, left: ${!!leftNote}`);
+
+	// duet_room with a room and name from the user's message: checked, handed to the panel in _meta (it
+	// joins with its own token), never joined or kept here.
+	const d = client(h.url);
+	const askedRoom = `t-${randomUUID()}`;
+	// Anything the server publishes to that room (a join would be the first thing) is heard here.
+	const overheard = [];
+	const ear = subscribe({ server: SERVER, topic: topicFor(askedRoom), onEnvelope: (e) => overheard.push(e) });
+	await new Promise((r) => setTimeout(r, 800));
+	const toPanel = await d.model("duet_room", { room: askedRoom, name: "zura", seat: "nope" });
+	const badHosted = await d.model("duet_room", { room: "x!", name: "zura" });
+	const badHostedName = await d.model("duet_room", { room: askedRoom, name: "YOUR_NAME" });
+	await new Promise((r) => setTimeout(r, 2500));
+	ear.stop();
+	const meta = toPanel._meta?.["duet/join"] ?? {};
+	check(
+		"hosted: duet_room with room and name hands them to the panel (_meta duet/join, with a time and a one-time id) without joining (nothing reaches the room) or logging; a bad one: a clear refusal, no _meta",
+		meta.room === askedRoom && meta.name === "zura" && Math.abs(Date.now() - meta.at) < 60_000 && /^[0-9a-f]{16}$/.test(meta.id ?? "") && !toPanel.isError && !toPanel.content[0].text.includes(askedRoom) &&
+			badHosted.isError && /^Not joined · room code/.test(badHosted.content[0].text) && !badHosted._meta && badHostedName.isError && !badHostedName._meta &&
+			overheard.length === 0 && !h.logs().includes(askedRoom),
+		`heard in the room: ${overheard.length} · ${toPanel.content[0].text} / ${badHosted.content[0].text} / ${badHostedName.content[0].text}`,
+	);
 
 	// Custody: the room code (or its topic hash, as good for reaching the room) and the panel tokens never
 	// come back from the server or reach its log, on the happy path and on errors.
@@ -886,6 +928,20 @@ addEventListener("message", async (ev) => {
 			ana.stop();
 			await r.page.close();
 			await c.page.close();
+		}
+
+		// duet_room with a room and name (hosted): the panel fills its form and joins by itself.
+		{
+			const h2 = await hosted(); // its own server: the panels above use this address's rooms
+			const askedRoom = `t-${randomUUID()}`;
+			const result = await client(h2.url).model("duet_room", { room: askedRoom, name: "zura" });
+			const r = await open({ tool: { args: { room: askedRoom, name: "zura" }, result }, mcpUrl: `${h2.url}/mcp` });
+			await r.panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 }).catch(() => {});
+			const shownCode = await r.panel.locator("#sub .code").textContent().catch(() => "");
+			const sub = await r.panel.locator("#sub").textContent().catch(() => "");
+			check("browser: duet_room with room and name: the panel joins by itself", shownCode === askedRoom && sub.includes("zura") && !r.errors.length, `shown: ${JSON.stringify(sub)}; error: ${JSON.stringify(await r.panel.locator("#error").textContent())}; page errors: ${JSON.stringify(r.errors)}`);
+			await r.page.close();
+			h2.proc.kill();
 		}
 
 		// The local server (mcp.js over stdio, as Claude Desktop runs it): the panel gets its key from

@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { LOCK_BEAT_MS, describeHolder, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeLock } from "./lock.js";
+import { LOCK_BEAT_MS, describeHolder, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeJoinFile, takeLock } from "./lock.js";
 import { envelope, firstLine, fitName, isForMe, isPlaceholderName, isRelayUrl, placeFor, publish, subscribe, topicFor } from "./transport.js";
 
 const RECENT_MS = 30 * 60_000; // a peer counts as "here" if seen this recently
@@ -151,10 +151,46 @@ export default function (pi: ExtensionAPI) {
 		if (release && room && name) releaseLock(lockFile(), me);
 	}
 
+	// /duet <room> <name> [server], or the join file the site's prompt writes.
+	async function joinAs(next: { room: string; name: string; server: string }, keepServer: boolean) {
+		// Check the new room's lock before leaving this one: a refusal leaves everything as it was.
+		const theirs = readLock(lockPath(next.server, next.room, next.name));
+		if (theirs && theirs.token !== me.token && lockHeld(theirs)) return notify(`duet: ${describeHolder(theirs)} has room ${next.room} as ${next.name} on this computer — use that one, or another name`, "error");
+		leave();
+		[room, name, server] = [next.room, next.name, next.server];
+		updateConfig((c) => Object.assign(c, { room, name, server: keepServer ? server : undefined }));
+		await joinRoom();
+		if (!sub) return notify(`duet: ${status}`, "error");
+		try {
+			await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place: placeFor(process.cwd(), topicFor(room)) }));
+			notify(`duet: joined as ${name}`);
+		} catch (err) {
+			notify(`duet: joined, but announcing failed: ${(err as Error).message}`, "warning");
+		}
+	}
+
+	// The site's prompt wrote ~/.duet/join.json for pi in this folder (lock.js), and the user typed
+	// /reload. Never over a room this window is in, or an env join (DUET_ROOM).
+	let joining = false;
+	async function fromJoinFile(nested = false) {
+		if (joining || sub || process.env.DUET_ROOM) return;
+		const j = takeJoinFile({ agent: "pi", folder: process.cwd(), nested });
+		if (!j) return;
+		joining = true;
+		await joinAs({ room: j.room, name: j.name, server: j.relay }, true).finally(() => (joining = false));
+	}
+	let poll: ReturnType<typeof setInterval> | undefined;
+
 	pi.on("session_start", async (_event, ctx) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		// No UI means `pi -p` or similar one-shot: it must not grab the room or eat its messages.
-		if (!ui || !room || !name) return;
+		if (!ui) return;
+		// Polled too, so a pi that already has duet joins from a prompt pasted later.
+		clearInterval(poll);
+		poll = setInterval(() => void fromJoinFile().catch(() => {}), 2500);
+		poll.unref?.();
+		await fromJoinFile(true);
+		if (sub || !room || !name) return;
 		await joinRoom();
 		// A join from the environment (the site's "start fresh" command) says hello like /duet does.
 		if (sub && process.env.DUET_ROOM && !announced) {
@@ -164,7 +200,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// The runtime is rebuilt on /new, /resume, /reload…; session_start will rejoin.
-	pi.on("session_shutdown", async () => leave());
+	pi.on("session_shutdown", async () => {
+		clearInterval(poll);
+		leave();
+	});
 
 	pi.on("input", async (event) => {
 		turnFromPeer = event.source === "extension";
@@ -191,6 +230,7 @@ export default function (pi: ExtensionAPI) {
 			if (parts[0] === "off") {
 				const owner = !sub && lockOwner();
 				if (owner) return notify(`duet: this window is not in the room; ${heldBy(owner)}`, "error"); // leave its settings alone
+				takeJoinFile({ agent: "pi", folder: process.cwd(), nested: true }); // leaving: a join file mustn't put the window straight back
 				leave();
 				// Forget the cursor too: rejoining later must not replay hours of backlog as turns.
 				updateConfig((c) => (delete c.cursors[cursorKey()], delete c.room, delete c.name));
@@ -201,21 +241,8 @@ export default function (pi: ExtensionAPI) {
 			if (parts.length < 2) return notify("usage: /duet <room> <name> [server]", "error");
 			if (isPlaceholderName(parts[1])) return notify(`duet: "${parts[1]}" is the website's placeholder: use your own name`, "error");
 			if (parts[2] && !isRelayUrl(parts[2].replace(/\/+$/, ""))) return notify("duet: the server must be an http(s) URL", "error");
-			// Check the new room's lock before leaving this one: a refusal leaves everything as it was.
-			const next = { room: parts[0], name: fitName(parts[1]), server: (parts[2] || process.env.DUET_SERVER || DEFAULT_SERVER).replace(/\/+$/, "") };
-			const theirs = readLock(lockPath(next.server, next.room, next.name));
-			if (theirs && theirs.token !== me.token && lockHeld(theirs)) return notify(`duet: ${describeHolder(theirs)} has room ${next.room} as ${next.name} on this computer — use that one, or another name`, "error");
-			leave();
-			[room, name, server] = [next.room, next.name, next.server];
-			updateConfig((c) => Object.assign(c, { room, name, server: parts[2] ? server : undefined }));
-			await joinRoom();
-			if (!sub) return notify(`duet: ${status}`, "error");
-			try {
-				await publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", place: placeFor(process.cwd(), topicFor(room)) }));
-				notify(`duet: joined as ${name}`);
-			} catch (err) {
-				notify(`duet: joined, but announcing failed: ${(err as Error).message}`, "warning");
-			}
+			takeJoinFile({ agent: "pi", folder: process.cwd(), nested: true }); // newer than a pasted prompt's join file: that one goes
+			await joinAs({ room: parts[0], name: fitName(parts[1]), server: (parts[2] || process.env.DUET_SERVER || DEFAULT_SERVER).replace(/\/+$/, "") }, !!parts[2]);
 		},
 	});
 

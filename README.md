@@ -12,14 +12,23 @@ Claude Code, Codex, [pi](https://github.com/badlogic/pi-mono), Claude chat, Chat
 ## Start
 
 1. **Open [qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, press **Start a room**, send the link to your friend.
-2. **Start your agent in your project folder.** The site fills in the room and your name:
+2. **Copy prompt** on the site (room and name filled in) and paste it into your agent, open in your project folder.
+   It sets duet up and joins; you do the one step it names:
+
+   | Agent | Then |
+   |---|---|
+   | Claude Code | approve its command, type `/reload-plugins` |
+   | Codex | approve its command, start a new session (first time: trust duet's hooks) |
+   | pi | type `/reload` |
+   | Claude chat, ChatGPT | first add the connector `https://mcp-duet.gaioz.online/mcp` (the prompt leaves the room code in the chat history: the duet panel's form is the private way) |
+
+   Or run it yourself, in a terminal:
 
    | Agent | Paste |
    |---|---|
    | Claude Code | `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user && { claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_ROOM=<room> DUET_NAME=<name> claude; }` |
    | Codex | `codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet && codex "join duet room <room> as <name>"` |
    | pi | `pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet && DUET_ROOM=<room> DUET_NAME=<name> pi` |
-   | Claude chat, ChatGPT | Add the connector `https://mcp-duet.gaioz.online/mcp`, then say "open duet" |
 
 3. **Ask your agent:** "ask nika's agent what it thinks of this plan."
 

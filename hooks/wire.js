@@ -38,6 +38,43 @@ export const LEAVE_WORDS = ["off", "leave", "stop", "disable", "quit", "exit"];
 export const isRoomCode = (room) =>
 	typeof room === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$/.test(room) && !LEAVE_WORDS.includes(room.toLowerCase());
 
+// The join file (~/.duet/join.json) the website's prompt writes: { agent, room, name, relay, cwd,
+// pcwd, at } with `at` in Unix seconds. What a client does with its text: "take" ({ room, name,
+// relay }), "clear" (stale: nobody will take it) or null (leave it: another client or folder may).
+export const JOIN_FRESH_S = 30 * 60;
+// A folder as both sides write it: Git Bash's /c/x and Windows' C:\x are one folder; no trailing slash.
+const folderKey = (p) => (typeof p === "string" && p ? p.replace(/\\/g, "/").replace(/^\/([A-Za-z])(?=\/|$)/, "$1:").replace(/\/+$/, "") || "/" : "");
+// Windows paths (C:\x, \\server\x) compare without case; Linux and macOS ones as written.
+const isWindowsPath = (p) => typeof p === "string" && (/^[A-Za-z]:/.test(p) || p.includes("\\"));
+// The join file's folder is this one or, on this window's own start or reload (nested), one inside it:
+// the agent's shell may have cd'd into a subfolder. A poll takes only its own folder, so a window open
+// in ~ doesn't take every prompt pasted below it.
+export const sameFolder = (paths, folder, nested = false) => {
+	const here0 = folderKey(folder);
+	return !!here0 && paths.some((p) => {
+		const fold = isWindowsPath(folder) || isWindowsPath(p);
+		const here = fold ? here0.toLowerCase() : here0;
+		const k = fold ? folderKey(p).toLowerCase() : folderKey(p);
+		const root = here === "/" || /^[A-Za-z]:$/.test(here); // / or C:\ is no one's project
+		return !!k && (k === here || (nested && !root && k.startsWith(here + "/")));
+	});
+};
+export function readJoinFile(text, agent, folder, nowMs, nested = false) {
+	let j;
+	try {
+		j = JSON.parse(text);
+	} catch {
+		return null;
+	}
+	if (!j || typeof j !== "object" || typeof j.at !== "number") return null;
+	const age = nowMs / 1000 - j.at;
+	if (age > JOIN_FRESH_S) return { clear: true };
+	if (age < -5 * 60 || j.agent !== agent) return null;
+	if (!sameFolder([j.cwd, j.pcwd], folder, nested)) return null;
+	if (!isRoomCode(j.room) || typeof j.name !== "string" || !j.name || isPlaceholderName(j.name) || (j.relay !== undefined && !isRelayUrl(j.relay))) return null;
+	return { take: { room: j.room, name: j.name, relay: j.relay } };
+}
+
 const hex = (bytes) => Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
 
 export async function sha256hex(text) {

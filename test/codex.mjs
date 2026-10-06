@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { lockPath } from "../lock.js";
+import { acceptJoin, lockPath } from "../lock.js";
 import { envelope, publish, subscribe, topicFor } from "../transport.js";
 
 const SERVER = (process.env.DUET_SERVER || "http://127.0.0.1:18080").replace(/\/+$/, "");
@@ -668,6 +668,83 @@ async function main() {
 	await inj.stop();
 	check("plugin: after duet_leave a new session in the folder stays out", left.text === "Left the room" && s3.startsWith("duet: not in a room"), s3.slice(0, 60));
 	p2.stop();
+	await joinFileTests();
+}
+
+// ---- the join file (~/.duet/join.json, written by the site's prompt): the Codex plugin joins from it ----
+async function joinFileTests() {
+	const now = Date.now();
+	const at = Math.floor(now / 1000);
+	const good = { agent: "codex", room: "amber-otter-1234-abcd", name: "gaioz", relay: "https://duet.example/", cwd: "/work/proj/", pcwd: "/real/proj", at };
+	const takes = (j, folder = "/work/proj") => !acceptJoin(j, { agent: "codex", folder, now }).skip;
+	check(
+		"join file rules: own agent, under 30 min old, this folder (cwd or pcwd), a valid room, name and relay",
+		takes(good) && takes(good, "/real/proj/") && acceptJoin(good, { agent: "codex", folder: "/work/proj", now }).relay === "https://duet.example" &&
+			!takes({ ...good, agent: "claude-code" }) && acceptJoin({ ...good, at: at - 31 * 60 }, { agent: "codex", folder: "/work/proj", now }).skip === "stale" &&
+			!takes({ ...good, at: at + 10 * 60 }) && !takes(good, "/work/other") && !takes({ ...good, name: "YOUR_NAME" }) && !takes({ ...good, room: "a b" }) &&
+			!takes({ ...good, relay: "file:///x" }) && !takes({}) &&
+			!takes({ ...good, cwd: "/work/proj/sub", pcwd: "/real/proj/sub" }) && !acceptJoin({ ...good, cwd: "/work/proj/sub", pcwd: "/real/proj/sub" }, { agent: "codex", folder: "/work/proj", nested: true, now }).skip &&
+			!acceptJoin({ ...good, cwd: "/d/w/proj", pcwd: "/d/w/proj" }, { agent: "codex", folder: "D:\\w\\proj", now }).skip,
+		"accepted for /work/proj and /real/proj/, a subfolder at session start, Git Bash /d/w/proj for D:\\w\\proj; refused for another agent, stale, future, another folder, a placeholder name, a bad room or relay, {}",
+	);
+
+	const session = async (tag, file, { poll = false } = {}) => {
+		const home = join(ROOT, `jf-${tag}`);
+		const folder = join(ROOT, `jf-${tag}-proj`);
+		rmSync(home, { recursive: true, force: true });
+		mkdirSync(join(home, ".duet"), { recursive: true });
+		const path = join(home, ".duet", "join.json");
+		if (file && !poll) writeFileSync(path, JSON.stringify(file(folder)));
+		const s = startServer(`jf-${tag}`, "", { home, env: { DUET_PLUGIN: "1", DUET_JOIN_POLL_MS: "300" } });
+		await s.init();
+		const start = json((await s.hook({ event: "SessionStart", thread: `thr-${tag}`, folder })).text) ?? {};
+		return { s, folder, path, start, status: async () => (await s.call("duet_status", {}, { id: `${tag}-${Date.now()}`, folder })).text, left: () => (existsSync(path) ? readFileSync(path, "utf8").trim() : "(gone)") };
+	};
+	const fileFor = (room, extra = {}) => (folder) => ({ agent: "codex", room, name: "gaioz", relay: SERVER, cwd: `${folder}/`, pcwd: folder, at: Math.floor(Date.now() / 1000), ...extra });
+
+	const r1 = freshRoom();
+	const a = await session("take", fileFor(r1));
+	const aSt = await until(async () => {
+		const t = await a.status();
+		return t.includes("· connected") && t;
+	}, 10_000, "joined from the file").catch(() => a.status());
+	check(
+		"Codex plugin: SessionStart takes a codex join file for its folder: joins (ask), tells the user, removes the file",
+		a.start.systemMessage === `duet: joined "${r1.slice(0, 4)}…" as gaioz · ask` && a.start.hookSpecificOutput?.additionalContext?.includes("mode: ask") && aSt.includes("· connected") && a.left() === "(gone)",
+		`${a.start.systemMessage}; context: ${JSON.stringify(a.start.hookSpecificOutput?.additionalContext?.slice(0, 80))}; ${aSt.slice(0, 60)}; file: ${a.left()}`,
+	);
+	await a.s.stop();
+
+	const b = await session("cc", fileFor(freshRoom(), { agent: "claude-code" }));
+	const c = await session("stale", fileFor(freshRoom(), { at: Math.floor(Date.now() / 1000) - 31 * 60 }));
+	const d = await session("elsewhere", (folder) => fileFor(freshRoom())(`${folder}-other`));
+	await sleep(1000); // a few polls
+	const [bSt, cSt, dSt] = [await b.status(), await c.status(), await d.status()];
+	check(
+		"Codex plugin: ignores a claude-code join file and one for another folder (left for them), and a stale one (cleared)",
+		[bSt, cSt, dSt].every((t) => t.startsWith("duet: not in a room")) && !b.start.systemMessage && b.left().includes('"claude-code"') && c.left() === "(gone)" && d.left().includes("-other"),
+		`claude-code: ${bSt.slice(0, 25)}, file kept: ${b.left().includes('"claude-code"')}; stale: ${cSt.slice(0, 25)}, file: ${c.left()}; other folder: ${dSt.slice(0, 25)}, file kept: ${d.left().includes("-other")}`,
+	);
+	for (const x of [b, c, d]) await x.s.stop();
+
+	// Already open: polls the file while not in a room; never over the room it has.
+	const r2 = freshRoom();
+	const e = await session("poll", fileFor(r2), { poll: true });
+	writeFileSync(e.path, JSON.stringify(fileFor(r2)(e.folder)));
+	const eSt = await until(async () => {
+		const t = await e.status();
+		return t.includes("· connected") && t;
+	}, 10_000, "join from a polled file").catch(() => "");
+	const r3 = `u-${randomUUID()}`; // another start: the status shows only the code's first characters
+	writeFileSync(e.path, JSON.stringify(fileFor(r3)(e.folder)));
+	await sleep(1500);
+	const eSt2 = await e.status();
+	check(
+		"Codex plugin: an open session joins from a join file written later; one in a room keeps it (the file is left)",
+		eSt.includes(`room "${r2.slice(0, 4)}…"`) && eSt2.includes(`room "${r2.slice(0, 4)}…"`) && eSt2.includes("· connected") && e.left().includes(r3),
+		`first: ${eSt.slice(0, 50)}; after a second file: ${eSt2.slice(0, 50)}; file kept: ${e.left().includes(r3)}`,
+	);
+	await e.s.stop();
 }
 
 try {
