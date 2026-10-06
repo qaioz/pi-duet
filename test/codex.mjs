@@ -6,17 +6,18 @@
 //   node test/codex.mjs
 //
 // Env: DUET_SERVER (default the local test container http://127.0.0.1:18080),
-//      DUET_TEST_DIR (default ~/coding/personal/duet-test-v2/codex-plumbing).
+//      DUET_TEST_DIR (default a fresh $TMPDIR/duet-test-codex-plumbing-XXXXXX).
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { acceptJoin, lockPath } from "../lock.js";
 import { envelope, publish, subscribe, topicFor } from "../transport.js";
 
 const SERVER = (process.env.DUET_SERVER || "http://127.0.0.1:18080").replace(/\/+$/, "");
-const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test-v2/codex-plumbing");
+// Its own fresh folder per run: two runs at once must not share (or read each other's) files.
+const ROOT = process.env.DUET_TEST_DIR || mkdtempSync(join(tmpdir(), "duet-test-codex-plumbing-"));
 const BIN = resolve(import.meta.dirname, "../mcp.js");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
@@ -604,6 +605,27 @@ async function main() {
 	check("same name from another client: duet_status warns 'another gaioz is in this room (chat panel) · use another name'", sameSt.includes("warning: another gaioz is in this room (chat panel) · use another name") && sameSt.includes("· connected"), sameSt.slice(sameSt.indexOf("warning"), sameSt.indexOf("warning") + 80));
 	p.stop();
 	await c.stop();
+
+	// ---- duet_room with a room and name (a Codex that draws panels): like duet_join, the user's only ----
+	{
+		const roomA = freshRoom();
+		const roomB = freshRoom();
+		const pc = startServer("pc", roomA, { home: join(ROOT, "pc-home") });
+		await pc.init("codex-mcp-client", { elicitation: { form: {}, url: {} }, extensions: { "io.modelcontextprotocol/ui": {} } });
+		await until(async () => (await pc.call("duet_status", {}, { id: "pc-0" })).text.includes("· connected"), 15_000, "pc connected");
+		const listed = (await pc.request("tools/list")).result.tools.some((t) => t.name === "duet_room");
+		const fromPeerRoom = await pc.call("duet_room", { room: roomB, name: "mallory" }, { id: "pc-1", trigger: "queue" });
+		const nameOnly = await pc.call("duet_room", { name: "mallory" }, { id: "pc-1", trigger: "queue" });
+		const stillA = (await pc.call("duet_status", {}, { id: "pc-2" })).text;
+		const fromUser = await pc.call("duet_room", { room: roomB, name: "gaioz" }, { id: "pc-3" });
+		const nowB = (await pc.call("duet_status", {}, { id: "pc-4" })).text;
+		check(
+			"duet_room with a room/name from a peer's turn is refused (the session stays put); from the user's own turn it joins",
+			listed && fromPeerRoom.isError && /only when your own user asks/.test(fromPeerRoom.text) && nameOnly.isError && stillA.includes(`"${roomA.slice(0, 4)}…"`) && stillA.includes("pc ·") && !fromUser.isError && nowB.includes(`"${roomB.slice(0, 4)}…"`) && nowB.includes("gaioz ·"),
+			`listed ${listed}; peer turn: ${fromPeerRoom.text.slice(0, 70)}; name only refused ${nameOnly.isError}; after: ${stillA.slice(0, 40)}; user turn: ${fromUser.text.slice(0, 50)} → ${nowB.slice(0, 40)}`,
+		);
+		await pc.stop();
+	}
 
 	// ---- the Codex plugin: join from inside Codex, per folder; a new session rejoins and takes over ----
 	const r2 = freshRoom();

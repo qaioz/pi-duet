@@ -39,7 +39,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.10.0";
+const VERSION = "0.10.1";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -1255,6 +1255,7 @@ async function callTool(tool, a, ctx) {
 			const keyed = (text, isError) => ({ content: [{ type: "text", text }], _meta: { [PANEL_KEY_META]: panelKey }, ...(isError ? { isError } : {}) });
 			// A room and name from the user's own message (the site's prompt): join with them.
 			if (a.room || a.name) {
+				needUser(ctx, "joining a room happens"); // as duet_join: a request from the other side can't move the session
 				const r = String(a.room ?? "").trim();
 				const n = String(a.name ?? "").trim();
 				if (!isRoomCode(r)) return keyed("Not joined · room code: 3-64 letters, digits, . _ - · your user can type it into the panel", true);

@@ -57,7 +57,7 @@ async function allCommands(page) {
 }
 
 // The prompts, word for word as the release-8 spec has them.
-const JOIN = (agent, relay) => `mkdir -p ~/.duet && printf '{"agent":"${agent}","room":"{room}","name":"{name}","relay":"${relay}","cwd":"%s","pcwd":"%s","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
+const JOIN = (agent, relay) => `case "$PWD$(pwd -P)" in *'"'*|*'\\'*) echo 'duet: this folder path has a quote or backslash: use the terminal line instead' && false ;; esac && mkdir -p ~/.duet && printf '{"cwd":"%s","pcwd":"%s","agent":"${agent}","room":"{room}","name":"{name}","relay":"${relay}","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
 const RUN = "Run this as one shell command:";
 const PROMPTS = (r, n, relay) =>
 	Object.fromEntries(
@@ -211,7 +211,36 @@ try {
 	} catch (e) {
 		joined.error = e.message;
 	}
+	// A folder path with a quote or backslash: the command stops before writing (no broken or crafted JSON).
+	// And should one get through anyway, the paths come first: the real keys after them win (JSON.parse: last wins).
+	const bad = {};
+	try {
+		const line = after.claude.text.split("\n\n")[1];
+		const upto = line.slice(0, line.indexOf(" > ~/.duet/join.json") + " > ~/.duet/join.json".length);
+		for (const [k, dir] of Object.entries({ quote: 'x","relay":"https://evil.example","room":"evil-room', backslash: "x\\y" })) {
+			const cwd = join(home, dir);
+			mkdirSync(cwd, { recursive: true });
+			rmSync(join(home, ".duet/join.json"), { force: true });
+			try {
+				execFileSync("sh", ["-c", upto], { cwd, env: { ...process.env, HOME: home, PWD: cwd }, stdio: "pipe" });
+				bad[k] = "ran";
+			} catch (e) {
+				bad[k] = `${String(e.stdout).includes("duet: this folder path has a quote or backslash") ? "stopped" : "failed"}${existsSync(join(home, ".duet/join.json")) ? " +file" : ""}`;
+			}
+		}
+		const printfOnly = upto.slice(upto.indexOf("mkdir -p ~/.duet"));
+		execFileSync("sh", ["-c", printfOnly], { cwd: join(home, 'x","relay":"https://evil.example","room":"evil-room'), env: { ...process.env, HOME: home }, stdio: "pipe" });
+		const j = JSON.parse(readFileSync(join(home, ".duet/join.json"), "utf8"));
+		bad.lastWins = j.relay === SERVER && j.room === room && j.agent === "claude-code";
+	} catch (e) {
+		bad.error = e.message;
+	}
 	rmSync(home, { recursive: true, force: true });
+	check(
+		"join file: a folder path with \" or \\ stops the command (nothing written); paths come first so a crafted one can't override relay/room",
+		bad.quote === "stopped" && bad.backslash === "stopped" && bad.lastWins === true,
+		JSON.stringify(bad).replaceAll(room, "<room>"),
+	);
 	const now = Math.floor(Date.now() / 1000);
 	check(
 		"the prompts' join file is valid JSON: agent, room, name, relay, cwd, pcwd, at (seconds)",

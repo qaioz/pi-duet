@@ -9,17 +9,18 @@
 //
 // Env: DUET_SERVER (relay, default the local test container http://127.0.0.1:18080),
 //      PLAYWRIGHT_CORE (path to playwright-core's index.mjs; the browser part is skipped without it),
-//      DUET_TEST_DIR (default ~/coding/personal/duet-test-v2/panel), DUET_SHOTS (save screenshots there).
+//      DUET_TEST_DIR (default a fresh $TMPDIR/duet-test-panel-XXXXXX), DUET_SHOTS (save screenshots there).
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { envelope, publish, subscribe, topicFor } from "../transport.js";
 
 const SERVER = (process.env.DUET_SERVER || "http://127.0.0.1:18080").replace(/\/+$/, "");
-const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test-v2/panel");
+// Its own fresh folder per run: two runs at once must not share (or read each other's) files.
+const ROOT = process.env.DUET_TEST_DIR || mkdtempSync(join(tmpdir(), "duet-test-panel-"));
 const PW = process.env.PLAYWRIGHT_CORE || join(homedir(), "coding/personal/duet-test-v2/tools/node_modules/playwright-core/index.mjs");
 const REPO = resolve(import.meta.dirname, "..");
 const UI_CAPS = { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } };

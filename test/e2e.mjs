@@ -6,18 +6,19 @@
 //
 // Env: DUET_SERVER (ntfy server, default the local test container http://127.0.0.1:18080; set
 //      https://ntfy.sh for the real relay), PI (pi binary, default "pi"),
-//      DUET_TEST_DIR (default ~/coding/personal/duet-test-v2/pi),
+//      DUET_TEST_DIR (default a fresh $TMPDIR/duet-test-pi-XXXXXX),
 //      DUET_MODEL (default deepseek/deepseek-v4-flash), DUET_BUDGET (max OpenRouter key usage, default 4.5).
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { envelope, isForMe, MAX_BYTES, MAX_LONG_BYTES, publish, subscribe, topicFor } from "../transport.js";
 
 const PI = process.env.PI || "pi";
-const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test-v2/pi");
+// Its own fresh folder per run: two runs at once must not share (or read each other's) files.
+const ROOT = process.env.DUET_TEST_DIR || mkdtempSync(join(tmpdir(), "duet-test-pi-"));
 // deepseek-chat was flaky at tool calling here (empty completions, invented output); v4-flash was not.
 const MODEL = process.env.DUET_MODEL || "deepseek/deepseek-v4-flash";
 const BUDGET = Number(process.env.DUET_BUDGET || 4.5);

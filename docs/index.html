@@ -227,8 +227,10 @@ const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").replace(/^[_-]+/, "").
 // The prompt each agent tab leads with: pasted into the agent already open, it sets duet up, writes the
 // join file the agent's duet takes on its next start, and ends with the one step left for the person.
 // Shell-safe as filled in: room and name are [A-Za-z0-9_-], the relay passed relayOk (no quotes, no %).
+// The folder paths go in raw: a path with " or \ stops the command (it would break the JSON), and they come
+// first, so whatever a folder name holds, JSON.parse keeps the real agent, room, name, relay and time (last wins).
 const joinFile = (agent) =>
-	`mkdir -p ~/.duet && printf '{"agent":"${agent}","room":"{room}","name":"{name}","relay":"{relay}","cwd":"%s","pcwd":"%s","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
+	`case "$PWD$(pwd -P)" in *'"'*|*'\\'*) echo 'duet: this folder path has a quote or backslash: use the terminal line instead' && false ;; esac && mkdir -p ~/.duet && printf '{"cwd":"%s","pcwd":"%s","agent":"${agent}","room":"{room}","name":"{name}","relay":"{relay}","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
 const RUN = "Run this as one shell command:";
 
 // Each case: [where it is typed, the command]. {room}, {name} and the relay are filled in. The first
@@ -243,7 +245,7 @@ ${joinFile("claude-code")} && claude plugin marketplace add qaioz/pi-duet && cla
 
 Then reply with only: Type /reload-plugins to join (not needed if duet already said “joined”).
 If it printed "duet: mods are off", reply only: Claude Code's mods are off for your account, so duet can't run here yet. If it failed, say which step failed instead.`,
-			note: "Approve its one command · then /reload-plugins · Claude Code 2.1.287+",
+			note: "Approve its one command · then /reload-plugins · Claude Code 2.1.287+ · the code stays in the session history: the terminal line keeps it out",
 		},
 		cases: [
 			{
@@ -280,7 +282,7 @@ ${joinFile("codex")} && codex plugin marketplace add qaioz/pi-duet && codex plug
 
 Then reply with only: Start a new Codex session in this folder and say "join duet" (first time: trust duet's hooks).
 If it failed, say which step failed instead.`,
-			note: "Approve its one command · then a new Codex session: say “join duet”",
+			note: "Approve its one command · then a new Codex session: say “join duet” · the code stays in the session history (Codex joins through its model either way)",
 		},
 		cases: [
 			{
@@ -307,7 +309,7 @@ ${joinFile("pi")} && pi install git:github.com/qaioz/pi-duet && pi update git:gi
 
 Then reply with only: Type /reload to join.
 If it failed, say which step failed instead.`,
-			note: "Then /reload",
+			note: "Then /reload · the code stays in the session history: the terminal line keeps it out",
 		},
 		cases: [
 			{

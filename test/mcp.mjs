@@ -4,17 +4,18 @@
 //   node test/mcp.mjs
 //
 // Env: DUET_SERVER (default the local test container http://127.0.0.1:18080),
-//      DUET_TEST_DIR (default ~/coding/personal/duet-test-v2/mcp).
+//      DUET_TEST_DIR (default a fresh $TMPDIR/duet-test-mcp-XXXXXX).
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanText, envelope, fitName, isForMe, isName, publish, topicFor } from "../transport.js";
 
 const SERVER = (process.env.DUET_SERVER || "http://127.0.0.1:18080").replace(/\/+$/, "");
-const ROOT = process.env.DUET_TEST_DIR || join(homedir(), "coding/personal/duet-test-v2/mcp");
+// Its own fresh folder per run: two runs at once must not share (or read each other's) files.
+const ROOT = process.env.DUET_TEST_DIR || mkdtempSync(join(tmpdir(), "duet-test-mcp-"));
 const BIN = resolve(import.meta.dirname, "../mcp.js");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
