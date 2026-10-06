@@ -272,9 +272,12 @@ async function localTests() {
 
 // ---------- hosted.js over HTTP ----------
 
-function hosted(env = {}) {
+// A free port first, so the server's PUBLIC_URL (where the panel's live stream goes) is this server.
+const freePort = () => new Promise((r) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => r(port)); }); });
+async function hosted(env = {}) {
+	const port = await freePort();
 	return new Promise((resolveP, reject) => {
-		const proc = spawn(process.execPath, [join(REPO, "hosted.js")], { env: { PATH: process.env.PATH, PORT: "0", DUET_SERVER: SERVER, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+		const proc = spawn(process.execPath, [join(REPO, "hosted.js")], { env: { PATH: process.env.PATH, PORT: String(port), PUBLIC_URL: `http://127.0.0.1:${port}`, DUET_SERVER: SERVER, ...env }, stdio: ["ignore", "pipe", "pipe"] });
 		procs.push(proc);
 		let out = "";
 		proc.stdout.on("data", (d) => {
@@ -1176,6 +1179,230 @@ async function installTests() {
 	);
 }
 
+// ---------- release 9: annotations, the panel's live stream, no tool call on load ----------
+
+// Reads a /live stream: every state event until the server ends it (or ms pass).
+async function liveRead(base, token, ms = 3000, headers = {}) {
+	const ctl = new AbortController();
+	const timer = setTimeout(() => ctl.abort(), ms);
+	const events = [];
+	let status = 0, head = {};
+	try {
+		const r = await fetch(`${base}/live`, { method: "POST", headers: { "content-type": "text/plain", ...headers }, body: JSON.stringify({ token }), signal: ctl.signal });
+		status = r.status;
+		head = { acao: r.headers.get("access-control-allow-origin"), type: r.headers.get("content-type") };
+		if (r.ok) {
+			const dec = new TextDecoder();
+			let buf = "";
+			for await (const chunk of r.body) {
+				buf += dec.decode(chunk, { stream: true });
+				let cut;
+				while ((cut = buf.indexOf("\n\n")) >= 0) {
+					const ev = buf.slice(0, cut);
+					buf = buf.slice(cut + 2);
+					const d = ev.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
+					if (d) events.push(JSON.parse(d));
+				}
+			}
+		}
+	} catch {}
+	clearTimeout(timer);
+	return { status, head, events };
+}
+
+async function liveTests() {
+	// Annotations: every tool says what it does; none is destructive; duet_room is read-only on the hosted
+	// server (it joins nothing there) and not on the local one (a room in the call joins it).
+	const h = await hosted();
+	const a = client(h.url);
+	await a.request("initialize", { protocolVersion: "2025-06-18", capabilities: UI_CAPS, clientInfo: { name: "claude-ai", version: "1" } });
+	const tools = (await a.request("tools/list")).result.tools;
+	const desk = stdio("live-desk", { args: ["--folder="] });
+	await desk.init("claude-ai", UI_CAPS);
+	const localTools = (await desk.request("tools/list")).result.tools;
+	desk.stop();
+	const ann = (list) => list.filter((t) => t._meta?.ui).map((t) => `${t.name}:${t.annotations?.readOnlyHint ? "r" : "w"}${t.annotations?.destructiveHint === false ? "" : "!"}${t.title ? "" : "?"}`);
+	const by = (list, n) => list.find((t) => t.name === n);
+	check(
+		"annotations: every chat tool has a title and readOnlyHint/destructiveHint, none destructive; hosted duet_room is read-only, local duet_room is not; state and read are read-only",
+		[...tools, ...localTools.filter((t) => t._meta?.ui)].every((t) => t.title && typeof t.annotations?.readOnlyHint === "boolean" && t.annotations.destructiveHint === false) &&
+			by(tools, "duet_room").annotations.readOnlyHint === true && by(localTools, "duet_room").annotations.readOnlyHint === false &&
+			by(tools, "duet_room_state").annotations.readOnlyHint && by(tools, "duet_read").annotations.readOnlyHint && !by(tools, "duet_take").annotations.readOnlyHint && !by(tools, "duet_send").annotations.readOnlyHint,
+		`hosted ${ann(tools).join(" ")} · local ${ann(localTools).join(" ")}`,
+	);
+
+	// The panel declares the server's own origin (and nothing else) and gets the stream's URL; the card
+	// declares nothing; DUET_LIVE=0 declares nothing at all.
+	const panelRes = (await a.request("resources/read", { uri: "ui://duet/room" })).result.contents[0];
+	const off = await hosted({ DUET_LIVE: "0" });
+	const offRes = (await client(off.url).request("resources/read", { uri: "ui://duet/room" })).result.contents[0];
+	const offLive = await fetch(`${off.url}/live`, { method: "POST", body: "{}" });
+	const local = (await (async () => { const d = stdio("live-desk2", { args: ["--folder="] }); await d.init("claude-ai", UI_CAPS); const r = (await d.request("resources/read", { uri: "ui://duet/room" })).result.contents[0]; d.stop(); return r; })());
+	check(
+		"live: the hosted panel declares only its server's origin in connectDomains and knows /live; DUET_LIVE=0 and the local server declare none",
+		JSON.stringify(panelRes._meta.ui.csp) === JSON.stringify({ connectDomains: [h.url], resourceDomains: [] }) && panelRes.text.includes(JSON.stringify(`${h.url}/live`)) &&
+			JSON.stringify(offRes._meta.ui.csp.connectDomains) === "[]" && !offRes.text.includes("/live\"") && offLive.status === 404 &&
+			JSON.stringify(local._meta.ui.csp.connectDomains) === "[]" && !local.text.includes("/live\""),
+		`hosted ${JSON.stringify(panelRes._meta.ui.csp)}; off ${JSON.stringify(offRes._meta.ui.csp)} (/live ${offLive.status}); local ${JSON.stringify(local._meta.ui.csp)}`,
+	);
+	off.proc.kill();
+
+	// The stream: no token → 400; an unknown token → one "not in a room" event, then it ends; any origin.
+	const bad = await liveRead(h.url, "short");
+	const get = await fetch(`${h.url}/live`);
+	const unknown = await liveRead(h.url, randomUUID().replace(/-/g, "") + "q", 3000, { origin: "https://abc123.claudemcpcontent.com" });
+	check(
+		"live: a bad token is refused, GET is not allowed; an unknown seat gets one 'not in a room' event and the stream ends; any origin may read it (ACAO *)",
+		bad.status === 400 && get.status === 405 && unknown.status === 200 && unknown.events.length === 1 && unknown.events[0].inRoom === false && unknown.head.acao === "*" && /text\/event-stream/.test(unknown.head.type),
+		`bad ${bad.status}; GET ${get.status}; unknown ${unknown.status} ${JSON.stringify(unknown.events)} acao ${unknown.head.acao}`,
+	);
+
+	// A seat's stream carries exactly duet_room_state's state, and pushes a peer's request at once.
+	const room = `t-${randomUUID()}`;
+	const lev = peer(room, "lev");
+	await a.call("duet_room_join", { room, name: "maya" });
+	const reading = liveRead(h.url, a.token, 4000, { origin: "https://web-sandbox.oaiusercontent.com" });
+	await sleep(1200);
+	await lev.say("LIVE-REQ please check the build");
+	const got = await reading;
+	const viaTool = data(await a.call("duet_room_state"));
+	const last = got.events.at(-1) ?? {};
+	const keys = (o) => Object.keys(o).sort().join(",");
+	check(
+		"live: a seat's stream sends its state at once and again when a request arrives; the same fields as duet_room_state, never the room code",
+		got.status === 200 && got.events.length >= 2 && got.events[0].inRoom && !got.events[0].waiting.length && last.waiting?.[0]?.text === "LIVE-REQ please check the build" &&
+			keys(last) === keys(viaTool) && !JSON.stringify(got.events).includes(room),
+		`${got.events.length} events; first waiting ${got.events[0]?.waiting?.length}; last waiting ${JSON.stringify(last.waiting?.map((w) => w.text))}; keys same as the tool: ${keys(last) === keys(viaTool)}`,
+	);
+
+	// Leave ends the stream with "not in a room"; the per-address cap answers 429.
+	const leaving = liveRead(h.url, a.token, 5000);
+	await sleep(800);
+	await a.call("duet_room_leave");
+	const left = await leaving;
+	const capped = await hosted({ DUET_LIVE_PER_IP: "1" });
+	const c1 = client(capped.url);
+	await c1.call("duet_room_join", { room: `t-${randomUUID()}`, name: "ana" });
+	const first = liveRead(capped.url, c1.token, 2500);
+	await sleep(500);
+	const second = await liveRead(capped.url, c1.token, 1500);
+	await first;
+	check(
+		"live: leaving ends the stream with 'not in a room'; over the per-address cap the stream is refused (the panel polls instead)",
+		left.events.at(-1)?.inRoom === false && left.events.length >= 2 && second.status === 429,
+		`after leave: ${JSON.stringify(left.events.map((e) => e.inRoom))}; second stream from one address: ${second.status}`,
+	);
+	capped.proc.kill();
+	lev.stop();
+
+	await liveBrowserTests(h);
+	h.proc.kill();
+}
+
+// The panel in Chromium with the stream: no tool call before the user's click; while streaming, no
+// polling; a host whose CSP blocks the stream gets polling, and the panel still works.
+async function liveBrowserTests(h) {
+	if (!existsSync(PW)) return check("live browser", true, `skipped: no playwright-core at ${PW}`);
+	const { chromium } = await import(PW);
+	// The host page proxies tools/call through its own origin (/mcp), so a CSP of connect-src 'self'
+	// blocks only the panel's stream to the duet server (the srcdoc frame inherits the page's CSP).
+	const hostPage = `<!doctype html><meta charset="utf-8"><body style="margin:0">
+<iframe id="f" sandbox="allow-scripts allow-same-origin" style="width:100%;height:700px;border:0;display:block"></iframe>
+<iframe id="f2" sandbox="allow-scripts allow-same-origin" style="width:100%;height:500px;border:0;display:block"></iframe>
+<script>
+window.calls = []; window.messages = [];
+addEventListener("message", async (ev) => {
+	const m = ev.data;
+	const reply = (r) => ev.source.postMessage({ jsonrpc: "2.0", id: m.id, ...r }, "*");
+	if (m.method === "ui/initialize") reply({ result: { protocolVersion: "2026-01-26", hostInfo: { name: "claude-ai", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline"] } } });
+	else if (m.method === "tools/call") {
+		window.calls.push(m.params.name);
+		const r = await fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: m.params }) }).then((r) => r.json());
+		reply(r.error ? { error: r.error } : { result: r.result });
+	} else if (m.method === "ui/message") { window.messages.push(m.params); reply({ result: {} }); }
+	else if (m.id !== undefined) reply({ result: {} });
+});
+</script>`;
+	const site = createServer(async (req, res) => {
+		if (req.url === "/mcp") {
+			let body = "";
+			for await (const c of req) body += c;
+			const r = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body });
+			return res.writeHead(r.status, { "content-type": "application/json" }).end(await r.text());
+		}
+		const csp = req.url.includes("strict") ? { "content-security-policy": "connect-src 'self'" } : {};
+		res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...csp }).end(hostPage);
+	});
+	await new Promise((r) => site.listen(0, "127.0.0.1", r));
+	const base = `http://127.0.0.1:${site.address().port}/`;
+	const html = (await client(h.url).request("resources/read", { uri: "ui://duet/room" })).result.contents[0].text;
+	const browser = await chromium.launch();
+	try {
+		for (const strict of [false, true]) {
+			const page = await browser.newPage({ viewport: { width: 400, height: 900 } });
+			const errors = [];
+			page.on("pageerror", (e) => errors.push(e.message));
+			await page.goto(base + (strict ? "strict" : ""));
+			await page.evaluate((src) => (document.getElementById("f").srcdoc = src), html);
+			const panel = page.frameLocator("#f");
+			await panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
+			await sleep(1500);
+			const onLoad = await page.evaluate(() => window.calls.slice());
+			const room = `t-${randomUUID()}`;
+			const kai = peer(room, "kai");
+			await panel.locator("#room").fill(room);
+			await panel.locator("#name").fill("lin");
+			await panel.locator("#join-btn").click();
+			await panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 });
+			await sleep(strict ? 1500 : 1000);
+			const mode = await panel.locator("html").getAttribute("data-live");
+			const before = (await page.evaluate(() => window.calls.length));
+			await kai.say("STREAM-REQ run the tests");
+			await panel.locator("#waiting .item").first().waitFor({ timeout: 15_000 });
+			const t0 = Date.now();
+			await sleep(9000);
+			const idle = await page.evaluate((n) => window.calls.slice(n), before);
+			const idleStates = idle.filter((n) => n === "duet_room_state").length;
+			if (!strict) {
+				check(
+					"live browser: opening the panel calls no tool (one host prompt, for duet_room, not two); in a room the stream keeps it current with no polling",
+					onLoad.length === 0 && mode === "on" && idleStates === 0 && !errors.length,
+					`tool calls on load: ${JSON.stringify(onLoad)}; data-live ${mode}; duet_room_state calls in ${Math.round((Date.now() - t0) / 1000)} s after the request: ${idleStates}; errors ${JSON.stringify(errors)}`,
+				);
+				// Process still works (gate 1 unchanged); the handed request leaves the panel through the stream.
+				await panel.locator("#waiting .item .btn").first().click();
+				await until(() => page.evaluate(() => window.messages.length), 10_000, "ui/message");
+				await panel.locator("#waiting .item").first().waitFor({ state: "detached", timeout: 10_000 });
+				const msg = await page.evaluate(() => window.messages[0].content[0].text);
+				// A second panel in the same chat (same tab: same token and seat) drawn now finds the room
+				// through the stream, without a tool call.
+				const callsBefore = await page.evaluate(() => window.calls.length);
+				await page.evaluate((src) => (document.getElementById("f2").srcdoc = src), html);
+				const two = page.frameLocator("#f2");
+				await two.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 });
+				const callsAfter = await page.evaluate((n) => window.calls.slice(n), callsBefore);
+				check(
+					"live browser: Process hands the framed request over on the click; a panel drawn again in the chat finds its room through the stream, calling no tool",
+					msg.startsWith("[duet] from kai") && msg.includes("STREAM-REQ") && callsAfter.filter((n) => n !== "duet_take").length === 0,
+					`message ${JSON.stringify(msg.slice(0, 50))}; tool calls by the redrawn panel: ${JSON.stringify(callsAfter)}`,
+				);
+			} else {
+				const shown = await panel.locator("#waiting .item .text").first().textContent();
+				check(
+					"live browser: a host whose CSP blocks the stream: the panel falls back to polling and still shows the request (and draws the join form with no tool call)",
+					onLoad.length === 0 && /^off:/.test(mode ?? "") && idleStates >= 1 && shown === "STREAM-REQ run the tests",
+					`tool calls on load: ${JSON.stringify(onLoad)}; data-live ${mode}; duet_room_state polls in 9 s: ${idleStates}; shown ${JSON.stringify(shown)}`,
+				);
+			}
+			kai.stop();
+			await page.close();
+		}
+	} finally {
+		await browser.close();
+		site.close();
+	}
+}
+
 try {
 	rmSync(ROOT, { recursive: true, force: true });
 	await installTests();
@@ -1183,6 +1410,7 @@ try {
 	await hostedTests();
 	await presendTests();
 	await browserTests();
+	await liveTests();
 } catch (err) {
 	check("harness", false, err.stack);
 }

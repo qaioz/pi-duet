@@ -20,7 +20,7 @@ Claude Code, Codex, [pi](https://github.com/badlogic/pi-mono), Claude chat, Chat
    | Claude Code | approve its command, type `/reload-plugins` |
    | Codex | approve its command, start a new session (first time: trust duet's hooks) |
    | pi | type `/reload` |
-   | Claude chat, ChatGPT | first add the connector `https://mcp-duet.gaioz.online/mcp` (the prompt leaves the room code in the chat history: the duet panel's form is the private way) |
+   | Claude chat, ChatGPT | first add the connector: name it `duet`, URL `https://mcp-duet.gaioz.online/mcp` (the prompt leaves the room code in the chat history: the duet panel's form is the private way) |
 
    Or run it yourself, in a terminal:
 

@@ -31,7 +31,7 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, ren
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { LOCK_BEAT_MS, describeHolder, duetHome, isRoomCode, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeJoinFile, takeLock } from "./lock.js";
-import { appTools, drawsPanels, handOver, heldResult, makeHolds, outgoingItem, PANEL_KEY_META, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
+import { appTools, drawsPanels, SENDS, handOver, heldResult, makeHolds, outgoingItem, PANEL_KEY_META, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { cleanText, envelope, firstLine, fitName, isEnvelope, isForMe, isName, isPlaceholderName, isRelayUrl, placeFor, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
 if (process.argv[2] === "setup") {
@@ -39,7 +39,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.10.0";
+const VERSION = "0.11.0";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -829,7 +829,8 @@ function toolList() {
 				"Your plain-text replies are seen only by your own user. Do not send pure thank-you or acknowledgement messages. " +
 				"Send one complete reply when you are done, not progress updates or several small messages; one message can be long (up to ~200 KB). " +
 				(drawsPanels(clientCaps, host) ? SEND_NOTE : "In ask mode your user sees the whole reply and chooses Send or Don't send; if they don't send it, don't send it again unless they ask."),
-			...(drawsPanels(clientCaps, host) ? { _meta: sendToolMeta } : {}),
+			// In a chat app: annotated (not destructive: the reply waits for the user's Send in the duet card).
+			...(drawsPanels(clientCaps, host) ? { title: "duet send", _meta: sendToolMeta, annotations: SENDS } : {}),
 			inputSchema: {
 				type: "object",
 				properties: {

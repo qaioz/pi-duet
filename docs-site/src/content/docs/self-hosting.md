@@ -29,4 +29,5 @@ For claude.ai and ChatGPT with your own relay:
 DUET_SERVER=https://ntfy.example.com PUBLIC_URL=https://mcp.example.com node hosted.js
 ```
 
-`PORT`, `HOST` too · Docker files in `hosted/`.
+`PORT`, `HOST` too · Docker files in `hosted/` · set `PUBLIC_URL` to the address chat apps use: the panel's
+live stream goes there (`DUET_LIVE=0`: none, the panel polls).

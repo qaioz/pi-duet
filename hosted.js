@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // The hosted duet server: the duet panel (panel.js) for chat apps that can only reach a public HTTPS
 // MCP server (claude.ai on the web and mobile, Cowork, ChatGPT). MCP over Streamable HTTP, answered
-// as plain JSON (no server-to-client stream: a panel polls). No dependencies, like mcp.js.
+// as plain JSON (no MCP server-to-client stream). A panel keeps up through /live, a stream of its own
+// room's state read straight from this server where the chat app's sandbox allows it, else by polling.
+// No dependencies, like mcp.js.
 //
 //   node hosted.js            PORT (8092), HOST (127.0.0.1), DUET_SERVER (relay, https://duet.gaioz.online),
-//                             PUBLIC_URL, DUET_ORIGINS / DUET_SHARED_RANGES (comma-separated, see below)
+//                             PUBLIC_URL, DUET_ORIGINS / DUET_SHARED_RANGES (comma-separated, see below),
+//                             DUET_LIVE (0: no /live stream; panels poll, and declare no connect domain)
 //
 // Each open panel has a seat: its own room, name, inbox and history, found by a random token the
 // panel makes for itself (hosts don't reliably keep one MCP session per conversation). What the server
@@ -24,10 +27,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { BlockList, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
-import { appTools, cleanText, handOver, heldResult, JOIN_META, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomProps, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
+import { appTools, cleanText, READS, SENDS, handOver, heldResult, JOIN_META, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomProps, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.10.0"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.11.0"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -35,6 +38,8 @@ const RELAY = (process.env.DUET_SERVER || "https://duet.gaioz.online").replace(/
 if (!isRelayUrl(RELAY)) throw new Error(`DUET_SERVER must be an http(s) URL, got ${JSON.stringify(RELAY)}`);
 const num = (k, d) => (process.env[k] === undefined ? d : Number(process.env[k]));
 const list = (k) => (process.env[k] || "").split(",").map((x) => x.trim()).filter(Boolean);
+// The panel's live stream: its URL goes into the panel (and its origin into connectDomains).
+const LIVE_URL = process.env.DUET_LIVE === "0" ? "" : `${PUBLIC_URL}/live`;
 
 const LIMIT = {
 	seats: num("DUET_MAX_SEATS", 300), // open panels in rooms, in all
@@ -53,6 +58,8 @@ const LIMIT = {
 	normal: { perMin: num("DUET_IP_PER_MIN", 600), joins: num("DUET_JOINS_PER_IP", 20), seats: num("DUET_SEATS_PER_IP", 10), rooms: num("DUET_ROOMS_PER_IP", 3), longPerDay: 10_000_000, inflight: 8, inflightBytes: 3_000_000 },
 	shared: { perMin: 30_000, joins: 2000, seats: Infinity, rooms: Infinity, longPerDay: Infinity, inflight: 400, inflightBytes: 40_000_000 },
 	pool: { normal: num("DUET_INFLIGHT_BYTES", 60_000_000), shared: 60_000_000 },
+	// Live streams: they come from the user's own browser (the panel), so per address is per user.
+	live: { all: num("DUET_LIVE_MAX", 600), perAddress: num("DUET_LIVE_PER_IP", 12), perSeat: 3, ms: num("DUET_LIVE_MS", 10 * 60_000), tickMs: 500, pingMs: 20_000 },
 };
 // The chat apps' outbound ranges: claude.ai's (published by Anthropic), ChatGPT's connectors (OpenAI
 // publishes them at OPENAI_RANGES; fetched at start and daily), and any in DUET_SHARED_RANGES=cidr,cidr.
@@ -287,6 +294,7 @@ setInterval(() => {
 
 const sendTool = {
 	name: "duet_send",
+	title: "duet send",
 	description:
 		"Send a message to the other person's coding agent in your user's duet room (another developer's agent, on their computer). " +
 		"Use it to answer a request your user handed to you from the duet panel, or when your user asks you to tell or ask the other agent something. " +
@@ -302,13 +310,16 @@ const sendTool = {
 		},
 		required: ["seat", "text"],
 	},
-	annotations: { openWorldHint: true },
+	// Not destructive: it only holds the reply; the user's Send in the duet card sends it (gate 2).
+	annotations: SENDS,
 	_meta: sendToolMeta,
 };
 
 // duet_room here takes the seat code (optional): with it the answer says what waits.
+// Read-only here: it never joins (the panel does, on its own call) and changes nothing.
 const hostedRoomTool = {
 	...roomTool,
+	annotations: READS,
 	inputSchema: { type: "object", properties: { ...roomProps, seat: { type: "string", description: "The seat code from the duet note in your context, if you have one." } } },
 };
 
@@ -543,7 +554,7 @@ async function rpc(msg, ip, conn = {}) {
 			case "resources/templates/list":
 				return ok({ resourceTemplates: [] });
 			case "resources/read":
-				return resourceContents(params?.uri, VERSION) ? ok(resourceContents(params.uri, VERSION)) : err(-32002, "resource not found");
+				return resourceContents(params?.uri, VERSION) ? ok(resourceContents(params.uri, VERSION, { live: LIVE_URL, hosted: true })) : err(-32002, "resource not found");
 			case "tools/call":
 				return ok(await callTool(String(params?.name ?? ""), params?.arguments, ip));
 			default:
@@ -573,6 +584,83 @@ const landing = `<!doctype html><meta charset="utf-8"><meta name="viewport" cont
 <h1>duet MCP server</h1><p>This is duet's hosted MCP server: the duet panel for claude.ai, the Claude apps and ChatGPT. Add <code>${PUBLIC_URL}/mcp</code> as a custom connector; steps on <a href="https://qaioz.github.io/pi-duet/">the duet website</a>.</p>
 <p>It keeps no accounts and stores nothing on disk. Room codes are hashed as soon as a panel joins; messages stay in memory only while the panel is open. Two clicks: a request reaches your agent only when you hand it over, and its reply leaves only when you click <b>Send</b>.</p>`;
 
+// ---------- /live: a panel's room state as a stream (server-sent events, read with fetch) ----------
+// The same state duet_room_state returns to that panel, nothing more, found by the same token. Sent when
+// it changes, a comment every 20 s, ended after DUET_LIVE_MS (the panel reopens it). Any origin may
+// read it: the token is the key (as for tools/call, which carry no Origin), and no cookies are involved,
+// so "*" answers every chat app's sandbox origin. Each open stream counts as the panel being seen.
+const live = new Set(); // { address, key, end }
+function liveStream(req, res, address) {
+	const cors = { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" };
+	if (req.method === "OPTIONS") return res.writeHead(204, cors).end();
+	if (req.method !== "POST") return res.writeHead(405, { ...cors, allow: "POST, OPTIONS" }).end();
+	let body = "";
+	const slow = setTimeout(() => req.destroy(), LIMIT.bodyMs);
+	req.setEncoding("utf8");
+	req.on("data", (c) => {
+		if (res.writableEnded) return;
+		body += c;
+		if (body.length > 1000) {
+			clearTimeout(slow);
+			res.writeHead(413, cors).end();
+			req.destroy();
+		}
+	});
+	req.on("end", () => {
+		clearTimeout(slow);
+		if (res.writableEnded) return;
+		let token;
+		try {
+			token = JSON.parse(body).token;
+		} catch {}
+		if (!isToken(token)) return res.writeHead(400, { ...cors, "content-type": "text/plain" }).end("token required\n");
+		const key = sha(token);
+		const seat = seats.get(key);
+		const event = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+		const head = { ...cors, "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", "x-accel-buffering": "no" };
+		if (!seat) {
+			res.writeHead(200, head);
+			event(notInRoom);
+			return res.end();
+		}
+		if (live.size >= LIMIT.live.all || [...live].filter((l) => l.address === address).length >= LIMIT.live.perAddress) {
+			return res.writeHead(429, { ...cors, "retry-after": "60", "content-type": "text/plain" }).end("too many live panels\n");
+		}
+		// A panel drawn again in the same tab shares the token: the oldest of its streams gives way.
+		const same = [...live].filter((l) => l.key === key);
+		if (same.length >= LIMIT.live.perSeat) same[0].end();
+		res.writeHead(200, head);
+		let last = "";
+		let quiet = Date.now();
+		const me = { address, key, end: (left = false) => end(left) };
+		const tick = () => {
+			if (seats.get(key) !== seat) return end(true); // left, or closed after a long idle
+			seat.seen = Date.now();
+			const rev = seat.revNow();
+			if (rev !== last) {
+				last = rev;
+				quiet = Date.now();
+				event(seat.state());
+			} else if (Date.now() - quiet >= LIMIT.live.pingMs) {
+				quiet = Date.now();
+				res.write(": ping\n\n");
+			}
+		};
+		const timer = setInterval(tick, LIMIT.live.tickMs);
+		const stop = setTimeout(() => end(), LIMIT.live.ms);
+		live.add(me);
+		function end(left = false) {
+			if (!live.delete(me)) return;
+			clearInterval(timer);
+			clearTimeout(stop);
+			if (left && !res.writableEnded) event(notInRoom);
+			res.end();
+		}
+		res.on("close", () => end());
+		tick();
+	});
+}
+
 const inflight = new Map(); // address -> { n, bytes }: requests being read
 const poolBytes = { normal: 0, shared: 0 };
 
@@ -582,6 +670,10 @@ export function handler(req, res) {
 	const address = addressKey(ip);
 	const cls = classOf(ip);
 	const origin = req.headers.origin;
+	if (url.pathname === "/live" && LIVE_URL) {
+		if (!allow(`ip ${address}`, cls.perMin, 60_000)) return res.writeHead(429, { "access-control-allow-origin": "*", "retry-after": "30", "content-type": "text/plain" }).end("too many requests\n");
+		return liveStream(req, res, address);
+	}
 	if (!originOk(origin)) return res.writeHead(403, { "content-type": "text/plain" }).end("origin not allowed\n");
 	const cors = origin ? { ...CORS, "access-control-allow-origin": origin } : CORS;
 	if (!allow(`ip ${address}`, cls.perMin, 60_000)) return res.writeHead(429, { ...cors, "retry-after": "30", "content-type": "text/plain" }).end("too many requests\n");
@@ -661,6 +753,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 	loadOpenAiRanges();
 	setInterval(loadOpenAiRanges, 86_400_000).unref();
 	for (const s of ["SIGINT", "SIGTERM"]) process.on(s, () => {
+		for (const l of [...live]) l.end();
 		for (const seat of [...seats.values()]) closeSeat(seat);
 		setTimeout(() => process.exit(0), 300).unref();
 	});
