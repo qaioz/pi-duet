@@ -1483,3 +1483,16 @@ test("join file: from a subfolder (the shell cd'd) it is taken on start or reloa
 	await until(clock, () => did.logs.includes("joined test-room-88 as nika"));
 	expect(did.fs.get(JOIN_FILE)).toBe("{}");
 });
+
+test("join file: /duet off empties one written while in the room, so leaving doesn't join it", async ($, on) => {
+	const { did, clock, start } = world(on);
+	await $.session.start(start());
+	await join($, clock, "test-room-89 gaioz");
+	await until(clock, () => did.logs.includes("joined test-room-89 as gaioz"));
+	did.fs.set(JOIN_FILE, joinFile({ room: "test-room-90" }));
+	await $.command.run({ command: "duet", args: "off", origin: USER } as any);
+	await clock.advance(6000);
+	await settle(clock, 20);
+	expect(did.fs.get(JOIN_FILE)).toBe("{}");
+	expect(did.logs).not.toContain("joined test-room-90 as nika");
+});

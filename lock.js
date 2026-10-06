@@ -118,20 +118,20 @@ const noSlash = (p) => String(p ?? "").replace(/[\\/]+$/, "");
  * @param {any} j @param {{ agent: string, folder: string, now?: number }} me
  */
 // A folder as both sides write it: Git Bash's /c/x and Windows' C:\x are one folder; no trailing slash.
-const folderKey = (p) => {
-	if (typeof p !== "string" || !p) return "";
-	let s = p.replace(/\\/g, "/").replace(/^\/([A-Za-z])(?=\/|$)/, "$1:");
-	if (/^[A-Za-z]:/.test(s)) s = s.toLowerCase();
-	return s.replace(/\/+$/, "") || "/";
-};
+const folderKey = (p) => (typeof p === "string" && p ? p.replace(/\\/g, "/").replace(/^\/([A-Za-z])(?=\/|$)/, "$1:").replace(/\/+$/, "") || "/" : "");
+// Windows paths (C:\x, \\server\x) compare without case; Linux and macOS ones as written.
+const isWindowsPath = (p) => typeof p === "string" && (/^[A-Za-z]:/.test(p) || p.includes("\\"));
 // The join file's folder is this one or, on this window's own start or reload (nested), one inside it:
 // the agent's shell may have cd'd into a subfolder. A poll takes only its own folder, so a window open
 // in ~ doesn't take every prompt pasted below it.
 export const sameFolder = (paths, folder, nested = false) => {
-	const here = folderKey(folder);
-	return !!here && paths.some((p) => {
-		const k = folderKey(p);
-		return !!k && (k === here || (nested && here !== "/" && k.startsWith(here + "/")));
+	const here0 = folderKey(folder);
+	return !!here0 && paths.some((p) => {
+		const fold = isWindowsPath(folder) || isWindowsPath(p);
+		const here = fold ? here0.toLowerCase() : here0;
+		const k = fold ? folderKey(p).toLowerCase() : folderKey(p);
+		const root = here === "/" || /^[A-Za-z]:$/.test(here); // / or C:\ is no one's project
+		return !!k && (k === here || (nested && !root && k.startsWith(here + "/")));
 	});
 };
 export function acceptJoin(j, { agent, folder, nested = false, now = Date.now() }) {

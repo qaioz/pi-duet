@@ -915,7 +915,7 @@ async function openPane($) {
 async function autoRejoin($) {
 	if (room || joinsInFlight || !(await canDraw($))) return;
 	const rec = await $.store.get("room:" + cwd);
-	if (!rec?.code) return;
+	if (!rec?.code || room || joinsInFlight) return; // a join started while this looked
 	await join($, rec.code, rec.name, "ask", true, rec.relay);
 }
 

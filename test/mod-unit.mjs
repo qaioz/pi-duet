@@ -330,4 +330,7 @@ test("readJoinFile: own agent, fresh, this folder (cwd or pwd -P, trailing slash
 	assert.ok(wire.readJoinFile(file({ cwd: "/w/repo/sub", pcwd: "/real/repo/sub" }), "claude-code", "/w/repo", now, true).take);
 	assert.equal(wire.readJoinFile(file({ cwd: "/w/repository", pcwd: "/w/repository" }), "claude-code", "/w/repo", now, true), null);
 	assert.equal(wire.readJoinFile(file({ cwd: "/w/repo", pcwd: "/w/repo" }), "claude-code", "/", now, true), null); // / is no one's project
+	assert.equal(wire.readJoinFile(file({ cwd: "/c/proj", pcwd: "/c/proj" }), "claude-code", "C:\\", now, true), null); // nor C:\\
+	assert.equal(wire.sameFolder(["/w/Repo"], "/w/repo"), false); // Linux, macOS: as written
+	assert.equal(wire.sameFolder(["\\\\srv\\Share\\x"], "//srv/share/x"), true); // UNC: Windows, no case
 });

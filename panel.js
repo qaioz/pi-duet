@@ -508,10 +508,13 @@ ${BRIDGE}
 		const k = r && r._meta && r._meta[${JSON.stringify(PANEL_KEY_META)}];
 		if (typeof k === "string" && k && k !== key) { key = k; store("session", "duet-key", k); if (ready) refresh(true); }
 		const j = r && r._meta && r._meta[${JSON.stringify(JOIN_META)}];
-		const fresh = j && (j.at === undefined || Math.abs(Date.now() - j.at) < 10 * 60_000) && !(j.id && usedJoins().includes(j.id));
-		if (fresh && typeof j.room === "string" && typeof j.name === "string" && store("session", "duet-joined") !== j.room + " " + j.name) {
+		const ok = j && typeof j.room === "string" && typeof j.name === "string" && !(j.id && usedJoins().includes(j.id)) && store("session", "duet-joined") !== j.room + " " + j.name;
+		if (ok && (j.at === undefined || Math.abs(Date.now() - j.at) < 10 * 60_000)) {
 			autoJoin = j;
 			if (ready) joinAsked();
+		} else if (ok && !store("session", "duet-room")) {
+			// Older than 10 minutes by this browser's clock: filled in, the user presses Join.
+			$("room").value = j.room; $("name").value = j.name;
 		}
 	};
 	function joinAsked() {
