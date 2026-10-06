@@ -24,10 +24,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { BlockList, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
-import { appTools, cleanText, handOver, heldResult, makeHolds, outgoingItem, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom, toWhom } from "./panel.js";
+import { appTools, cleanText, handOver, heldResult, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.8.2"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.9.0"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -95,7 +95,7 @@ const FULL_MAX = 4000; // a waiting request up to this long goes to the panel wh
 const HANDED_MAX = 3; // requests a seat keeps after a hand-over, for "Put it back" (counted like waiting text)
 const RECENT_MS = 30 * 60_000;
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex" };
+const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
 const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(r);
 const isToken = (t) => typeof t === "string" && /^[A-Za-z0-9_-]{20,100}$/.test(t);
 const sha = (s) => createHash("sha256").update(s).digest("hex");
@@ -195,6 +195,8 @@ class Seat {
 		this.rev = 0;
 		this.seen = Date.now();
 		this.warnings = new Set();
+		this.joinedAt = Date.now();
+		this.preTake = null; // "Process and send": { id, from, at } of the request whose reply the user OK'd ahead
 	}
 	remember(entry) {
 		this.history.push({ at: new Date().toISOString(), ...entry, text: preview(entry.text, 1200) });
@@ -214,6 +216,15 @@ class Seat {
 		if (why) this.warnings.add(why);
 	}
 	onEnvelope(env) {
+		// Our own name from another client (Claude Code, Codex, another chat): warn, don't block. Only
+		// for what it sent since this panel joined.
+		if (env.fromId !== this.fromId && (env.kind === "join" || env.kind === "msg") && String(env.from).normalize("NFC").toLowerCase() === this.name.normalize("NFC").toLowerCase() && Date.parse(env.ts) >= this.joinedAt - 5000) {
+			const w = `another ${this.name} is in this room${VIA[env.via] ? ` (${VIA[env.via]})` : ""} · use another name`;
+			if (!this.warnings.has(w)) {
+				this.warnings.add(w);
+				this.rev++;
+			}
+		}
 		if (!isForMe(env, this.fromId, this.name)) return;
 		// Most recently seen last, so a crowd of made-up names pushes out the oldest, not the real peer.
 		this.peers.delete(env.from);
@@ -256,7 +267,7 @@ class Seat {
 			outgoing: holds.waiting(this.key).map(outgoingItem),
 			warnings: [...this.warnings],
 			modelNote:
-				`duet: your user is in a duet room as ${this.name} (the duet panel in this chat shows it). Requests from the other person's agent reach you only when your user hands one over from the panel. ` +
+				`duet: your user is in a duet room as ${this.name} (the duet panel in this chat shows it). Now: ${waitingLine(this.inbox)}. Requests from the other person's agent reach you only when your user processes one in the panel; on "check" or "anything new", call duet_room with seat "${this.handle}". ` +
 				`When your user asks you to tell or ask the other agent something, call duet_send with seat "${this.handle}"; your user OKs each reply in the duet card.`,
 			rev: this.revNow(),
 		};
@@ -295,11 +306,17 @@ const sendTool = {
 	_meta: sendToolMeta,
 };
 
+// duet_room here takes the seat code (optional): with it the answer says what waits.
+const hostedRoomTool = {
+	...roomTool,
+	inputSchema: { type: "object", properties: { seat: { type: "string", description: "The seat code from the duet note in your context, if you have one." } } },
+};
+
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError } : {}) });
 
 // Gate 2: the model's duet_send only holds the reply; the user's Send in the duet card (duet_reply)
 // sends it. Every seat exists because a panel was drawn, so this host draws the card too.
-function holdReply(a) {
+async function holdReply(a) {
 	const seat = handles.get(String(a.seat ?? ""));
 	if (!seat) return text("Not held · no room with that seat (closed after 30 min unseen) · your user reopens the duet panel", true);
 	if (typeof a.text !== "string" || !a.text) return text("text is required", true);
@@ -318,7 +335,17 @@ function holdReply(a) {
 	// (hold() sweeps first, and gives its text back) is a new one here.
 	if (!waiting.includes(h)) allChars += shown.length;
 	h.sendTo ??= to;
+	// Which message it answers: the server decides, when it is held (never the model).
+	const peer = to ? seat.lastFrom.get(to) : [...seat.lastFrom.values()].sort((x, y) => y.at - x.at)[0];
+	h.re ??= peer && Date.now() - peer.at < 30 * 60_000 ? peer.id : "";
 	seat.rev++;
+	// "Process and send": the reply to that request, to its sender, goes out at once (once).
+	const pre = seat.preTake;
+	if (pre && Date.now() - pre.at < PRESEND_MS && shownTo === pre.from && h.re === pre.id) {
+		seat.preTake = null;
+		const r = await holds.act(h.id, "send", sendHeld);
+		if (r.status === "sent") return sentResult(shownTo, shown);
+	}
 	return heldResult(h);
 }
 
@@ -327,8 +354,7 @@ async function sendHeld(h) {
 	const seat = seats.get(h.owner);
 	if (!seat) throw new Error("Panel left the room · open it, join again");
 	const now = Date.now();
-	const peer = h.sendTo ? seat.lastFrom.get(h.sendTo) : [...seat.lastFrom.values()].sort((x, y) => y.at - x.at)[0];
-	const re = peer && now - peer.at < 30 * 60_000 ? peer.id : undefined;
+	const re = h.re || undefined;
 	const env = envelope({ fromId: seat.fromId, from: seat.name, kind: "msg", ...(h.sendTo ? { to: h.sendTo } : {}), text: h.text, ...(re ? { re } : {}) });
 	// What the relay stores is the envelope as JSON (control characters take 6 bytes there): count that.
 	const bytes = Buffer.byteLength(JSON.stringify(env));
@@ -362,12 +388,15 @@ async function sendHeld(h) {
 async function callTool(name, a, ip) {
 	a = a && typeof a === "object" ? a : {};
 	if (name === "duet_room") {
+		// With the seat code (from the duet note in the model's context): how many wait and from whom, no text.
+		const seat = handles.get(String(a.seat ?? ""));
+		if (seat) return text(`duet panel open · ${seat.name} · ${waitingLine(seat.inbox)}`);
 		return text(
 			"The duet panel is open in the chat. Your user joins a room there: they type the room code into the panel, not into this chat. " +
 				"(If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)",
 		);
 	}
-	if (name === "duet_send") return holdReply(a);
+	if (name === "duet_send") return await holdReply(a);
 	// The card's Send / Don't send: the hold's random id is what it needs (the model never sees it).
 	if (name === "duet_reply") {
 		const r = await holds.act(a.id, String(a.action ?? ""), sendHeld);
@@ -413,7 +442,7 @@ async function callTool(name, a, ip) {
 			seats.set(key, seat);
 			handles.set(seat.handle, seat);
 			openRoom(topic).seats.add(seat);
-			publish(RELAY, topic, envelope({ fromId: seat.fromId, from: name, kind: "join" })).catch(() => {});
+			publish(RELAY, topic, envelope({ fromId: seat.fromId, from: name, kind: "join", via: "chat" })).catch(() => {});
 			return panelResult(seat.state());
 		}
 		case "duet_room_leave": {
@@ -433,6 +462,7 @@ async function callTool(name, a, ip) {
 				const back = seat.handed.get(String(a.id));
 				if (!back) return panelError("Nothing to put back");
 				seat.handed.delete(back.pid);
+				if (seat.preTake?.id === back.id) seat.preTake = null;
 				allChars -= back.text.length;
 				seat.hold(back);
 				seat.inbox.unshift(seat.inbox.pop()); // back in front
@@ -448,6 +478,8 @@ async function callTool(name, a, ip) {
 				seat.remember({ who: "", text: `you didn't take ${e.from}'s request`, note: true });
 				return panelResult(seat.state());
 			}
+			// "Process and send": this request's reply is OK'd ahead; "Process": nothing is.
+			seat.preTake = a.send === true ? { id: e.id, from: e.from, at: Date.now() } : null;
 			seat.handed.set(e.pid, e);
 			allChars += e.text.length;
 			if (seat.handed.size > HANDED_MAX) {
@@ -468,7 +500,13 @@ const instructions =
 	"duet connects your user with another developer's coding agent through a shared room. The duet panel (duet_room) shows the room; " +
 	"your user hands you a request from the other agent with a click, and you answer it with duet_send (your user OKs the reply in the duet card). Your plain-text replies reach only your own user.";
 
-async function rpc(msg, ip) {
+// Claude Code (clientInfo "claude-code", F35) gets claude.ai's connectors synced in: there the duet
+// plugin is the way, so this server lists it no tools. Stateless otherwise: only such a client gets a
+// session id (Streamable HTTP: it sends it back on every request), so we know it later.
+const plainSessions = new Set();
+const NO_TOOLS = "duet: use the duet plugin in Claude Code";
+
+async function rpc(msg, ip, conn = {}) {
 	const { id, method, params } = msg ?? {};
 	if (id === undefined || id === null || typeof method !== "string") return null; // notifications and stray responses
 	const ok = (result) => ({ jsonrpc: "2.0", id, result });
@@ -476,6 +514,11 @@ async function rpc(msg, ip) {
 	try {
 		switch (method) {
 			case "initialize":
+				if (params?.clientInfo?.name === "claude-code") {
+					conn.newSession = randomBytes(18).toString("base64url");
+					plainSessions.add(conn.newSession);
+					if (plainSessions.size > 10_000) plainSessions.delete(plainSessions.values().next().value);
+				}
 				// Which chat apps connect and whether they draw panels: the app's name only, nothing of the user.
 				console.log(`duet hosted: initialize from ${String(params?.clientInfo?.name ?? "?").replace(/[^\w .-]/g, "").slice(0, 40)}, ${params?.capabilities?.extensions?.["io.modelcontextprotocol/ui"] ? "draws panels" : "no MCP Apps capability"}`);
 				return ok({
@@ -487,7 +530,7 @@ async function rpc(msg, ip) {
 			case "ping":
 				return ok({});
 			case "tools/list":
-				return ok({ tools: [roomTool, sendTool, ...appTools] });
+				return ok({ tools: conn.claudeCode ? [] : [hostedRoomTool, sendTool, ...appTools] });
 			case "resources/list":
 				return ok({ resources: resourceEntries });
 			case "resources/templates/list":
@@ -495,6 +538,7 @@ async function rpc(msg, ip) {
 			case "resources/read":
 				return resourceContents(params?.uri, VERSION) ? ok(resourceContents(params.uri, VERSION)) : err(-32002, "resource not found");
 			case "tools/call":
+				if (conn.claudeCode) return ok(text(NO_TOOLS, true));
 				return ok(await callTool(String(params?.name ?? ""), params?.arguments, ip));
 			default:
 				return err(-32601, `method not found: ${method}`);
@@ -592,13 +636,18 @@ export function handler(req, res) {
 		if (messages.length > LIMIT.batch) return res.writeHead(400, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: `at most ${LIMIT.batch} messages per request` } }));
 		// Each message in a batch counts against the address's limit, like a request of its own.
 		if (messages.length > 1 && !allow(`ip ${address}`, cls.perMin, 60_000, messages.length - 1)) return res.writeHead(429, { ...cors, "retry-after": "30" }).end();
+		const sid = String(req.headers["mcp-session-id"] ?? "");
+		// A session id we gave out and no longer know (a restart): the client initializes again.
+		if (sid && !plainSessions.has(sid) && !messages.some((m) => m?.method === "initialize")) return res.writeHead(404, cors).end();
+		const conn = { claudeCode: plainSessions.has(sid) };
 		const out = [];
 		for (const m of messages) {
-			const r = await rpc(m, ip); // one at a time: a batch can't run its sends in parallel
+			const r = await rpc(m, ip, conn); // one at a time: a batch can't run its sends in parallel
 			if (r) out.push(r);
 		}
-		if (!out.length) return res.writeHead(202, cors).end(); // only notifications or responses
-		res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify(batch ? out : out[0]));
+		const session = conn.newSession ? { "mcp-session-id": conn.newSession } : {};
+		if (!out.length) return res.writeHead(202, { ...cors, ...session }).end(); // only notifications or responses
+		res.writeHead(200, { ...cors, ...session, "content-type": "application/json" }).end(JSON.stringify(batch ? out : out[0]));
 	});
 }
 

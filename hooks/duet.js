@@ -9,9 +9,12 @@
 // network API; Node isn't guaranteed). Sending: `$.http.fetch` POST — which also means a session
 // whose policy refuses mod network requests never joins (curl is never used to go around it).
 //
-// Two gates in ask mode. Gate 1: each request waits as a card above the prompt (1 Do it, 2 Ignore).
-// Gate 2: every reply Claude sends with the duet tool waits as a card showing the whole reply
-// (1 Send, 2 Don't send); the tool call holds until the press. Auto mode: no gates, up to MAX_AUTO
+// Two gates in ask mode. Gate 1: each request waits as a card above the prompt (1 Process,
+// 2 Process and send, 3 Ignore). Gate 2: every reply Claude sends with the duet tool waits as a card
+// showing the whole reply (1 Send, 2 Don't send); the tool call holds until the press. "Process and
+// send" is the user's OK for one reply ahead: the first send of that request's turn to its sender
+// goes out without the gate 2 card. It lives in peerTurn only (never in what Claude reads or sets)
+// and ends with the turn; a second send, a send to anyone else, or any other turn still waits. Auto mode: no gates, up to MAX_AUTO
 // requests in a row without the user. While Claude works on a peer's request it runs under the
 // user's own permission mode, like any other turn: duet adds no checks of its own. So gate 2 holds
 // the duet tool only; it is not a fence around what leaves the computer: where commands run unasked,
@@ -40,7 +43,7 @@ const HISTORY_BYTES_MAX = 512 * 1024; // one room's saved history, as JSON in UT
 const HISTORY_ROOMS = 5; // rooms whose history is kept; older ones are dropped
 const QUEUE_MAX = 50;
 const BATCH_MAX = 5; // messages handed to Claude in one turn
-const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex" };
+const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
 const TOAST_GAP_MS = 15_000; // one "new request" toast per sender per burst
 // Permission modes in which a tool call still asks the user unless a rule allows it. Only used for
 // the one confirm when the user turns auto on in a session that runs commands unasked.
@@ -74,9 +77,9 @@ const peers = new Map(); // name -> { via, at, left }
 
 let queue = []; // messages waiting for the user (ask) or for Claude to be free (auto)
 const lastToast = new Map(); // sender -> time of the last "new request" toast
-let pendingPeer = null; // { envs, text, roomKey, submitted }: taken, waiting for Claude to be idle
-let expected = []; // [{ text, froms, roomKey, envs, at }]: submitted frames whose turn hasn't started yet
-let peerTurn = null; // { froms, roomKey, turnId, waitNoted, answers }
+let pendingPeer = null; // { envs, text, roomKey, submitted, preSend }: taken, waiting for Claude to be idle
+let expected = []; // [{ text, froms, roomKey, envs, at, preSend }]: submitted frames whose turn hasn't started yet
+let peerTurn = null; // { froms, roomKey, turnId, waitNoted, answers, preSend }: preSend = the sender whose reply is OK'd ahead ("" once used)
 let runningTurn = ""; // the main loop's turn in progress, "" while Claude is idle
 let userPromptSince = false; // the user's own prompt entered since duet's last submission
 let outbox = []; // [{ id, text, to, decision }]: replies waiting at gate 2
@@ -99,7 +102,15 @@ const peerList = () => livePeers().map(([n]) => n).join(", ");
 const peerNames = () => (peerTurn ? peerTurn.froms.join(", ") : peerList() || "the room");
 const autoActive = () => !!room && room.mode === "auto" && !paused;
 const busyWithPeer = () => !!(pendingPeer || peerTurn || expected.length);
-const peerTurnFrom = (x, turnId) => ({ froms: x.froms, roomKey: x.roomKey, turnId, waitNoted: false, answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })) });
+// exact: the turn's text holds the frame duet submitted. Only then does a "Process and send" carry over.
+const peerTurnFrom = (x, turnId, exact) => ({
+	froms: x.froms,
+	roomKey: x.roomKey,
+	turnId,
+	waitNoted: false,
+	answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })),
+	preSend: exact && x.preSend && x.froms.length === 1 ? x.froms[0] : "",
+});
 
 // ---------- small helpers that use $ ----------
 
@@ -348,7 +359,22 @@ async function handleLine($, r, gen, line, live, floor) {
 	}
 }
 
+// Our own name from another client (another computer: the local lock can't see it). Warn, once per
+// client; only for what it sent since this window joined (a replayed message of our own earlier
+// session has the same name and another id), and not from this very folder (a window taking over).
+function sameName($, r, env) {
+	if (env.fromId === r.fromId || (env.kind !== "join" && env.kind !== "msg") || warnedAbout.has("same:" + env.fromId)) return;
+	if (String(env.from).normalize("NFC").toLowerCase() !== r.name.normalize("NFC").toLowerCase()) return;
+	if ((env.place && env.place === r.place) || !(Date.parse(env.ts) >= joinedAt - 5000)) return;
+	warnedAbout.add("same:" + env.fromId);
+	const via = viaLabel(env.via);
+	const text = `another ${oneLine(r.name)} is in this room${via ? ` (${via})` : ""} · use another name`;
+	remember($, { text, note: true });
+	$.ui.toast("duet: " + text);
+}
+
 function onEnvelope($, r, env) {
+	sameName($, r, env);
 	if (!isForMe(env, r.fromId, r.name)) return;
 	const before = peers.get(env.from);
 	const isNew = !before || before.left;
@@ -430,8 +456,8 @@ async function runsUnasked($) {
 	}
 }
 
-async function startPeerTurn($, envs) {
-	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false };
+async function startPeerTurn($, envs, preSend = false) {
+	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false, preSend };
 	await saveTurn($);
 	redraw($);
 	await submitWhenIdle($);
@@ -443,7 +469,7 @@ async function submitWhenIdle($) {
 	if (!p || p.submitted || runningTurn) return;
 	p.submitted = true;
 	const froms = [...new Set(p.envs.map((x) => x.from))];
-	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, at: Date.now() }];
+	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, at: Date.now(), preSend: !!p.preSend }];
 	userPromptSince = false;
 	pendingPeer = null;
 	await saveTurn($);
@@ -774,17 +800,18 @@ function firstGroup() {
 	return queue.filter((e) => e.from === from).slice(0, BATCH_MAX);
 }
 
-// Gate 1: a press acts at once.
+// Gate 1: a press acts at once. "take" (Process), "take-send" (Process and send), "ignore".
 async function choose($, action) {
 	const envs = firstGroup();
 	if (!envs.length || !room) return;
-	if (action === "take" && busyWithPeer()) {
+	const take = action === "take" || action === "take-send";
+	if (take && busyWithPeer()) {
 		$.ui.toast("duet: busy with the last request");
 		return;
 	}
 	queue = queue.filter((e) => !envs.includes(e));
-	if (action === "take") {
-		await startPeerTurn($, envs);
+	if (take) {
+		await startPeerTurn($, envs, action === "take-send");
 	} else {
 		sendNote($, "declined", envs[0].from);
 		redraw($);
@@ -892,9 +919,19 @@ async function sendTool($, e, signal) {
 	const fromPeer = !!peerTurn;
 	if (fromPeer && peerTurn.roomKey !== room.key) return { result: "Not sent: request from a room you left · tell your user" };
 	const r = room;
+	// "Process and send": the user OK'd this request's reply ahead. Only the first send of its turn
+	// (subagents included) that reaches exactly its sender; used up before any await, so two sends in
+	// parallel can't both use it.
+	const live = livePeers().map(([n]) => n);
+	const reaches = to ?? (live.length === 1 ? live[0] : "");
+	const preSent = fromPeer && !autoActive() && !!peerTurn.preSend && reaches === peerTurn.preSend;
+	if (preSent) {
+		peerTurn.preSend = "";
+		await saveTurn($); // a module reload must not bring it back
+	}
 	// Gate 2, in ask mode: the whole reply waits above the prompt for Send / Don't send. Without
 	// `to` a reply reaches everyone in the room, so the card names everyone.
-	if (!autoActive()) {
+	if (!autoActive() && !preSent) {
 		const item = { id: randomId(), text, to: to ?? (peerList() || "the room"), decision: "", agentId: e.agentId };
 		outbox = [...outbox, item];
 		$.ui.toast(`duet: reply to ${oneLine(item.to)} waiting`);
@@ -982,7 +1019,7 @@ function drawCard($, e) {
 		const via = viaLabel(peers.get(env.from)?.via);
 		const others = queue.length - 1;
 		const reply = (g) => (g.reLine ? [Text({ dimColor: true, children: [`↳ re “${sanitize(g.reLine, 80)}”`] })] : []);
-		// Every word Claude would get on "Do it": the whole text of each message in the group, every
+		// Every word Claude would get on "Process": the whole text of each message in the group, every
 		// line, wrapped, never cut to the band's width or a line count (a peer could hide an
 		// instruction past the cut).
 		const body = group.flatMap((g, i) => [...(i > 0 ? [Text({ key: `sep${i}`, dimColor: true, children: ["—"] })] : []), ...reply(g), ...textRows(Text, g.text, `q${i}.`)]);
@@ -995,8 +1032,9 @@ function drawCard($, e) {
 			],
 		});
 		const keys = buttons([
-			Button({ key: "take", label: "Do it", hotkey: "1", plain: true, onPress: () => void choose($, "take").catch(() => {}) }),
-			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
+			Button({ key: "take", label: "Process", hotkey: "1", plain: true, onPress: () => void choose($, "take").catch(() => {}) }),
+			Button({ key: "take-send", label: "Process and send", hotkey: "2", plain: true, onPress: () => void choose($, "take-send").catch(() => {}) }),
+			Button({ key: "ignore", label: "Ignore", hotkey: "3", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
 		]);
 		// As gate 2: a request taller than the band keeps its keys under the title, inside the window.
 		const rows = group.reduce((n, g, i) => n + rowsFor(g.text, e.props?.bodyColumns ?? 80) + (g.reLine ? 1 : 0) + (i > 0 ? 1 : 0), 0);
@@ -1348,12 +1386,12 @@ export function register(on) {
 		if (i >= 0) {
 			const x = expected[i];
 			expected = expected.filter((_, j) => j !== i);
-			peerTurn = peerTurnFrom(x, e.turnId);
+			peerTurn = peerTurnFrom(x, e.turnId, true);
 		} else if (expected.length && !userPromptSince) {
 			// duet's request is pending and no prompt of the user's came since: its text may have been
 			// changed on the way. Count it as the peer's, so the notes and the reply link still work.
 			const x = expected.shift();
-			peerTurn = peerTurnFrom(x, e.turnId);
+			peerTurn = peerTurnFrom(x, e.turnId, false);
 		}
 		await saveTurn($);
 		await saveCursor($);

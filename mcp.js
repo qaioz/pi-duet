@@ -31,7 +31,7 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, ren
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { LOCK_BEAT_MS, describeHolder, duetHome, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeLock } from "./lock.js";
-import { appTools, drawsPanels, handOver, heldResult, makeHolds, outgoingItem, PANEL_KEY_META, panelError, panelResult, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, shortRoom, toWhom } from "./panel.js";
+import { appTools, drawsPanels, handOver, heldResult, makeHolds, outgoingItem, PANEL_KEY_META, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { cleanText, envelope, firstLine, fitName, isEnvelope, isForMe, isName, isPlaceholderName, isRelayUrl, placeFor, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
 if (process.argv[2] === "setup") {
@@ -39,7 +39,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.8.2";
+const VERSION = "0.9.0";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -69,7 +69,7 @@ if (name !== undefined && !isName(name)) {
 	process.exit(1);
 }
 // A room code is the shared secret: the same rule as the plugin's and setup's.
-const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex" };
+const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
 const isRoomCode = (r) => typeof r === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(r);
 // Unattended back-and-forth allowed before the agent must check with its user.
 const MAX_AUTO = Math.max(1, Number(process.env.DUET_MAX_AUTO) || 8);
@@ -183,6 +183,26 @@ const lockMe = { client: "codex", token: randomUUID(), cwd: folder };
 let lockFile = "";
 let lockTimer;
 
+// "Process and send" (Codex): the user OK'd the reply to these requests ahead. Codex turn id ->
+// [{ from, ids }]: the first duet_send in that turn to `from` whose re is one of `ids` goes out
+// without the gate 2 form, once. Only duet's hooks and forms set it (the turn id is Codex's own
+// metadata, never the model's); it ends with the turn (Stop, Interrupt).
+const preSends = new Map();
+function approveAhead(turn, items) {
+	if (!turn || !items.length) return;
+	const list = (preSends.get(turn) ?? []).filter((p) => !items.some((e) => e.from === p.from));
+	for (const from of new Set(items.map((e) => e.from))) list.push({ from, ids: new Set(items.filter((e) => e.from === from).map((e) => e.id)) });
+	preSends.set(turn, list);
+	if (preSends.size > 50) preSends.delete(preSends.keys().next().value);
+}
+// Used up on the first match: the one reply it was for.
+function usePreSend(turn, to, re) {
+	const list = turn ? preSends.get(turn) : undefined;
+	const i = list && re ? list.findIndex((p) => p.from === to && p.ids.has(re)) : -1;
+	if (i < 0) return false;
+	list.splice(i, 1);
+	return true;
+}
 const isPeerTurn = (turn) => !!turn && peerTurns.includes(turn);
 const markPeerTurn = (turn) => {
 	if (!turn || isPeerTurn(turn)) return;
@@ -231,7 +251,7 @@ const REQUEST_ID = /\n\(duet request ([0-9a-f]{16})\)$/;
 // treated as a request too (fail closed), never as the user's own.
 const looksLikeRequest = (prompt) => /^\s*\[duet\] from /.test(prompt);
 
-// Ids of the other side's messages the user saw at gate 1 (Do it or Ignore) or that auto handed over.
+// Ids of the other side's messages the user saw at gate 1 (Process, Process and send or Ignore) or that auto handed over.
 // In ask mode only these may be quoted to the model (catch-up, duet_history): nothing the user didn't see.
 const gated = new Set();
 function seenAtGate(items) {
@@ -244,7 +264,18 @@ function remember(entry) {
 	if (history.length > 100) history.shift();
 }
 
+// Our own name from another client (another computer: the local lock can't see it). Warn, don't
+// block; only for what it sent since we joined (not a replay of our own earlier session).
+let joinedAt = 0;
+function sameName(env) {
+	if (env.fromId === fromId || (env.kind !== "join" && env.kind !== "msg") || !name) return;
+	if (String(env.from).normalize("NFC").toLowerCase() !== name.normalize("NFC").toLowerCase()) return;
+	if ((env.place && env.place === placeFor(folder || process.cwd(), topicFor(room))) || !(Date.parse(env.ts) >= joinedAt - 5000)) return;
+	warnings.add(`another ${name} is in this room${VIA[env.via] ? ` (${VIA[env.via]})` : ""} · use another name`);
+}
+
 function onEnvelope(env) {
+	sameName(env);
 	if (!isForMe(env, fromId, name)) return;
 	peers.set(env.from, new Date());
 	if (VIA[env.via]) peerVia.set(env.from, env.via); // a peer's own label: only the known ones
@@ -446,6 +477,7 @@ async function joinRoom({ steal = false } = {}) {
 			return false;
 		}
 		fromId = idFor(key());
+		joinedAt = Date.now();
 		status = "connecting…";
 		sub = subscribe({
 			server,
@@ -471,7 +503,7 @@ async function joinRoom({ steal = false } = {}) {
 			}
 		}, LOCK_CHECK_MS);
 		lockTimer.unref();
-		publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", via: isCodex() ? "codex" : undefined, place: placeFor(folder || process.cwd(), topicFor(room)) })).catch(() => {});
+		publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", via: isCodex() ? "codex" : drawsPanels(clientCaps, host) ? "chat" : undefined, place: placeFor(folder || process.cwd(), topicFor(room)) })).catch(() => {});
 		return true;
 	})();
 	try {
@@ -570,7 +602,7 @@ const noAnswer = (r) => {
 	const act = r?.result?.action;
 	return act === "unsupported" || act === "timeout" ? act : act === "decline" ? "full" : "closed";
 };
-// Gate 1. "take", "ignore", or why there was no answer (noAnswer).
+// Gate 1. "take" (Process), "take-send" (Process and send), "ignore", or why there was no answer (noAnswer).
 async function askToTake(items, fromText) {
 	const froms = items.length ? [...new Set(items.map((e) => e.from))] : [];
 	const via = froms.length === 1 && peerVia.get(froms[0]) ? ` · ${VIA[peerVia.get(froms[0])]}` : "";
@@ -584,9 +616,9 @@ async function askToTake(items, fromText) {
 		const r = await elicit(`${head}\n\n${why} · Ignore only\n\n${shown.slice(0, 2000)}${shown.length > 2000 ? "…" : ""}`, ["Ignore"]);
 		return r?.result?.action === "accept" && r.result.content?.answer === "Ignore" ? "ignore" : noAnswer(r);
 	}
-	const r = await elicit(`${head}\n\n${shown}`, ["Do it", "Ignore"]);
+	const r = await elicit(`${head}\n\n${shown}`, ["Process", "Process and send", "Ignore"]);
 	const answer = r?.result?.action === "accept" ? r.result.content?.answer : undefined;
-	return answer === "Do it" ? "take" : answer === "Ignore" ? "ignore" : noAnswer(r);
+	return answer === "Process" ? "take" : answer === "Process and send" ? "take-send" : answer === "Ignore" ? "ignore" : noAnswer(r);
 }
 // How many of the first waiting requests fit in one form (at least one: a longer one gets Ignore only).
 const fitsForm = (max = 8) => {
@@ -688,8 +720,9 @@ async function onHook(a = {}) {
 			return hookContext("UserPromptSubmit", first);
 		}
 		const answer = await askToTake(items, prompt);
-		if (answer === "take") {
+		if (answer === "take" || answer === "take-send") {
 			seenAtGate(items);
+			if (answer === "take-send") approveAhead(turn, items);
 			return hookContext("UserPromptSubmit", first);
 		}
 		busy = null;
@@ -706,6 +739,7 @@ async function onHook(a = {}) {
 		return JSON.stringify({ decision: "block", reason: `duet · ${from} not run · ${cantAsk(answer)} · ask them to resend` });
 	}
 	if (event === "Stop") {
+		preSends.delete(turn); // the turn's replies are done: an OK given ahead ends here
 		// The turn is ending: hand over what arrived meanwhile, as its continuation.
 		if (inRoom() && inbox.length && !codexHold()) {
 			// Out of the inbox while the user decides (and the turn counts as running), so nothing pushes
@@ -721,8 +755,9 @@ async function onHook(a = {}) {
 					askingStop--;
 				}
 				// Esc while the form was open: the turn is over, so a yes can't continue it. Keep them.
-				if (answer === "take" && interrupted) answer = "closed";
-				if (answer !== "take") {
+				if ((answer === "take" || answer === "take-send") && interrupted) answer = "closed";
+				if (answer === "take-send") approveAhead(turn, items);
+				if (answer !== "take" && answer !== "take-send") {
 					busy = null;
 					if (answer === "ignore") {
 						decline(items);
@@ -748,6 +783,7 @@ async function onHook(a = {}) {
 	}
 	if (event === "Interrupt") {
 		busy = null;
+		preSends.delete(turn);
 		if (!inRoom()) return "";
 		interrupted = true;
 		const waiting = inbox.length ? `${inbox.length} message(s) from ${[...new Set(inbox.map((e) => e.from))].join(", ")} wait` : "messages from the room now wait";
@@ -787,7 +823,7 @@ function toolList() {
 			name: "duet_inbox",
 			description:
 				"Read messages from the other agent that are waiting. Call it when your user says 'check duet' or similar, " +
-				"then handle each message: do what was asked and answer with duet_send. In ask mode your user sees each one first and chooses Do it or Ignore; you get only the ones they chose.",
+				"then handle each message: do what was asked and answer with duet_send. In ask mode your user sees each one first; you get only the ones they chose to process.",
 			inputSchema: { type: "object", properties: {} },
 		},
 		{
@@ -871,7 +907,7 @@ async function history12h(since = "2h") {
 		}
 		if (!isEnvelope(env) || env.kind !== "msg") continue;
 		const who = env.fromId === fromId ? `you (${env.from})` : `${env.from}'s agent`;
-		// In ask mode, only what the user saw at gate 1 (Do it or Ignore): the rest isn't the model's to read.
+		// In ask mode, only what the user saw at gate 1: the rest isn't the model's to read.
 		if (env.fromId !== fromId && mode === "ask" && !gated.has(env.id)) {
 			lines.push(`${timeOf(env.ts)} ${who}: (${inbox.some((e) => e.id === env.id) ? "waiting for your user" : "not shown to your user"})`);
 			continue;
@@ -943,7 +979,7 @@ function panelState() {
 		outgoing: inRoomNow ? holds.waiting("me").map(outgoingItem) : [],
 		warnings: inRoomNow ? [...warnings] : [],
 		modelNote: inRoomNow
-			? `duet: your user is in a duet room as ${name} (the duet panel in this chat shows it). Requests from the other person's agent reach you only when your user hands one over from the panel. When your user asks you to tell or ask the other agent something, call duet_send; your user OKs each reply in the duet card.`
+			? `duet: your user is in a duet room as ${name} (the duet panel in this chat shows it). Now: ${waitingLine(inbox)}. Requests from the other person's agent reach you only when your user processes one in the panel; on "check" or "anything new", call duet_room. When your user asks you to tell or ask the other agent something, call duet_send; your user OKs each reply in the duet card.`
 			: "",
 	};
 	state.rev = panelRev();
@@ -963,16 +999,31 @@ const handed = new Map(); // pid -> request, the last few handed over: "Put it b
 const holds = makeHolds(); // gate 2 in a chat app: replies waiting for the user's click in the duet card
 const panelKey = randomBytes(18).toString("base64url"); // the panel's key (panel.js PANEL_KEY_META)
 const HOLDS_MAX = 5;
+// "Process and send" in the panel: { id, from, at } of the request the user OK'd the reply to ahead.
+// Only the panel's click (duet_take with its key) sets it; one duet_send uses it.
+let preTake = null;
 
-// A reply out to the room. Answering a peer (not the user's own request): say which message it answers.
-async function publishReply(text, to, unattended, signal) {
+// Which message a reply answers: answering a peer (not the user's own request), its latest one. The
+// server decides it, never the model.
+function replyRe(to, unattended) {
 	const peerMsg = to ? lastFrom.get(to) : [...lastFrom.values()].sort((x, y) => y.at - x.at)[0];
-	const re = unattended && peerMsg && Date.now() - peerMsg.at < 30 * 60_000 ? peerMsg.id : undefined;
+	return unattended && peerMsg && Date.now() - peerMsg.at < 30 * 60_000 ? peerMsg.id : undefined;
+}
+// A reply out to the room. re: the message it answers (replyRe), or none.
+async function publishReply(text, to, re, signal) {
 	const env = envelope({ fromId, from: name, kind: "msg", ...(to ? { to } : {}), text, ...(re ? { re } : {}) });
 	await publish(server, topicFor(room), env, signal);
 	sent.set(env.id, firstLine(text));
 	if (sent.size > 200) sent.delete(sent.keys().next().value);
 	remember({ who: `you (${name})`, text });
+}
+
+// A held reply out, on the user's Send (or their "Process and send").
+async function sendHold(h) {
+	await needRoom();
+	await publishReply(h.text, h.sendTo, h.re);
+	[exchanges, holdForUser] = [0, false];
+	deliver();
 }
 
 async function callTool(tool, a, ctx) {
@@ -1004,10 +1055,19 @@ async function callTool(tool, a, ctx) {
 				if (!stripHidden(a.text).text.trim()) throw new Error("Not held · nothing visible to send");
 				const waiting = holds.waiting("me");
 				if (!waiting.some((h) => h.text === shown && h.to === shownTo) && waiting.length >= HOLDS_MAX) throw new Error(`Not sent · ${HOLDS_MAX} replies already wait in duet cards`);
+				// "Process and send": the reply to that request, to its sender, goes out at once (once). It
+				// answers the sender's latest message: that must be the request the user OK'd.
+				const pre = !!preTake && Date.now() - preTake.at < PRESEND_MS && shownTo === preTake.from && replyRe(to, true) === preTake.id;
+				if (pre) preTake = null;
+				const re = pre ? replyRe(to, true) : replyRe(to, unattended);
 				const h = holds.hold("me", shownTo, shown);
 				h.sendTo ??= to;
-				h.unattended ??= unattended;
+				h.re ??= re;
 				receivedSinceSend = false;
+				if (pre) {
+					const r = await holds.act(h.id, "send", sendHold);
+					if (r.status === "sent") return sentResult(shownTo, shown);
+				}
 				return heldResult(h);
 			}
 			if (unattended && exchanges >= MAX_AUTO) {
@@ -1026,6 +1086,7 @@ async function callTool(tool, a, ctx) {
 			else if (unattended) exchanges++;
 			receivedSinceSend = false;
 			let outText = a.text; // auto mode, or a host without forms: as given (publishReply checks it)
+			const re = replyRe(to, unattended);
 			// Gate 2 with a form (Codex): the whole reply, Send / Don't send, in ask mode.
 			if (mode === "ask" && clientCaps?.elicitation) {
 				// What the form shows is exactly what goes out: no invisible or control characters the
@@ -1036,11 +1097,13 @@ async function callTool(tool, a, ctx) {
 					giveBack();
 					return "Not sent · nothing visible";
 				}
-				if (shown.length > REPLY_FORM_MAX) {
+				// "Process and send": the reply to that request, to its sender, in its turn: no form, once.
+				const pre = usePreSend(ctx.turnId, shownTo, re);
+				if (!pre && shown.length > REPLY_FORM_MAX) {
 					giveBack();
 					return `Not sent · ${shown.length} chars · form max ${REPLY_FORM_MAX} · send it in parts`;
 				}
-				const answer = await askToSend(shownTo, shown);
+				const answer = pre ? "send" : await askToSend(shownTo, shown);
 				// Every send waits for Send, user_asked or not. Full Access: Codex declines every form by
 				// itself, so nothing goes out in ask mode; the user's own "duet auto" is the way out.
 				if (answer !== "send") {
@@ -1054,7 +1117,7 @@ async function callTool(tool, a, ctx) {
 				outText = shown;
 			}
 			try {
-				await publishReply(outText, to, unattended, ctx.signal);
+				await publishReply(outText, to, re, ctx.signal);
 			} catch (err) {
 				giveBack();
 				throw err;
@@ -1064,12 +1127,7 @@ async function callTool(tool, a, ctx) {
 		}
 		case "duet_reply": {
 			// The card's (or the panel's) Send / Don't send for a held reply: the user's click.
-			const r = await holds.act(a.id, String(a.action ?? ""), async (h) => {
-				await needRoom();
-				await publishReply(h.text, h.sendTo, h.unattended);
-				[exchanges, holdForUser] = [0, false];
-				deliver();
-			});
+			const r = await holds.act(a.id, String(a.action ?? ""), sendHold);
 			if (r.status === "dropped") remember({ who: "", text: `your reply to ${r.to} was not sent`, note: true });
 			return r.status === "waiting" && r.error ? { ...panelResult(r), isError: true } : panelResult(r);
 		}
@@ -1087,11 +1145,12 @@ async function callTool(tool, a, ctx) {
 				take();
 				return text;
 			}
-			// Ask: gate 1 here too. Each request in the form (Do it / Ignore); the model gets only the ones
-			// the user said Do it to, and no peer text at all when there is no form to show it in.
-			if (drawsPanels(clientCaps, host)) return `${inbox.length} waiting · your user opens them in the duet panel`;
+			// Ask: gate 1 here too. Each request in the form (Process / Process and send / Ignore); the model
+			// gets only the ones the user chose to process, and no peer text at all when there is no form.
+			if (drawsPanels(clientCaps, host)) return waitingLine(inbox);
 			if (!clientCaps?.elicitation) return `${inbox.length} waiting · this app shows no form · only auto hands them over (start duet with --mode auto)`;
 			const got = [];
+			const ahead = [];
 			let ignored = 0;
 			let why = "";
 			while (inbox.length && got.length < 8) {
@@ -1106,10 +1165,11 @@ async function callTool(tool, a, ctx) {
 					askingStop--;
 				}
 				// Esc, or the call was cancelled, while the form was open: the turn is over; keep it waiting.
-				if (answer === "take" && (interrupted || ctx.signal?.aborted)) answer = "closed";
-				if (answer === "take") {
+				if ((answer === "take" || answer === "take-send") && (interrupted || ctx.signal?.aborted)) answer = "closed";
+				if (answer === "take" || answer === "take-send") {
 					got.push(...items);
 					seenAtGate(items);
+					if (answer === "take-send") ahead.push(...items);
 				}
 				else if (answer === "ignore") {
 					decline(items);
@@ -1127,6 +1187,7 @@ async function callTool(tool, a, ctx) {
 			const left = inbox.length ? `${inbox.length} waiting${why ? ` · ${cantAsk(why)}` : ""}${why === "full" ? ' · your user types "duet auto", or uses a mode that asks' : ' · "check duet" again'}` : "";
 			if (!got.length) return [ignored ? `duet · ignored ${ignored}` : "", left].filter(Boolean).join(" · ") || "No new duet messages.";
 			receivedSinceSend = true;
+			approveAhead(ctx.turnId, ahead);
 			// The other side's requests are now in this turn: duet's own room tools (join, leave, mode) stay the user's.
 			markPeerTurn(ctx.turnId);
 			return render(got) + (left ? `\n\n(duet: ${left})` : "");
@@ -1169,7 +1230,7 @@ async function callTool(tool, a, ctx) {
 			const said =
 				!room || !name
 					? "duet panel open · your user joins there (room code in the panel, not the chat)"
-					: `duet panel open · "${shortRoom(room)}" as ${name} · ${status} · ${inbox.length} waiting for a click`;
+					: `duet panel open · "${shortRoom(room)}" as ${name} · ${status} · ${waitingLine(inbox)}`;
 			return { content: [{ type: "text", text: said }], _meta: { [PANEL_KEY_META]: panelKey } };
 		}
 		case "duet_room_state": {
@@ -1206,6 +1267,7 @@ async function callTool(tool, a, ctx) {
 				const back = handed.get(String(a.id));
 				if (!back || inbox.some((m) => m.pid === back.pid)) return panelError("Nothing to put back");
 				handed.delete(back.pid);
+				if (preTake?.id === back.id) preTake = null;
 				inbox.unshift(back);
 				remember({ who: "", text: `${back.from}'s request is waiting again`, note: true });
 				return panelResult(panelState());
@@ -1217,6 +1279,8 @@ async function callTool(tool, a, ctx) {
 			if (inbox[i].text.length > FULL_MAX && !inbox[i].opened) return panelError("Show all first");
 			const [e] = inbox.splice(i, 1);
 			seenAtGate([e]);
+			// "Process and send": this request's reply is OK'd ahead; "Process": no OK ahead for anything.
+			preTake = a.send === true ? { id: e.id, from: e.from, at: Date.now() } : null;
 			handed.set(e.pid, e);
 			if (handed.size > 10) handed.delete(handed.keys().next().value);
 			[exchanges, receivedSinceSend, holdForUser] = [0, true, false]; // the user is here
@@ -1237,7 +1301,7 @@ async function callTool(tool, a, ctx) {
 			await needRoom();
 			if (a.mode === "ask") {
 				mode = "ask";
-				return "duet · ask · requests wait for Do it, replies for Send";
+				return "duet · ask · requests wait for Process, replies for Send";
 			}
 			if (a.mode !== "auto") throw new Error("mode is 'ask' or 'auto'");
 			const r = await elicit(

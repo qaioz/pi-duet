@@ -2,8 +2,8 @@
 // 2026-01-26) that chat hosts draw inside the conversation (Claude Desktop and claude.ai, ChatGPT,
 // VS Code, Goose).
 //
-//   ui://duet/room  the panel (duet_room): the room, gate 1 (each waiting request: Hand to <agent> /
-//                   Ignore), the conversation as one row that opens a modal.
+//   ui://duet/room  the panel (duet_room): the room, gate 1 (each waiting request: Process / Process
+//                   and send / Ignore), Check, the conversation as one row that opens a modal.
 //   ui://duet/send  the reply card (duet_send): gate 2. The server holds the agent's reply until the user
 //                   clicks Send (or Don't send) in the card; nothing leaves without that click.
 //
@@ -44,7 +44,7 @@ const timeOf = (ts) => {
 	return Number.isNaN(t) ? "" : new Date(t).toLocaleTimeString();
 };
 
-// The text a click on "Hand to <agent>" puts into the chat, as the user's message. The same frame as
+// The text a click on "Process" (or "Process and send") puts into the chat, as the user's message. The same frame as
 // every other path ("[duet] from <name> …", answer with duet_send), plus
 // two marker lines around the other side's words with a random tag they can't guess: a message that
 // writes its own "end of message" and then pretends to be the user can't close the frame. Nothing the
@@ -65,7 +65,23 @@ export function handOver(e, { folder = "", reply = false, seat = "", utc = false
 	);
 }
 
+// What the model may know of the requests waiting (duet_room, "check", the panel's note): how many
+// and from whom. Never their text, never an id: a request reaches the model only through the user's
+// Process click (gate 1), and the model can call tools on its own. Names are names (isName on arrival).
+export function waitingLine(inbox) {
+	if (!inbox.length) return "Nothing waiting";
+	const from = [...new Set(inbox.map((e) => e.from))].join(", ");
+	return `${inbox.length} waiting · from ${from} · Process it in the duet panel`;
+}
+
 // ---------- gate 2: replies held until the user's click ----------
+
+// "Process and send": how long the user's OK for that request's reply lasts in a chat app (there is
+// no turn end to tie it to). The server keeps it ({ id, from, at }); the model never sees it.
+export const PRESEND_MS = Number(process.env.DUET_PRESEND_MS) || 15 * 60_000;
+// duet_send's answer when the reply went out on the user's "Process and send": no hold, so the card
+// shows it sent.
+export const sentResult = (to, text) => ({ content: [{ type: "text", text: `Sent to ${to}` }], structuredContent: { sent: true, to, text } });
 
 // Who a reply goes to, named exactly: the `to` the agent gave, else (no `to`: the envelope goes to the
 // whole room) the one other person when there is only one, else "everyone in the room".
@@ -176,7 +192,8 @@ export const roomTool = {
 	description:
 		"Open the duet panel in the chat. duet pairs your user with another developer's coding agent through a shared room; the panel shows the room, " +
 		"each request waiting from the other agent (your user hands it to you with a click) and the conversation. Call it when your user asks to open duet, " +
-		"join a duet room, or see or check the duet room. Never ask for the room code: your user types it into the panel.",
+		"join a duet room, or says check, check duet, anything new, or duet. Its answer says how many requests wait and from whom: tell your user, and that they " +
+		"process them in the panel (you get a request only from their click). Never ask for the room code: your user types it into the panel.",
 	inputSchema: { type: "object", properties: {} },
 	_meta: {
 		ui: { resourceUri: PANEL_URI },
@@ -228,8 +245,8 @@ export const appTools = [
 	},
 	{
 		name: "duet_take",
-		description: "Panel only: the user clicked Hand to agent: take one waiting request out and return its framed text (undo: put it back, when the chat app didn't take it).",
-		inputSchema: { type: "object", properties: { ...tokenProp, id: { type: "string" }, undo: { type: "boolean" } }, required: ["id"] },
+		description: "Panel only: the user clicked Process (send: Process and send): take one waiting request out and return its framed text (undo: put it back, when the chat app didn't take it).",
+		inputSchema: { type: "object", properties: { ...tokenProp, id: { type: "string" }, send: { type: "boolean" }, undo: { type: "boolean" } }, required: ["id"] },
 		_meta: appOnly(),
 	},
 	{
@@ -306,6 +323,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 textarea.textarea { width: 100%; min-height: 110px; font-family: var(--font-mono); font-size: 12px; }
 .hidden { display: none !important; }
 .busy button { pointer-events: none; opacity: .5; }
+.flash { outline: 2px solid var(--color-ring, #3b82f6); outline-offset: 2px; }
 .dialog > div { width: 640px; }
 .dialog .head .badge { flex-shrink: 1; min-width: 0; text-overflow: ellipsis; display: inline-block; }
 .dialog .head .btn { flex-shrink: 0; }
@@ -409,7 +427,7 @@ ${STYLE}
 <div id="app">
 <div class="card" id="card">
 	<header>
-		<div class="head"><h2>duet</h2><span id="pill" class="badge hidden" data-variant="secondary"></span><span class="grow"></span><button id="leave" class="btn hidden" data-variant="ghost" data-size="sm" type="button">Leave</button></div>
+		<div class="head"><h2>duet</h2><span id="pill" class="badge hidden" data-variant="secondary"></span><span class="grow"></span><button id="check" class="btn hidden" data-variant="outline" data-size="sm" type="button">Check</button><button id="leave" class="btn hidden" data-variant="ghost" data-size="sm" type="button">Leave</button></div>
 		<p class="sub" id="sub">Code stays in the panel</p>
 	</header>
 	<section class="stack">
@@ -488,7 +506,7 @@ ${BRIDGE}
 		if (!data) throw new Error("this chat app didn't pass duet's answer to the panel");
 		return data;
 	}
-	// Who the request goes to, by host: "Hand to Claude", "Hand to ChatGPT", else "Hand to agent".
+	// Who the request goes to, by host (the hand-over notes): Claude, ChatGPT, else agent.
 	const agent = () => { const n = String(hostInfo.name || "") + " " + String(hostInfo.title || ""); return /chatgpt|openai/i.test(n) ? "ChatGPT" : /claude/i.test(n) ? "Claude" : "agent"; };
 
 	// ---------- drawing (text only: everything from the room goes through textContent) ----------
@@ -506,6 +524,7 @@ ${BRIDGE}
 		$("join").classList.toggle("hidden", !!s.inRoom);
 		$("inroom").classList.toggle("hidden", !s.inRoom);
 		$("leave").classList.toggle("hidden", !s.inRoom);
+		$("check").classList.toggle("hidden", !s.inRoom);
 		const sub = $("sub");
 		if (!s.inRoom) {
 			sub.textContent = "Code stays in the panel";
@@ -548,32 +567,33 @@ ${BRIDGE}
 		for (const id of [...opened.keys()]) if (!(s.outgoing || []).some((o) => o.id === id)) opened.delete(id);
 		for (const id of [...read.keys()]) if (!(s.waiting || []).some((m) => m.id === id)) read.delete(id);
 
-		// Gate 1: each request waiting, Hand to <agent> / Ignore.
+		// Gate 1: each request waiting, Process / Process and send / Ignore.
 		$("waiting").replaceChildren(...(s.waiting || []).map((m) => {
 			const c = el("div", "item");
 			const head = el("div", "row");
 			head.append(el("span", "who", m.from), el("span", "muted", "· " + time(m.at)));
 			const body = el("div", "text", m.full ? m.text : (read.get(m.id) || m.text));
 			c.append(head, body);
-			const take = btn("Hand to " + agent()), skip = btn("Ignore", "outline");
+			const take = btn("Process"), takeSend = btn("Process and send", "outline"), skip = btn("Ignore", "ghost");
 			if (!m.full && !read.has(m.id)) {
 				// The card shows the start; the click hands over all of it, so it waits until all of it is open.
-				take.disabled = true;
+				take.disabled = takeSend.disabled = true;
 				const more = btn("Show all · " + m.size + " chars", "link", "sm"); more.classList.add("linkish");
 				more.onclick = async () => {
 					try {
 						const t = (await call("duet_read", { id: m.id })).text;
 						if (typeof t !== "string") return refresh(true);
 						read.set(m.id, t);
-						body.textContent = t; more.remove(); take.disabled = false; report();
+						body.textContent = t; more.remove(); take.disabled = takeSend.disabled = false; report();
 					} catch (e) { showError(e.message); }
 				};
 				c.append(more);
 			}
 			const acts = el("div", "row");
-			take.onclick = () => handTo(m.id, c);
+			take.onclick = () => handTo(m.id, c, false);
+			takeSend.onclick = () => handTo(m.id, c, true);
 			skip.onclick = () => ignore(m.id, c);
-			acts.append(take, skip);
+			acts.append(take, takeSend, skip);
 			c.append(acts);
 			return c;
 		}));
@@ -634,12 +654,12 @@ ${BRIDGE}
 	});
 
 	// ---------- actions ----------
-	async function handTo(id, card) {
+	async function handTo(id, card, andSend) {
 		if (busy) return;
 		busy = true; card.classList.add("busy"); showError("");
 		let text;
 		try {
-			text = (await call("duet_take", { id })).text;
+			text = (await call("duet_take", andSend ? { id, send: true } : { id })).text;
 		} catch (e) { showError(e.message); busy = false; card.classList.remove("busy"); return refresh(true); }
 		busy = false; // the chat app may take minutes to answer: the other cards stay usable meanwhile
 		$("handed").classList.remove("hidden");
@@ -680,6 +700,15 @@ ${BRIDGE}
 		card.classList.remove("busy");
 		refresh(true);
 	}
+	// Check: the room now; the waiting requests in view, or "Nothing waiting".
+	$("check").onclick = async () => {
+		await refresh(true);
+		const first = $("waiting").firstElementChild || $("outgoing").firstElementChild;
+		const target = first || $("none-waiting");
+		try { target.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch {}
+		target.classList.add("flash");
+		setTimeout(() => target.classList.remove("flash"), 1200);
+	};
 	$("copy-fallback").onclick = (ev) => copy($("fallback-text").value, ev.target);
 	const taken = new Set(); // hand-overs the chat app didn't take (or that didn't arrive): Put back returns them all
 	$("close-fallback").onclick = () => { taken.clear(); $("handed").classList.add("hidden"); };
@@ -783,7 +812,7 @@ ${BRIDGE}
 	function show(st) {
 		if (st.to) to = st.to;
 		if (typeof st.text === "string" && st.text) text = st.text;
-		$("title").textContent = to ? "Send to " + to + "?" : "duet";
+		$("title").textContent = to ? (st.status === "sent" ? "Sent to " + to : "Send to " + to + "?") : "duet";
 		$("reply").textContent = text;
 		$("reply").classList.toggle("hidden", !text);
 		const waiting = st.status === "waiting";

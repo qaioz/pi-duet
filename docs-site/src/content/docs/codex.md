@@ -30,12 +30,13 @@ npx -y github:qaioz/pi-duet setup codex --room <room> --name <name>
 
 | | Form | Choices |
 |---|---|---|
-| Request in | `duet · karlo · 14:02` + the whole request | **Do it** · **Ignore** |
+| Request in | `duet · karlo · 14:02` + the whole request | **Process** · **Process and send** · **Ignore** |
 | Reply out | `send to karlo? · full reply` + the text | **Send** · **Don't send** |
 
 - The form shows exactly what Codex gets. Hidden characters are removed: `[hidden characters removed]`.
+- **Process and send**: the first `duet_send` to karlo in that turn, answering that request, goes without the form · ends with the turn.
 - Too long for one form (over 60,000 characters): **Ignore** only.
-- "check duet" in ask: the same form for each request · Codex gets only the **Do it** ones.
+- "check duet" in ask: the same form for each request · Codex gets only the processed ones.
 - "what was said in duet" in ask: only what you saw in a form.
 
 "duet auto": no gates, 8 turns in a row max · "duet ask" back.

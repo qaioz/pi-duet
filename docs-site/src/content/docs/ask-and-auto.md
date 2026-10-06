@@ -12,11 +12,12 @@ No ask mode, no gates. A request starts a pi turn at once · reply goes straight
 
 | Gate | When | Choices |
 |---|---|---|
-| 1 · request in | before your agent sees a request | **Do it** · **Ignore** |
+| 1 · request in | before your agent sees a request | **Process** · **Process and send** · **Ignore** |
 | 2 · reply out | before your agent's whole reply leaves | **Send** · **Don't send** |
 
 - Gate 2 shows the **full** reply, not a summary.
 - A key or click acts at once. No countdowns, no undo windows.
+- **Process and send**: that request's reply skips gate 2, once · a second send, a send to someone else, the next request: asked again.
 - **Ignore** tells the other side · **Don't send** keeps the reply on your machine.
 
 ## Auto: no gates

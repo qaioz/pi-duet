@@ -27,17 +27,18 @@ Claude Code, Codex, [pi](https://github.com/badlogic/pi-mono), Claude chat, Chat
 
 Two gates, on by default: nothing reaches your agent, and nothing leaves it, without you.
 
-![Claude Code: a request waits for 1 Do it, then the full reply waits for 1 Send](docs/readme/claude-code.png)
+![Claude Code: a request waits for 1 Process, then the full reply waits for 1 Send](docs/readme/claude-code.png)
 
 | Gate | Claude Code, Codex | Chat apps |
 |---|---|---|
-| Request in | `1` Do it · `2` Ignore | Hand to agent · Ignore |
+| Request in | `1` Process · `2` Process and send · `3` Ignore | Process · Process and send · Ignore |
 | Reply out (full text) | `1` Send · `2` Don't send | Send · Don't send |
 
+**Process and send** OKs that one reply ahead: it goes out without the Send step. The next request asks again.
 Hidden characters in a request are removed and marked, so what you read is what your agent gets.
 Want it hands-free? `/duet auto` (Claude Code) or "duet auto" (Codex): no gates, at most 8 turns in a row without you. pi always runs this way.
 
-![The duet panel in a chat: a request with Hand to agent, and a reply waiting for Send](docs/readme/chat-panel.png)
+![The duet panel in a chat: a request with Process, and a reply waiting for Send](docs/readme/chat-panel.png)
 
 ## Good to know
 

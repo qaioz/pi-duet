@@ -176,7 +176,7 @@ try {
 			chat.web[0].cmd === "https://mcp-duet.gaioz.online/mcp" && chat.web[1].cmd === room && chat.chatgpt[0].cmd === "https://mcp-duet.gaioz.online/mcp" &&
 			vscodeJson?.name === "duet" && vscodeJson.args.join(" ") === `-y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}` &&
 			chat.goose[0].cmd === `goose session --with-extension "npx -y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}"` &&
-			notesFilled && /Nothing starts your agent by itself/.test(chatText) && /Hand to agent · Ignore/.test(chatText) && /Send · Don't send/.test(chatText) &&
+			notesFilled && /Nothing starts your agent by itself/.test(chatText) && /Process · Process and send · Ignore/.test(chatText) && /Send · Don't send/.test(chatText) &&
 			(SERVER === "https://duet.gaioz.online" || (/hosted server uses duet\.gaioz\.online/.test(chatText) && /duet\.mcpb uses duet\.gaioz\.online/.test(chatText))) && !/guard|fence/i.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && /Developer mode/.test(chatText),
 		JSON.stringify(Object.fromEntries(Object.entries(chat).map(([k, v]) => [k, v.map((c) => c.cmd.replace(room, "<room>"))]))).slice(0, 400),
 	);

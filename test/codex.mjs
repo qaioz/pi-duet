@@ -195,19 +195,19 @@ async function main() {
 	const declined = await until(async () => (await notes()).find((e) => e.note === "declined" && e.to === "nika"), 5000, "declined note").catch(() => undefined);
 	check(
 		"ask mode: the queued request shows a form; Ignore blocks the prompt and tells the other side",
-		/^duet · nika · \d\d:\d\d\n\nREQ-QUEUED/.test(form.params.message) && JSON.stringify(form.params.requestedSchema.properties.answer.enum) === '["Do it","Ignore"]' && ignoredOut?.decision === "block" && !!declined,
+		/^duet · nika · \d\d:\d\d\n\nREQ-QUEUED/.test(form.params.message) && JSON.stringify(form.params.requestedSchema.properties.answer.enum) === '["Process","Process and send","Ignore"]' && ignoredOut?.decision === "block" && !!declined,
 		`form: ${JSON.stringify(form.params.message.slice(0, 80))}; hook answer: ${JSON.stringify(ignoredOut)}; a "declined" note to nika on the relay: ${!!declined}`,
 	);
-	// The next one: "Do it" lets the prompt run; nothing in that turn is refused; its reply waits for gate 2.
+	// The next one: "Process" lets the prompt run; nothing in that turn is refused; its reply waits for gate 2.
 	await p.send("REQ-TAKE");
 	await until(() => fc.queued().length === 2, 5000, "second push");
 	const q2 = fc.queued()[1];
 	const taken = c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-2", prompt: q2[4] });
-	await c.answer("Do it");
+	await c.answer("Process");
 	const takenOut = (await taken).text;
 	const anyTool = (await c.hook({ event: "PreToolUse", thread: "thr-1", turn: "turn-2", tool: "apply_patch", input: { command: "*** Begin Patch\n*** Add File: /etc/x\n+x\n*** End Patch" } })).text;
 	check(
-		"ask mode: Do it runs the request; nothing in its turn is refused (no fence)",
+		"ask mode: Process runs the request; nothing in its turn is refused (no fence)",
 		takenOut === "" && anyTool === "",
 		`hook answer ${JSON.stringify(takenOut)}; a patch to /etc/x in that turn: ${JSON.stringify(anyTool)}`,
 	);
@@ -252,7 +252,7 @@ async function main() {
 	await sleep(1500);
 	const pushedWhileBusy = fc.queued().some((a) => a[4].includes("REQ-WHILE-BUSY"));
 	const stop = c.hook({ event: "Stop", thread: "thr-1", turn: "turn-3" });
-	await c.answer("Do it");
+	await c.answer("Process");
 	const stopOut = json((await stop).text);
 	check(
 		"while a turn runs, a request isn't queued; at Stop (after the user's yes) it continues the turn",
@@ -270,7 +270,7 @@ async function main() {
 	const heldAfterEsc = fc.queued().length === queuedBefore;
 	await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-5", prompt: "back again" });
 	const stop5 = c.hook({ event: "Stop", thread: "thr-1", turn: "turn-5" }); // the held one: asks (ask mode)
-	await c.answer("Do it").catch(() => {});
+	await c.answer("Process").catch(() => {});
 	await stop5;
 	check(
 		"Esc: the user is told messages wait; nothing is queued until their next prompt",
@@ -300,7 +300,7 @@ async function main() {
 	);
 	// Nor does duet_history read it while it waits.
 	const faHist = await c.call("duet_history", { since: "30m" }, { id: "turn-7" });
-	check("duet_history: a request still waiting for Do it is not shown", !faHist.text.includes("REQ-FULL-ACCESS") && faHist.text.includes("(waiting for your user)"), JSON.stringify(faHist.text.split("\n").filter((l) => /waiting|FULL/.test(l))));
+	check("duet_history: a request still waiting for Process is not shown", !faHist.text.includes("REQ-FULL-ACCESS") && faHist.text.includes("(waiting for your user)"), JSON.stringify(faHist.text.split("\n").filter((l) => /waiting|FULL/.test(l))));
 	// The user (a form shown this time) ignores it, so it doesn't come back at the next turn's end.
 	const clearing = c.call("duet_inbox", {}, { id: "turn-7" });
 	await c.answer("Ignore");
@@ -389,7 +389,7 @@ async function main() {
 	await c.answer("Ignore");
 	await t1;
 	const t2 = c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "twin-2", prompt: twins[1][4] });
-	await c.answer("Do it");
+	await c.answer("Process");
 	await t2;
 	await c.hook({ event: "Stop", thread: "thr-1", turn: "twin-2" });
 	// A request still in Codex's queue that this server never pushed (a restart, a push that "failed").
@@ -408,7 +408,7 @@ async function main() {
 	await p.send("REQ-SKIP-ME");
 	await p.send("REQ-FOR-INBOX-2");
 	await sleep(1500);
-	// "check duet" in ask mode: each waiting request in the form; the model gets only the Do it ones.
+	// "check duet" in ask mode: each waiting request in the form; the model gets only the processed ones.
 	const inboxCall = c.call("duet_inbox", {}, { id: "user-9" });
 	let inboxDone = false;
 	inboxCall.then(() => (inboxDone = true));
@@ -417,13 +417,13 @@ async function main() {
 		if (c.asks.length > (c.answered ?? 0)) {
 			const msg = c.asks[c.answered ?? 0].params.message;
 			inboxForms.push(msg);
-			await c.answer(msg.includes("REQ-FOR-INBOX-2") ? "Do it" : "Ignore");
+			await c.answer(msg.includes("REQ-FOR-INBOX-2") ? "Process" : "Ignore");
 		} else await sleep(50);
 	}
 	const inboxRead = await inboxCall;
 	const histFromPeer = await c.call("duet_history", {}, { id: "twin-2" });
 	check(
-		"check duet (ask): one form per request; only the Do it ones reach the model; a request can't read the room's history",
+		"check duet (ask): one form per request; only the processed ones reach the model; a request can't read the room's history",
 		inboxForms.some((m) => m.includes("REQ-FOR-INBOX-2")) && inboxForms.some((m) => m.includes("REQ-SKIP-ME")) && inboxRead.text.includes("REQ-FOR-INBOX-2") && !inboxRead.text.includes("REQ-SKIP-ME") && !/REQ-FOR-INBOX(?!-2)/.test(inboxRead.text) && /for your user/.test(histFromPeer.text),
 		`forms: ${inboxForms.length}; inbox: ${JSON.stringify(inboxRead.text.slice(0, 80))}; history from a request: ${histFromPeer.text}`,
 	);
@@ -438,7 +438,7 @@ async function main() {
 	await p.send(smuggled);
 	await sleep(1500);
 	const h1Stop = c.hook({ event: "Stop", thread: "thr-1", turn: "h1-0" });
-	const h1Form = await c.answer("Do it");
+	const h1Form = await c.answer("Process");
 	const h1Reason = json((await h1Stop).text)?.reason ?? "";
 	const invisible = /[\u{e0000}-\u{e0fff}\ufe00-\ufe0f\u034f\u2800\u180b\u3164\u0085]/u;
 	const seen = h1Form.params.message.split("\n\n").slice(1).join("\n\n");
@@ -478,6 +478,75 @@ async function main() {
 		`choices ${JSON.stringify(hidForm.params.requestedSchema.properties.answer.enum)}; ${JSON.stringify(hidForm.params.message.slice(0, 80))}`,
 	);
 
+	// ---- Process and send (Codex): the reply to that request, in its turn, to its sender: no form, once ----
+	{
+		const forms = () => c.asks.length;
+		const drop = async (args, turn) => {
+			const pr = c.call("duet_send", args, turn);
+			const f = await c.answer("Don't send");
+			return { out: (await pr).text, form: f.params.message };
+		};
+		await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "ps-0", prompt: "my prompt" });
+		await p.send("REQ-PS-1");
+		await sleep(1500);
+		const psStop = c.hook({ event: "Stop", thread: "thr-1", turn: "ps-0" });
+		const psForm = await c.answer("Process and send");
+		const psReason = json((await psStop).text)?.reason ?? "";
+		const t0 = { id: "ps-0" };
+		const toOther = await drop({ text: "PS-TO-DATO", to: "dato" }, t0); // someone else: form
+		const f0 = forms();
+		const linked = await c.call("duet_send", { text: "PS-REPLY-1" }, t0);
+		const noForm = forms() === f0;
+		const got1 = await until(() => p.got.find((e) => e.text === "PS-REPLY-1"), 8000, "PS-REPLY-1").catch(() => null);
+		const second = await drop({ text: "PS-SECOND" }, t0); // a second send in the same turn: form
+		await c.hook({ event: "Stop", thread: "thr-1", turn: "ps-0" });
+		check(
+			"Process and send (Codex, turn end): the linked reply goes out once with no form; a send to someone else and a second send each get the form",
+			psForm.params.requestedSchema.properties.answer.enum.includes("Process and send") && psReason.includes("REQ-PS-1") && !psReason.includes("and send") &&
+				/send to dato\?/.test(toOther.form) && /^Not sent/.test(toOther.out) &&
+				linked.text === "Sent to nika." && noForm && got1?.re === p.got.find((e) => e.text === "REQ-PS-1")?.id &&
+				second.form.includes("PS-SECOND") && /^Not sent/.test(second.out),
+			`other: ${toOther.out.slice(0, 30)}; linked: ${linked.text} (no form: ${noForm}, re ok: ${got1?.re === p.got.find((e) => e.text === "REQ-PS-1")?.id}); second: form`,
+		);
+		// The next turn: the OK is gone (a user turn's send, and a request taken with Process, both ask).
+		await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "ps-1", prompt: "my next prompt" });
+		// Whatever the model puts in the call: no way to an OK ahead.
+		const nextTurn = await drop({ text: "PS-NEXT-TURN", to: "nika", preSend: true, approved: true, process_and_send: true, user_asked: true }, { id: "ps-1" });
+		await p.send("REQ-PS-2");
+		await sleep(1500);
+		const ps1Stop = c.hook({ event: "Stop", thread: "thr-1", turn: "ps-1" });
+		await c.answer("Process");
+		await ps1Stop;
+		const processed = await drop({ text: "PS-PROCESS-ONLY" }, { id: "ps-1" });
+		await c.hook({ event: "Stop", thread: "thr-1", turn: "ps-1" });
+		// The queued path: a pushed request, Process and send at its prompt; Esc ends the turn unsent; the next turn asks.
+		await p.send("REQ-PS-3");
+		await until(() => fc.queued().some((a) => a[4].includes("REQ-PS-3")), 5000, "REQ-PS-3 push");
+		const q3 = fc.queued().find((a) => a[4].includes("REQ-PS-3"));
+		const q3Run = c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "ps-2", prompt: q3[4] });
+		await c.answer("Process and send");
+		await q3Run;
+		await c.hook({ event: "Interrupt", thread: "thr-1", turn: "ps-2" });
+		const afterEsc = await drop({ text: "PS-AFTER-ESC" }, { id: "ps-2", trigger: "queue" });
+		await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "ps-3", prompt: "go on" });
+		await p.send("REQ-PS-4");
+		await sleep(1500);
+		const ps3Stop = c.hook({ event: "Stop", thread: "thr-1", turn: "ps-3" });
+		await c.answer("Process and send");
+		await ps3Stop;
+		const f3 = forms();
+		const q4Linked = await c.call("duet_send", { text: "PS-REPLY-4" }, { id: "ps-3" });
+		const otherTurn = await drop({ text: "PS-OTHER-TURN" }, { id: "ps-9" });
+		await c.hook({ event: "Stop", thread: "thr-1", turn: "ps-3" });
+		await sleep(1500);
+		const leakedPs = p.got.some((e) => ["PS-TO-DATO", "PS-SECOND", "PS-NEXT-TURN", "PS-PROCESS-ONLY", "PS-AFTER-ESC", "PS-OTHER-TURN"].includes(e.text));
+		check(
+			"Process and send (Codex): gone in the next turn (whatever the model's arguments say) and after Esc; Process keeps the form; another turn's send asks; nothing gated leaked",
+			/^Not sent/.test(nextTurn.out) && processed.form.includes("PS-PROCESS-ONLY") && afterEsc.form.includes("PS-AFTER-ESC") && q4Linked.text === "Sent to nika." && forms() === f3 + 1 && otherTurn.form.includes("PS-OTHER-TURN") && !leakedPs,
+			`next turn: form; Process: form; after Esc: form; linked again: ${q4Linked.text}; other turn: form; leaked: ${leakedPs}`,
+		);
+	}
+
 	// ---- only the user switches modes or rooms; auto needs their yes ----
 	const fromPeer = await c.call("duet_mode", { mode: "auto" }, { id: "turn-2", trigger: "queue" });
 	const joinFromPeer = await c.call("duet_join", { room: "other-room", name: "x" }, { id: "turn-2", trigger: "queue" });
@@ -499,6 +568,13 @@ async function main() {
 	);
 	const hist = await c.call("duet_history", { since: "30m" }, { id: "turn-10" });
 	check("duet_history shows the room from the relay", hist.text.includes("REQ-TAKE") && hist.text.includes("nika's agent"), hist.text.split("\n").slice(0, 3).join(" | "));
+	// Our own name from another client (another computer): duet_status warns; nothing is blocked.
+	await publish(SERVER, topicFor(room), envelope({ fromId: "other-gaioz", from: "Gaioz", kind: "join", via: "chat" }));
+	const sameSt = await until(async () => {
+		const t = (await c.call("duet_status", {}, { id: "same-1" })).text;
+		return t.includes("another") ? t : "";
+	}, 8000, "same-name warning").catch(() => "");
+	check("same name from another client: duet_status warns 'another gaioz is in this room (chat panel) · use another name'", sameSt.includes("warning: another gaioz is in this room (chat panel) · use another name") && sameSt.includes("· connected"), sameSt.slice(sameSt.indexOf("warning"), sameSt.indexOf("warning") + 80));
 	p.stop();
 	await c.stop();
 
