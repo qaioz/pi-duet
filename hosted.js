@@ -27,7 +27,7 @@ import { pathToFileURL } from "node:url";
 import { appTools, cleanText, handOver, heldResult, JOIN_META, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomProps, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.10.0"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.10.1"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");

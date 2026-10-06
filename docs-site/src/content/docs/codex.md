@@ -9,6 +9,9 @@ description: duet for Codex CLI, the desktop app and the IDE extension.
    new Codex session in this folder and say "join duet" (first time: trust duet's hooks). duet joins on that
    first prompt: Codex tells duet the folder only when a turn starts.
 
+The room code is in the prompt (and in `duet_join`'s arguments), so it stays in the session history and reaches
+the model's provider. Every Codex route joins through the model; only `setup codex` (IDE) keeps it out.
+
 ## Start · plugin, yourself (CLI, desktop app)
 
 One line, in your project folder:

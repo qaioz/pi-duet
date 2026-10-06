@@ -7,6 +7,9 @@ description: The pi-duet extension.
 1. On [the website](https://qaioz.github.io/pi-duet/): **Copy prompt**, paste it into pi, open in your project folder.
 2. Type `/reload` · you're in the room.
 
+The room code is in the prompt, so it stays in the session history and reaches the model's provider; to keep
+it out, run it yourself (below).
+
 ## Or run it yourself
 
 One line, in your project folder:
