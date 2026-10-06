@@ -3,7 +3,8 @@ title: Claude chat and ChatGPT
 description: The duet panel, an MCP App drawn in the chat.
 ---
 Chat apps join through **the duet panel**, drawn in the conversation. Add duet once (below), then paste
-the website's prompt: "Open duet: call duet_room with room `<room>` and name `<name>`." The panel opens joined.
+the website's prompt: "Open duet: call duet_room with room `<room>` and name `<name>`." The panel opens with
+both filled in: click **Join**. (The model only fills the form: text in the chat can't move you into a room.)
 
 ## Add duet
 
@@ -21,7 +22,11 @@ nothing, and it sits in your connector list. Renaming later: Customize → Conne
 Team, Enterprise, workspaces: an owner may have to allow custom connectors or Developer mode.
 
 Claude asks before the first `duet room` in a chat: **Always allow** (or Customize → Connectors → duet →
-tool permissions) skips it next time. The panel calls nothing until you click Join, so opening it asks once.
+tool permissions) skips it next time. A second ask right after the panel draws was seen on claude.ai; which
+call it was for is not confirmed. The panel now calls no tool on load unless this tab joined a room before
+and the live stream (below) is blocked, and duet's tools are marked read-only or not destructive. Whether
+that leaves one ask on claude.ai is not yet observed: Claude's docs don't say how it treats a panel's own
+calls.
 
 ## Join
 
@@ -58,6 +63,7 @@ The panel keeps the code (Copy) and remembers your name.
 Checked in a test browser (Chromium) only: the stream, and polling when a strict app blocks it. Not yet seen
 in claude.ai, the Claude apps, Cowork or ChatGPT: whether they let the panel open the stream (if not, the
 panel polls, as before). No chat app lets a panel start the model: a request waits for your click everywhere.
+Up to three duet panels in one chat stream at once; an older one stops keeping up until you click in it.
 
 ## Apps that draw no panel
 
@@ -76,4 +82,4 @@ There is no card for gate 2 there, so read what your agent sends.
 - Always uses `duet.gaioz.online` as relay · own relay: Claude Desktop, VS Code or Goose.
 - **Live stream** (`/live`): the panel reads its own room's state straight from the server (the one domain
   it declares) · the same state it would poll for · `DUET_LIVE=0` turns it off.
-- Run your own: `node hosted.js` (`PORT`, `HOST`, `DUET_SERVER`, `PUBLIC_URL`) or `hosted/` (Docker).
+- Run your own: `node hosted.js` (`PORT`, `HOST`, `DUET_SERVER`, `PUBLIC_URL`: the stream needs it) or `hosted/` (Docker).

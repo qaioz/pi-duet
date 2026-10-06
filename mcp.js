@@ -1256,6 +1256,7 @@ async function callTool(tool, a, ctx) {
 			const keyed = (text, isError) => ({ content: [{ type: "text", text }], _meta: { [PANEL_KEY_META]: panelKey }, ...(isError ? { isError } : {}) });
 			// A room and name from the user's own message (the site's prompt): join with them.
 			if (a.room || a.name) {
+				needUser(ctx, "joining a room happens"); // as duet_join: a request from the other side can't move the session
 				const r = String(a.room ?? "").trim();
 				const n = String(a.name ?? "").trim();
 				if (!isRoomCode(r)) return keyed("Not joined · room code: 3-64 letters, digits, . _ - · your user can type it into the panel", true);

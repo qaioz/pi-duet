@@ -97,8 +97,8 @@ export const outgoingItem = (h) => ({ id: h.id, to: h.to, text: h.text.length <=
 // result's _meta out of the model's context), and every panel tool but duet_reply needs it. So even a
 // host that lists app-only tools to the model doesn't let the model read the room or hand itself a request.
 export const PANEL_KEY_META = "duet/key";
-// hosted only: duet_room's room and name for the panel to join with (it holds the seat token). Never
-// kept on the server.
+// hosted only: duet_room's room and name, which only fill the panel's form (the user's Join click joins).
+// Never kept on the server.
 export const JOIN_META = "duet/join";
 
 // What duet_send answers while the reply waits in the card. The hold id is in _meta only: the card gets
@@ -181,10 +181,11 @@ export function makeHolds({ ttlMs = Number(process.env.DUET_HOLD_MS) || 30 * 60_
 
 // ---------- tools ----------
 
-// Tool annotations (MCP ToolAnnotations): Claude decides per-call approval from them ("read-only tools can
-// run without per-call confirmation, and destructive tools always prompt"), ChatGPT treats a tool without
-// readOnlyHint as a write that needs confirming, and a missing destructiveHint means "may be destructive".
-// No duet tool deletes the user's data; the gates are duet's own (the panel's and the card's clicks).
+// Tool annotations (MCP ToolAnnotations). Claude's docs say "read-only tools can run without per-call
+// confirmation, and destructive tools always prompt", ChatGPT's that a tool without readOnlyHint is a
+// write that needs confirming, and MCP that a missing destructiveHint means "may be destructive". Not
+// observed: what claude.ai does with these on an app-only call (undocumented), or with an un-annotated
+// tool. No duet tool deletes the user's data; the gates are duet's own (the panel's and the card's clicks).
 export const READS = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 export const WRITES = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
 export const SENDS = { ...WRITES, openWorldHint: true }; // posts to the room (the relay)
@@ -204,8 +205,9 @@ export const roomProps = {
 export const roomTool = {
 	name: "duet_room",
 	title: "duet room",
-	// It opens the panel. On the local server a room and name in the call join that room (a write); the
-	// hosted server only hands them to the panel and overrides this as read-only (hosted.js).
+	// It opens the panel. On the local server a room and name in the call join that room (a write, and only
+	// on the user's own turn); the hosted server only fills the panel's form with them (the user clicks
+	// Join) and overrides this as read-only (hosted.js).
 	annotations: SENDS,
 	description:
 		"Open the duet panel in the chat. duet pairs your user with another developer's coding agent through a shared room; the panel shows the room, " +
@@ -306,7 +308,7 @@ export const resourceEntries = [
 // The views talk only to the host (and through it to this server), with one exception: the hosted
 // server's panel may also read its room's state straight from that server (live: the URL of its /live
 // stream), the one origin it then declares in connectDomains. Nothing else, and no resource domains.
-export const resourceContents = (uri, version, { live = "", hosted = false } = {}) => {
+export const resourceContents = (uri, version, { live = "", hosted = false, server = "" } = {}) => {
 	if (uri !== PANEL_URI && uri !== SEND_URI) return null;
 	const panel = uri === PANEL_URI;
 	const connect = panel && live ? [new URL(live).origin] : [];
@@ -315,7 +317,7 @@ export const resourceContents = (uri, version, { live = "", hosted = false } = {
 			{
 				uri,
 				mimeType: PANEL_MIME,
-				text: panel ? panelHtml(version, { live: connect.length ? live : "", hosted }) : sendHtml(version),
+				text: panel ? panelHtml(version, { live: connect.length ? live : "", hosted, server }) : sendHtml(version),
 				_meta: {
 					ui: { prefersBorder: false, csp: { connectDomains: connect, resourceDomains: [] } },
 					"openai/widgetPrefersBorder": false,
@@ -447,7 +449,8 @@ const SVG_X = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" vi
 // The panel. Everything a peer controls is put on the page with textContent (never innerHTML), so
 // their text can't become markup.
 //   live:   the hosted server's /live stream URL ("" none)   hosted: served by hosted.js (seats by token)
-export function panelHtml(version, { live = "", hosted = false } = {}) {
+//   server: that server's run id; its stream's "not in a room" carries it
+export function panelHtml(version, { live = "", hosted = false, server = "" } = {}) {
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -525,32 +528,15 @@ ${BRIDGE}
 	$("name").value = store("local", "duet-name");
 	// The local server's key for this panel: in duet_room's result (_meta), which the model doesn't see.
 	let key = store("session", "duet-key");
-	// The hosted server's room and name from duet_room (the user's own message): the panel joins with them
-	// once, and only within 10 minutes of the call. A redrawn or reopened chat replays the result: that
-	// doesn't join again, nor after a Leave (each result's id is remembered in this browser).
-	let autoJoin = null;
-	const usedJoins = () => store("local", "duet-auto").split(" ").filter(Boolean);
+	// The hosted server's room and name from duet_room (from the chat): they only fill the form. The
+	// user's Join click joins: the model, which text in the chat can steer, never moves the user into a
+	// room (or out of the one they are in) by itself.
 	handlers["ui/notifications/tool-result"] = (r) => {
 		const k = r && r._meta && r._meta[${JSON.stringify(PANEL_KEY_META)}];
 		if (typeof k === "string" && k && k !== key) { key = k; store("session", "duet-key", k); if (ready) refresh(true); }
 		const j = r && r._meta && r._meta[${JSON.stringify(JOIN_META)}];
-		const ok = j && typeof j.room === "string" && typeof j.name === "string" && !(j.id && usedJoins().includes(j.id)) && store("session", "duet-joined") !== j.room + " " + j.name;
-		if (ok && (j.at === undefined || Math.abs(Date.now() - j.at) < 10 * 60_000)) {
-			autoJoin = j;
-			if (ready) joinAsked();
-		} else if (ok && !store("session", "duet-room")) {
-			// Older than 10 minutes by this browser's clock: filled in, the user presses Join.
-			$("room").value = j.room; $("name").value = j.name;
-		}
+		if (j && typeof j.room === "string" && typeof j.name === "string") { $("room").value = j.room; $("name").value = j.name; }
 	};
-	function joinAsked() {
-		if (!autoJoin) return;
-		$("room").value = autoJoin.room; $("name").value = autoJoin.name;
-		store("session", "duet-joined", autoJoin.room + " " + autoJoin.name);
-		if (autoJoin.id) store("local", "duet-auto", [autoJoin.id, ...usedJoins()].slice(0, 20).join(" "));
-		autoJoin = null;
-		join();
-	}
 
 	async function call(name, args) {
 		const r = await rpc("tools/call", { name, arguments: Object.assign({ token }, key ? { key } : {}, args || {}) });
@@ -806,11 +792,15 @@ ${BRIDGE}
 	// it, the server refuses, the stream ends) falls back to polling at once, and the stream is tried
 	// again later. While it runs the panel calls no tool to keep up, so a host that asks before each app
 	// call asks only on the user's own clicks.
-	const LIVE = ${JSON.stringify(live)}, HOSTED = ${hosted ? "true" : "false"};
+	const LIVE = ${JSON.stringify(live)}, HOSTED = ${hosted ? "true" : "false"}, SERVER = ${JSON.stringify(server)};
 	let pollTimer;
 	let failures = 0;
 	let stream = null; // { ctl, live } while a stream is open
 	let liveFails = 0, liveTimer, liveOff = !LIVE;
+	// foreign: "not in a room" from a stream that never showed the room, while the chat app's call says in
+	// one (twice in a row: the stream reaches another server). dormant: a newer duet panel in this chat took
+	// over the stream; this one waits for the user's click instead of reopening (and pushing the next out).
+	let foreign = 0, dormant = false;
 	const inRoom = () => !!(state && state.inRoom);
 	const streaming = () => !!(stream && stream.live);
 	handlers.teardown = () => { clearTimeout(pollTimer); clearTimeout(liveTimer); if (stream) stream.ctl.abort(); };
@@ -839,7 +829,7 @@ ${BRIDGE}
 	// key came: it may be in a room the panel didn't join), or a room this panel is in.
 	function schedule() {
 		clearTimeout(pollTimer);
-		if (torn) return;
+		if (torn || dormant) return;
 		if (!liveOff && inRoom() && !stream && !liveTimer) return openStream();
 		if (streaming() || !(key || inRoom())) return;
 		const ms = document.hidden ? 20000 : Math.min(4000 * Math.max(1, failures), 30000);
@@ -849,7 +839,7 @@ ${BRIDGE}
 		if (torn || stream || liveOff) return;
 		const me = (stream = { ctl: new AbortController(), live: false });
 		const opened = Date.now();
-		let why = "", out = false, quiet;
+		let why = "", out = null, evicted = false, quiet;
 		// The server writes at least every 20 s: a stream silent for 45 s is stuck (a proxy, a sleeping network).
 		const hush = () => { clearTimeout(quiet); quiet = setTimeout(() => { why = "silent"; me.ctl.abort(); }, 45000); };
 		hush();
@@ -870,9 +860,10 @@ ${BRIDGE}
 					const data = ev.split("\\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\\n");
 					if (!data) continue; // a keep-alive comment
 					const s = JSON.parse(data);
-					// "Not in a room" ends the stream; the panel's own tool call (below) has the last word.
-					if (!s.inRoom) { out = true; me.ctl.abort(); break; }
-					if (!me.live) { me.live = true; clearTimeout(pollTimer); failures = 0; showError(""); document.documentElement.dataset.live = "on"; }
+					if (s.evicted) { evicted = true; me.ctl.abort(); break; }
+					// "Not in a room" ends the stream (handled below).
+					if (!s.inRoom) { out = s; me.ctl.abort(); break; }
+					if (!me.live) { me.live = true; foreign = 0; clearTimeout(pollTimer); failures = 0; showError(""); document.documentElement.dataset.live = "on"; }
 					take(s);
 				}
 			}
@@ -880,10 +871,24 @@ ${BRIDGE}
 		clearTimeout(quiet);
 		if (stream === me) stream = null;
 		if (torn) return;
+		if (evicted) {
+			dormant = true;
+			document.documentElement.dataset.live = "off:evicted";
+			return;
+		}
 		if (out) {
-			// The server says this panel has no seat (it left, or idled out). Asked through the chat app as
-			// well: if that disagrees, the stream reached another server (a PUBLIC_URL not set): no stream.
-			try { const s = await call("duet_room_state", {}); if (s.inRoom) liveOff = true; take(s); } catch (e) { showError(e.message); }
+			// The server says this panel has no seat (it left, or idled out). From the server this panel came
+			// from (its run id): so it is, with no tool call. Else (a server restarted since, or another one)
+			// asked through the chat app as well; a stream that never showed the room and disagrees twice in a
+			// row reaches another server: no stream for this panel.
+			const mine = !!SERVER && out.server === SERVER;
+			if (mine) { store("session", "duet-room", null); take(out); return schedule(); }
+			try {
+				const s = await call("duet_room_state", {});
+				if (s.inRoom && !me.live && ++foreign >= 2) liveOff = true;
+				if (!s.inRoom) store("session", "duet-room", null);
+				take(s);
+			} catch (e) { showError(e.message); }
 			return schedule();
 		}
 		// A stream that ran a while and ended (the server ends each after some minutes) is reopened at once;
@@ -897,20 +902,22 @@ ${BRIDGE}
 			if (!ran) refresh(true);
 		}
 	}
-	document.addEventListener("visibilitychange", () => { if (!document.hidden && !streaming() && (key || inRoom())) refresh(); });
+	document.addEventListener("visibilitychange", () => { if (!document.hidden && !dormant && !streaming() && (key || inRoom())) refresh(); });
+	// A panel whose stream a newer one took over follows the room again once the user uses it.
+	document.addEventListener("pointerdown", () => { if (dormant && !torn) { dormant = false; schedule(); } }, true);
 	// Another duet panel in this chat (same tab, so the same token and seat) joined or left: follow it.
 	window.addEventListener("storage", (ev) => {
 		if (ev.key !== "duet-room" || torn || !HOSTED) return;
+		if (dormant) return;
 		if (ev.newValue && !inRoom()) { state = { inRoom: true }; liveOff ? refresh(true) : schedule(); }
 		else if (!ev.newValue && inRoom() && !streaming()) refresh(true);
 	});
 
-	// On load the panel calls a tool only when it has a room to show: the local server's key came with
-	// duet_room's result, or this tab joined a room before (the hosted server's seat is found by the
-	// tab's token). Otherwise it draws the join form by itself: in a chat that asks before each app call,
-	// opening the panel then asks once (for duet_room), not twice.
+	// On load the panel calls a tool only when it has a room to show and no stream to show it: the local
+	// server's key came with duet_room's result, or this tab joined a room before and the stream is off or
+	// blocked (the hosted server's seat is found by the tab's token). Otherwise it draws the join form by
+	// itself, or the stream finds the room (or says the seat is gone) with no tool call.
 	function firstLoad() {
-		if (autoJoin) return joinAsked();
 		if (!HOSTED) return key ? refresh(true) : undefined; // the local server: its key comes with duet_room's result
 		if (!store("session", "duet-room")) { state = { inRoom: false }; return draw(); }
 		if (liveOff) return refresh(true);

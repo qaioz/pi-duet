@@ -30,4 +30,6 @@ DUET_SERVER=https://ntfy.example.com PUBLIC_URL=https://mcp.example.com node hos
 ```
 
 `PORT`, `HOST` too · Docker files in `hosted/` · set `PUBLIC_URL` to the address chat apps use: the panel's
-live stream goes there (`DUET_LIVE=0`: none, the panel polls).
+live stream goes there. Without `PUBLIC_URL`, or with `DUET_LIVE=0`, there is no stream and the panel polls.
+Stream limits: `DUET_LIVE_PER_IP` (12 per address: users behind one NAT share it) and `DUET_LIVE_MAX` (600 in
+all); past them a panel polls.

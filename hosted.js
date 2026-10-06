@@ -38,8 +38,11 @@ const RELAY = (process.env.DUET_SERVER || "https://duet.gaioz.online").replace(/
 if (!isRelayUrl(RELAY)) throw new Error(`DUET_SERVER must be an http(s) URL, got ${JSON.stringify(RELAY)}`);
 const num = (k, d) => (process.env[k] === undefined ? d : Number(process.env[k]));
 const list = (k) => (process.env[k] || "").split(",").map((x) => x.trim()).filter(Boolean);
-// The panel's live stream: its URL goes into the panel (and its origin into connectDomains).
-const LIVE_URL = process.env.DUET_LIVE === "0" ? "" : `${PUBLIC_URL}/live`;
+// The panel's live stream: its URL goes into the panel (and its origin into connectDomains). Only with
+// PUBLIC_URL set: without it the default address is duet's own server, and a self-hosted panel would send
+// its token there. BOOT names this run of the server: a panel compares it with the stream's answer.
+const LIVE_URL = process.env.DUET_LIVE === "0" || !process.env.PUBLIC_URL ? "" : `${PUBLIC_URL}/live`;
+const BOOT = randomBytes(6).toString("hex");
 
 const LIMIT = {
 	seats: num("DUET_MAX_SEATS", 300), // open panels in rooms, in all
@@ -316,7 +319,8 @@ const sendTool = {
 };
 
 // duet_room here takes the seat code (optional): with it the answer says what waits.
-// Read-only here: it never joins (the panel does, on its own call) and changes nothing.
+// Read-only here: it never joins and changes nothing; a room and name only fill the panel's form, and the
+// user's Join click joins.
 const hostedRoomTool = {
 	...roomTool,
 	annotations: READS,
@@ -400,17 +404,17 @@ async function sendHeld(h) {
 async function callTool(name, a, ip) {
 	a = a && typeof a === "object" ? a : {};
 	if (name === "duet_room") {
-		// A room and name from the user's own message: checked here, joined by the panel (it holds the
-		// seat token). They go back in _meta only and are never kept here.
+		// A room and name from the chat: checked here and handed to the panel in _meta (never kept here).
+		// The panel only fills its form with them: the user's Join click joins. This server can't tell the
+		// user's own message from text the model was steered by, so the call stays read-only in effect.
 		if (a.room || a.name) {
 			const room = String(a.room ?? "").trim();
 			const name = String(a.name ?? "").trim();
 			if (!isRoomCode(room)) return text("Not joined · room code: 3-64 letters, digits, . _ - · your user can type it into the panel", true);
 			if (!isName(name) || isPlaceholderName(name)) return text("Not joined · name: letters, digits, . _ - · up to 40 · your user can type it into the panel", true);
 			return {
-				...text(`The duet panel is open in the chat and joins "${shortRoom(room)}" as ${name}. (If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)`),
-				// Once and soon: a chat reopened later replays this result, and must not join again by itself.
-				_meta: { [JOIN_META]: { room, name, at: Date.now(), id: randomBytes(8).toString("hex") } },
+				...text(`The duet panel is open in the chat with room "${shortRoom(room)}" and name ${name} filled in: your user clicks Join in it. (If no panel shows, this chat app can't draw it: duet's panel works in Claude, ChatGPT, VS Code and Goose.)`),
+				_meta: { [JOIN_META]: { room, name } },
 			};
 		}
 		// With the seat code (from the duet note in the model's context): how many wait and from whom, no text.
@@ -554,7 +558,7 @@ async function rpc(msg, ip, conn = {}) {
 			case "resources/templates/list":
 				return ok({ resourceTemplates: [] });
 			case "resources/read":
-				return resourceContents(params?.uri, VERSION) ? ok(resourceContents(params.uri, VERSION, { live: LIVE_URL, hosted: true })) : err(-32002, "resource not found");
+				return resourceContents(params?.uri, VERSION) ? ok(resourceContents(params.uri, VERSION, { live: LIVE_URL, hosted: true, server: BOOT })) : err(-32002, "resource not found");
 			case "tools/call":
 				return ok(await callTool(String(params?.name ?? ""), params?.arguments, ip));
 			default:
@@ -615,26 +619,31 @@ function liveStream(req, res, address) {
 		} catch {}
 		if (!isToken(token)) return res.writeHead(400, { ...cors, "content-type": "text/plain" }).end("token required\n");
 		const key = sha(token);
-		const seat = seats.get(key);
+		let seat = seats.get(key);
 		const event = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+		const out = { ...notInRoom, server: BOOT }; // the panel knows BOOT: "not in a room" from this very server
 		const head = { ...cors, "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", "x-accel-buffering": "no" };
 		if (!seat) {
 			res.writeHead(200, head);
-			event(notInRoom);
+			event(out);
 			return res.end();
 		}
 		if (live.size >= LIMIT.live.all || [...live].filter((l) => l.address === address).length >= LIMIT.live.perAddress) {
 			return res.writeHead(429, { ...cors, "retry-after": "60", "content-type": "text/plain" }).end("too many live panels\n");
 		}
-		// A panel drawn again in the same tab shares the token: the oldest of its streams gives way.
+		// A panel drawn again in the same tab shares the token: the oldest of its streams gives way, told so
+		// (the panel then waits for the user's click instead of reopening and pushing the next one out).
 		const same = [...live].filter((l) => l.key === key);
-		if (same.length >= LIMIT.live.perSeat) same[0].end();
+		if (same.length >= LIMIT.live.perSeat) same[0].end("evicted");
 		res.writeHead(200, head);
 		let last = "";
 		let quiet = Date.now();
-		const me = { address, key, end: (left = false) => end(left) };
+		const me = { address, key, end: (why) => end(why) };
 		const tick = () => {
-			if (seats.get(key) !== seat) return end(true); // left, or closed after a long idle
+			const now = seats.get(key);
+			if (!now) return end("left"); // left, or closed after a long idle
+			// The panel joined another room with the same token (a new seat under the same key): follow it.
+			if (now !== seat) { seat = now; last = ""; }
 			seat.seen = Date.now();
 			const rev = seat.revNow();
 			if (rev !== last) {
@@ -649,11 +658,12 @@ function liveStream(req, res, address) {
 		const timer = setInterval(tick, LIMIT.live.tickMs);
 		const stop = setTimeout(() => end(), LIMIT.live.ms);
 		live.add(me);
-		function end(left = false) {
+		function end(why = "") {
 			if (!live.delete(me)) return;
 			clearInterval(timer);
 			clearTimeout(stop);
-			if (left && !res.writableEnded) event(notInRoom);
+			if (!res.writableEnded && why === "left") event(out);
+			if (!res.writableEnded && why === "evicted") event({ evicted: true });
 			res.end();
 		}
 		res.on("close", () => end());

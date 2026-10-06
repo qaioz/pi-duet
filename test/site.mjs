@@ -57,12 +57,12 @@ async function allCommands(page) {
 }
 
 // The prompts, word for word as the release-8 spec has them.
-const JOIN = (agent, relay) => `mkdir -p ~/.duet && printf '{"agent":"${agent}","room":"{room}","name":"{name}","relay":"${relay}","cwd":"%s","pcwd":"%s","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
+const JOIN = (agent, relay) => `case "$PWD$(pwd -P)" in *'"'*|*'\\'*) echo 'duet: this folder path has a quote or backslash: use the terminal line instead' && false ;; esac && mkdir -p ~/.duet && printf '{"cwd":"%s","pcwd":"%s","agent":"${agent}","room":"{room}","name":"{name}","relay":"${relay}","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
 const RUN = "Run this as one shell command:";
 const PROMPTS = (r, n, relay) =>
 	Object.fromEntries(
 		Object.entries({
-			claude: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("claude-code", relay)} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && { case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac; d=$(mktemp -d); case "$(cd "$d" && claude plugin test 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off' ;; esac; rmdir "$d"; }\n\nThen reply with only: Type /reload-plugins to join.
+			claude: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("claude-code", relay)} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(cd "$d" && claude plugin test 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off' ;; esac && rmdir "$d"\n\nThen reply with only: Type /reload-plugins to join (not needed if duet already said “joined”).
 If it printed "duet: mods are off", reply only: Claude Code's mods are off for your account, so duet can't run here yet. If it failed, say which step failed instead.`,
 			codex: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server ${relay}) and stop. Otherwise run this as one shell command:\n\n${JOIN("codex", relay)} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet\n\nThen reply with only: Start a new Codex session in this folder and say "join duet" (first time: trust duet's hooks).\nIf it failed, say which step failed instead.`,
 			pi: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("pi", relay)} && pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet\n\nThen reply with only: Type /reload to join.\nIf it failed, say which step failed instead.`,
@@ -211,7 +211,36 @@ try {
 	} catch (e) {
 		joined.error = e.message;
 	}
+	// A folder path with a quote or backslash: the command stops before writing (no broken or crafted JSON).
+	// And should one get through anyway, the paths come first: the real keys after them win (JSON.parse: last wins).
+	const bad = {};
+	try {
+		const line = after.claude.text.split("\n\n")[1];
+		const upto = line.slice(0, line.indexOf(" > ~/.duet/join.json") + " > ~/.duet/join.json".length);
+		for (const [k, dir] of Object.entries({ quote: 'x","relay":"https://evil.example","room":"evil-room', backslash: "x\\y" })) {
+			const cwd = join(home, dir);
+			mkdirSync(cwd, { recursive: true });
+			rmSync(join(home, ".duet/join.json"), { force: true });
+			try {
+				execFileSync("sh", ["-c", upto], { cwd, env: { ...process.env, HOME: home, PWD: cwd }, stdio: "pipe" });
+				bad[k] = "ran";
+			} catch (e) {
+				bad[k] = `${String(e.stdout).includes("duet: this folder path has a quote or backslash") ? "stopped" : "failed"}${existsSync(join(home, ".duet/join.json")) ? " +file" : ""}`;
+			}
+		}
+		const printfOnly = upto.slice(upto.indexOf("mkdir -p ~/.duet"));
+		execFileSync("sh", ["-c", printfOnly], { cwd: join(home, 'x","relay":"https://evil.example","room":"evil-room'), env: { ...process.env, HOME: home }, stdio: "pipe" });
+		const j = JSON.parse(readFileSync(join(home, ".duet/join.json"), "utf8"));
+		bad.lastWins = j.relay === SERVER && j.room === room && j.agent === "claude-code";
+	} catch (e) {
+		bad.error = e.message;
+	}
 	rmSync(home, { recursive: true, force: true });
+	check(
+		"join file: a folder path with \" or \\ stops the command (nothing written); paths come first so a crafted one can't override relay/room",
+		bad.quote === "stopped" && bad.backslash === "stopped" && bad.lastWins === true,
+		JSON.stringify(bad).replaceAll(room, "<room>"),
+	);
 	const now = Math.floor(Date.now() / 1000);
 	check(
 		"the prompts' join file is valid JSON: agent, room, name, relay, cwd, pcwd, at (seconds)",
