@@ -1001,6 +1001,27 @@ async function presendTests() {
 		held(processed) && held(unlinked) && held(late) && !leaked,
 		`Process: held ${held(processed)}; unlinked: held ${held(unlinked)}; late: held ${held(late)}; leaked: ${leaked}`,
 	);
+	// An OK not used yet: a later Process (another request) clears it; so does Put back.
+	await nika.say("PS-REQ-5");
+	const w5 = await waitFor("PS-REQ-5");
+	await sd.call("duet_take", { id: w5.id, send: true });
+	await nika.say("PS-REQ-6");
+	const w6 = await waitFor("PS-REQ-6");
+	await sd.call("duet_take", { id: w6.id, undo: false }); // Process: no OK for anything
+	await sd.call("duet_take", { id: w6.id, undo: true }); // put PS-REQ-6 back (the reply would answer it anyway)
+	await sd.call("duet_ignore", { id: w6.id });
+	const afterProcess = await sd.bare("duet_send", { text: "PS-AFTER-PROCESS", to: "nika" });
+	await nika.say("PS-REQ-7");
+	const w7 = await waitFor("PS-REQ-7");
+	await sd.call("duet_take", { id: w7.id, send: true });
+	await sd.call("duet_take", { id: w7.id, undo: true }); // Put back: the OK goes with it
+	const afterPutBack = await sd.bare("duet_send", { text: "PS-AFTER-PUTBACK", to: "nika" });
+	await sleep(1500);
+	check(
+		"stdio: an OK not used yet is cleared by a later Process and by Put back",
+		held(afterProcess) && held(afterPutBack) && !nika.seen.some((e) => e.text === "PS-AFTER-PROCESS" || e.text === "PS-AFTER-PUTBACK"),
+		`after Process: held ${held(afterProcess)}; after Put back: held ${held(afterPutBack)}`,
+	);
 	// Our own name from another client: a warning line in the panel.
 	await publish(SERVER, topicFor(room), envelope({ fromId: "other-gaioz", from: "Gaioz", kind: "join", via: "claude-code" }));
 	const warned = await until(async () => data(await sd.call("duet_room_state")).warnings.find((t) => t.startsWith("another gaioz")), 10_000, "same-name warning").catch(() => "");
@@ -1058,12 +1079,13 @@ async function presendTests() {
 	const ccTools = await (await ccPost({ jsonrpc: "2.0", id: 2, method: "tools/list" })).json();
 	const ccCall = await (await ccPost({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "duet_send", arguments: { seat: hseat, text: "CC-SEND" } } })).json();
 	const stale = await ccPost({ jsonrpc: "2.0", id: 4, method: "tools/list" }, "not-a-session");
-	const claudeAi = await client(h.url).request("initialize", { protocolVersion: "2025-06-18", capabilities: UI_CAPS, clientInfo: { name: "claude-ai", version: "1" } });
+	const aiInit = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: UI_CAPS, clientInfo: { name: "claude-ai", version: "1" } } }) });
+	const claudeAi = { result: (await aiInit.json()).result, sid: aiInit.headers.get("mcp-session-id") };
 	const aiTools = (await a.request("tools/list")).result.tools.length;
 	await sleep(1000);
 	check(
 		"hosted: Claude Code gets no duet tools (empty list; a call is refused: use the duet plugin); other clients get no session id and all tools",
-		!!sid && ccTools.result.tools.length === 0 && ccCall.result.isError && ccCall.result.content[0].text === "duet: use the duet plugin in Claude Code" && !lev.seen.some((e) => e.text === "CC-SEND") && stale.status === 404 && !!claudeAi.result && aiTools > 3,
+		!!sid && ccTools.result.tools.length === 0 && ccCall.result.isError && ccCall.result.content[0].text === "duet: use the duet plugin in Claude Code" && !lev.seen.some((e) => e.text === "CC-SEND") && stale.status === 404 && !!claudeAi.result && claudeAi.sid === null && aiTools > 3,
 		`session: ${!!sid}; tools: ${ccTools.result.tools.length}; call: ${ccCall.result.content[0].text}; unknown session: ${stale.status}; claude-ai tools: ${aiTools}`,
 	);
 	lev.stop();

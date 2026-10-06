@@ -537,12 +537,39 @@ async function main() {
 		const f3 = forms();
 		const q4Linked = await c.call("duet_send", { text: "PS-REPLY-4" }, { id: "ps-3" });
 		const otherTurn = await drop({ text: "PS-OTHER-TURN" }, { id: "ps-9" });
+		const formsAfterOther = forms();
 		await c.hook({ event: "Stop", thread: "thr-1", turn: "ps-3" });
+		// The same turn id after its Stop (an OK given, not used): gone.
+		await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "ps-4", prompt: "again" });
+		await p.send("REQ-PS-5");
 		await sleep(1500);
-		const leakedPs = p.got.some((e) => ["PS-TO-DATO", "PS-SECOND", "PS-NEXT-TURN", "PS-PROCESS-ONLY", "PS-AFTER-ESC", "PS-OTHER-TURN"].includes(e.text));
+		const ps4Stop = c.hook({ event: "Stop", thread: "thr-1", turn: "ps-4" });
+		await c.answer("Process and send");
+		await ps4Stop;
+		await c.hook({ event: "Stop", thread: "thr-1", turn: "ps-4" }); // the turn ends with the OK unused
+		const sameIdAfterStop = await drop({ text: "PS-SAME-ID-AFTER-STOP" }, { id: "ps-4" });
+		// "check duet" (duet_inbox): Process and send there OKs the reply in that turn.
+		await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "ps-5", prompt: "check duet" });
+		await p.send("REQ-PS-6");
+		await sleep(1500);
+		const inboxPs = c.call("duet_inbox", {}, { id: "ps-5" });
+		await c.answer("Process and send");
+		const inboxPsText = (await inboxPs).text;
+		const f5 = forms();
+		const inboxLinked = await c.call("duet_send", { text: "PS-REPLY-6" }, { id: "ps-5" });
+		const inboxNoForm = forms() === f5;
+		const got6 = await until(() => p.got.find((e) => e.text === "PS-REPLY-6"), 8000, "PS-REPLY-6").catch(() => null);
+		await c.hook({ event: "Stop", thread: "thr-1", turn: "ps-5" });
+		check(
+			"Process and send (Codex): the same turn id after its Stop asks again; via \"check duet\" the linked reply goes with no form",
+			sameIdAfterStop.form.includes("PS-SAME-ID-AFTER-STOP") && inboxPsText.includes("REQ-PS-6") && inboxLinked.text === "Sent to nika." && inboxNoForm && got6?.re === p.got.find((e) => e.text === "REQ-PS-6")?.id,
+			`same id after Stop: form; check duet: ${inboxLinked.text} (no form ${inboxNoForm}, re ok ${got6?.re === p.got.find((e) => e.text === "REQ-PS-6")?.id})`,
+		);
+		await sleep(1500);
+		const leakedPs = p.got.some((e) => ["PS-TO-DATO", "PS-SECOND", "PS-NEXT-TURN", "PS-PROCESS-ONLY", "PS-AFTER-ESC", "PS-OTHER-TURN", "PS-SAME-ID-AFTER-STOP"].includes(e.text));
 		check(
 			"Process and send (Codex): gone in the next turn (whatever the model's arguments say) and after Esc; Process keeps the form; another turn's send asks; nothing gated leaked",
-			/^Not sent/.test(nextTurn.out) && processed.form.includes("PS-PROCESS-ONLY") && afterEsc.form.includes("PS-AFTER-ESC") && q4Linked.text === "Sent to nika." && forms() === f3 + 1 && otherTurn.form.includes("PS-OTHER-TURN") && !leakedPs,
+			/^Not sent/.test(nextTurn.out) && processed.form.includes("PS-PROCESS-ONLY") && afterEsc.form.includes("PS-AFTER-ESC") && q4Linked.text === "Sent to nika." && formsAfterOther === f3 + 1 && otherTurn.form.includes("PS-OTHER-TURN") && !leakedPs,
 			`next turn: form; Process: form; after Esc: form; linked again: ${q4Linked.text}; other turn: form; leaked: ${leakedPs}`,
 		);
 	}

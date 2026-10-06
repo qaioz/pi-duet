@@ -395,7 +395,8 @@ test("Process and send: the linked reply goes out once with no gate 2 card; it s
 	const { did, clock } = await taken($, on, "test-room-ps2", "take-send");
 	const r: any = await withClock(clock, $.tool.call({ tool: "mcp__duet__send", text: "2 failures" } as any));
 	expect(r.result).toBe("Sent to karlo");
-	expect(msgPosts(did)[0].body).toMatchObject({ kind: "msg", text: "2 failures", re: "id-run the tests" });
+	// No `to`: what was OK'd goes to the sender only.
+	expect(msgPosts(did)[0].body).toMatchObject({ kind: "msg", text: "2 failures", to: "karlo", re: "id-run the tests" });
 	expect(did.toasts.join("\n")).not.toMatch(/reply to karlo waiting/);
 	expect(await cardUp($)).toBe(false);
 	// History: name · time · text.
@@ -471,6 +472,33 @@ test("Process and send can't be reached by Claude: the frame is the same as Proc
 	const strip = (t: string) => t.replace(/\d\d?:\d\d(:\d\d)?( ?[AP]M)?/g, "").replace(/run the (tests|linter)/g, "REQ");
 	expect(strip(duetSubmits(did)[1])).toBe(strip(duetSubmits(did)[0]));
 	expect(duetSubmits(did)[1]).not.toMatch(/approv|pre-?send|without asking|and send/i);
+	did.feeding = false;
+});
+
+test("Process and send: a subagent the turn started may send the reply; one started before it (a background agent) waits", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps7", "take-send");
+	const bg = await sendWaiting($, clock, { text: "from an older agent", to: "karlo", agentId: "bg-old" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, bg.p);
+	await $.turn.start({ turnId: "sub-1", agentId: "sub-a", text: "subtask" } as any);
+	await settle(clock, 2);
+	const r: any = await withClock(clock, $.tool.call({ tool: "mcp__duet__send", text: "from the subagent", agentId: "sub-a" } as any));
+	expect(r.result).toBe("Sent to karlo");
+	expect(msgPosts(did).map((p: any) => p.body.text)).toEqual(["from the subagent"]);
+	did.feeding = false;
+});
+
+test("Process and send: a peer turn left over from a turn that isn't running gives no OK", async ($, on) => {
+	const { did, clock } = await taken($, on, "test-room-ps8", "take-send");
+	// The user's own turn starts without turn.complete for the peer's (a missed event).
+	await $.prompt.submit({ text: "mine", origin: USER } as any);
+	await $.turn.start({ turnId: "u9", text: "mine" } as any);
+	const w = await sendWaiting($, clock, { text: "late", to: "karlo" });
+	expect(await cardUp($)).toBe(true);
+	await press($, clock, "dont-send");
+	await withClock(clock, w.p);
+	expect(msgPosts(did).length).toBe(0);
 	did.feeding = false;
 });
 

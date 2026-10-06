@@ -219,7 +219,7 @@ class Seat {
 		// Our own name from another client (Claude Code, Codex, another chat): warn, don't block. Only
 		// for what it sent since this panel joined.
 		if (env.fromId !== this.fromId && (env.kind === "join" || env.kind === "msg") && String(env.from).normalize("NFC").toLowerCase() === this.name.normalize("NFC").toLowerCase() && Date.parse(env.ts) >= this.joinedAt - 5000) {
-			const w = `another ${this.name} is in this room${VIA[env.via] ? ` (${VIA[env.via]})` : ""} · use another name`;
+			const w = `another ${this.name} is in this room${Object.hasOwn(VIA, String(env.via)) ? ` (${VIA[env.via]})` : ""} · use another name`;
 			if (!this.warnings.has(w)) {
 				this.warnings.add(w);
 				this.rev++;
@@ -343,6 +343,7 @@ async function holdReply(a) {
 	const pre = seat.preTake;
 	if (pre && Date.now() - pre.at < PRESEND_MS && shownTo === pre.from && h.re === pre.id) {
 		seat.preTake = null;
+		h.sendTo ||= pre.from; // what was OK'd goes to the sender only
 		const r = await holds.act(h.id, "send", sendHeld);
 		if (r.status === "sent") return sentResult(shownTo, shown);
 	}
@@ -585,7 +586,10 @@ export function handler(req, res) {
 	if (url.pathname !== "/mcp") return res.writeHead(404, { "content-type": "text/plain" }).end("not found\n");
 	// No server-to-client stream (GET) and no sessions to end (DELETE): the panel polls.
 	if (req.method === "GET") return res.writeHead(405, { ...cors, allow: "POST, DELETE" }).end();
-	if (req.method === "DELETE") return res.writeHead(200, cors).end();
+	if (req.method === "DELETE") {
+		plainSessions.delete(String(req.headers["mcp-session-id"] ?? ""));
+		return res.writeHead(200, cors).end();
+	}
 	if (req.method !== "POST") return res.writeHead(405, { ...cors, allow: "POST, DELETE" }).end();
 	const pool = cls === LIMIT.shared ? "shared" : "normal";
 	const mine = inflight.get(address) ?? { n: 0, bytes: 0 };

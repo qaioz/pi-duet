@@ -271,7 +271,8 @@ function sameName(env) {
 	if (env.fromId === fromId || (env.kind !== "join" && env.kind !== "msg") || !name) return;
 	if (String(env.from).normalize("NFC").toLowerCase() !== name.normalize("NFC").toLowerCase()) return;
 	if ((env.place && env.place === placeFor(folder || process.cwd(), topicFor(room))) || !(Date.parse(env.ts) >= joinedAt - 5000)) return;
-	warnings.add(`another ${name} is in this room${VIA[env.via] ? ` (${VIA[env.via]})` : ""} · use another name`);
+	const via = Object.hasOwn(VIA, String(env.via)) ? ` (${VIA[env.via]})` : "";
+	warnings.add(`another ${name} is in this room${via} · use another name`);
 }
 
 function onEnvelope(env) {
@@ -1061,7 +1062,7 @@ async function callTool(tool, a, ctx) {
 				if (pre) preTake = null;
 				const re = pre ? replyRe(to, true) : replyRe(to, unattended);
 				const h = holds.hold("me", shownTo, shown);
-				h.sendTo ??= to;
+				h.sendTo ??= to || (pre ? shownTo : ""); // what was OK'd goes to the sender only
 				h.re ??= re;
 				receivedSinceSend = false;
 				if (pre) {

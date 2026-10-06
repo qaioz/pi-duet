@@ -95,7 +95,7 @@ let host = ""; // this computer's name, for the folder hash a join carries (see 
 let lineChain = Promise.resolve(); // received lines, one at a time in arrival order (stream and repair poll)
 const warnedAbout = new Set(); // warnings already given: "crowd", "place:<name>"
 
-const viaLabel = (via) => VIA[via] ?? "";
+const viaLabel = (via) => (Object.hasOwn(VIA, String(via)) ? VIA[via] : "");
 const oneLine = (s) => sanitize(s, 200).replace(/\n/g, " "); // a name or list of names on a card, safe to draw
 const livePeers = () => [...peers.entries()].filter(([, p]) => !p.left);
 const peerList = () => livePeers().map(([n]) => n).join(", ");
@@ -110,6 +110,7 @@ const peerTurnFrom = (x, turnId, exact) => ({
 	waitNoted: false,
 	answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })),
 	preSend: exact && x.preSend && x.froms.length === 1 ? x.froms[0] : "",
+	agents: [], // subagents started during this turn: their sends count as the turn's
 });
 
 // ---------- small helpers that use $ ----------
@@ -360,8 +361,8 @@ async function handleLine($, r, gen, line, live, floor) {
 }
 
 // Our own name from another client (another computer: the local lock can't see it). Warn, once per
-// client; only for what it sent since this window joined (a replayed message of our own earlier
-// session has the same name and another id), and not from this very folder (a window taking over).
+// client; only for what it sent since this window joined (not a replay from before), and not from
+// this very folder (a window taking over).
 function sameName($, r, env) {
 	if (env.fromId === r.fromId || (env.kind !== "join" && env.kind !== "msg") || warnedAbout.has("same:" + env.fromId)) return;
 	if (String(env.from).normalize("NFC").toLowerCase() !== r.name.normalize("NFC").toLowerCase()) return;
@@ -924,11 +925,16 @@ async function sendTool($, e, signal) {
 	// parallel can't both use it.
 	const live = livePeers().map(([n]) => n);
 	const reaches = to ?? (live.length === 1 ? live[0] : "");
-	const preSent = fromPeer && !autoActive() && !!peerTurn.preSend && reaches === peerTurn.preSend;
+	// Only from the turn that runs now, or a subagent it started.
+	const ownTurn = fromPeer && peerTurn.turnId === runningTurn && (!e.agentId || (peerTurn.agents ?? []).includes(e.agentId));
+	const preTo = ownTurn && !autoActive() && peerTurn.preSend && reaches === peerTurn.preSend ? peerTurn.preSend : "";
+	const preSent = !!preTo;
 	if (preSent) {
 		peerTurn.preSend = "";
 		await saveTurn($); // a module reload must not bring it back
 	}
+	// What was OK'd is a reply to the sender: it goes to the sender only, even without `to`.
+	const sendTo = to ?? (preTo || undefined);
 	// Gate 2, in ask mode: the whole reply waits above the prompt for Send / Don't send. Without
 	// `to` a reply reaches everyone in the room, so the card names everyone.
 	if (!autoActive() && !preSent) {
@@ -950,8 +956,8 @@ async function sendTool($, e, signal) {
 	}
 	try {
 		// Working on a peer's request: say which message this answers (the latest from that sender).
-		const asked = fromPeer && peerTurn?.answers ? peerTurn.answers.filter((m) => !to || m.from === to).at(-1) : undefined;
-		const env = envelope({ fromId: r.fromId, from: r.name, kind: "msg", text, by: "agent", ...(to ? { to } : {}), ...(asked ? { re: asked.id } : {}) });
+		const asked = fromPeer && peerTurn?.answers ? peerTurn.answers.filter((m) => !sendTo || m.from === sendTo).at(-1) : undefined;
+		const env = envelope({ fromId: r.fromId, from: r.name, kind: "msg", text, by: "agent", ...(sendTo ? { to: sendTo } : {}), ...(asked ? { re: asked.id } : {}) });
 		await publish($, r.server, r.topic, env);
 		sent.set(env.id, firstLine(text));
 		if (sent.size > 200) sent.delete(sent.keys().next().value);
@@ -960,7 +966,7 @@ async function sendTool($, e, signal) {
 	}
 	remember($, { who: "you", text });
 	redraw($);
-	return { result: `Sent to ${to ?? (peerList() || "the room")}${text.endsWith(HIDDEN_MARK) ? " · hidden characters removed" : ""}` };
+	return { result: `Sent to ${sendTo ?? (peerList() || "the room")}${text.endsWith(HIDDEN_MARK) ? " · hidden characters removed" : ""}` };
 }
 
 // ---------- drawing ----------
@@ -1379,7 +1385,14 @@ export function register(on) {
 	});
 
 	on("turn.start", async ($, e, next) => {
-		if (e.agentId) return next(e);
+		if (e.agentId) {
+			// A subagent the peer's turn starts: its reply counts as the turn's ("Process and send").
+			if (peerTurn && peerTurn.turnId === runningTurn && !(peerTurn.agents ?? []).includes(e.agentId)) {
+				peerTurn.agents = [...(peerTurn.agents ?? []), e.agentId].slice(-50);
+				await saveTurn($);
+			}
+			return next(e);
+		}
 		runningTurn = e.turnId;
 		expected = expected.filter((x) => Date.now() - x.at < 30 * 60_000);
 		const i = expected.findIndex((x) => String(e.text ?? "").includes(x.text));
