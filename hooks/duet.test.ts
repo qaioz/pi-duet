@@ -332,7 +332,7 @@ test("no fencing: a peer's request runs under the user's own permissions, every 
 	did.feeding = false;
 });
 
-test("gate 1: a card '<peer> · <via> · HH:MM' with 1 Process / 2 Process and send / 3 Ignore; one press starts it at once", async ($, on) => {
+test("gate 1: a card '<peer> · <via> · HH:MM' with 1 Process / 2 Ignore / 3 Process and send; one press starts it at once", async ($, on) => {
 	const { did, clock, start } = world(on, { feed: true });
 	await $.session.start(start());
 	await join($, clock, "test-room-6 gaioz");
@@ -345,8 +345,8 @@ test("gate 1: a card '<peer> · <via> · HH:MM' with 1 Process / 2 Process and s
 	expect(await band.find({ type: "Text", text: /^ · pi · \d\d:\d\d$/ })).toBeDefined();
 	expect(await band.find({ type: "Text", text: /please run the tests/ })).toBeDefined();
 	expect(await band.find({ key: "take" })).toMatchObject({ props: { label: "Process", hotkey: "1" } });
-	expect(await band.find({ key: "take-send" })).toMatchObject({ props: { label: "Process and send", hotkey: "2" } });
-	expect(await band.find({ key: "ignore" })).toMatchObject({ props: { label: "Ignore", hotkey: "3" } });
+	expect(await band.find({ key: "take-send" })).toMatchObject({ props: { label: "Process and send", hotkey: "3" } });
+	expect(await band.find({ key: "ignore" })).toMatchObject({ props: { label: "Ignore", hotkey: "2" } });
 	await band.press({ key: "take" });
 	await band.unmount();
 	await settle(clock, 2);

@@ -25,7 +25,7 @@ The panel keeps the code (Copy) and remembers your name.
 
 | | Where | Choices |
 |---|---|---|
-| Request in | the panel | **Process** · **Process and send** · **Ignore** |
+| Request in | the panel | **Process** · **Ignore** · **Process and send** |
 | Reply out | a duet card in the chat | **Send** · **Don't send** |
 
 - Gate 2: `duet_send` draws its own card with the full reply. The server holds the message until you click.

@@ -10,7 +10,7 @@
 // whose policy refuses mod network requests never joins (curl is never used to go around it).
 //
 // Two gates in ask mode. Gate 1: each request waits as a card above the prompt (1 Process,
-// 2 Process and send, 3 Ignore). Gate 2: every reply Claude sends with the duet tool waits as a card
+// 2 Ignore, 3 Process and send). Gate 2: every reply Claude sends with the duet tool waits as a card
 // showing the whole reply (1 Send, 2 Don't send); the tool call holds until the press. "Process and
 // send" is the user's OK for one reply ahead: the first send of that request's turn to its sender
 // goes out without the gate 2 card. It lives in peerTurn only (never in what Claude reads or sets)
@@ -1039,8 +1039,9 @@ function drawCard($, e) {
 		});
 		const keys = buttons([
 			Button({ key: "take", label: "Process", hotkey: "1", plain: true, onPress: () => void choose($, "take").catch(() => {}) }),
-			Button({ key: "take-send", label: "Process and send", hotkey: "2", plain: true, onPress: () => void choose($, "take-send").catch(() => {}) }),
-			Button({ key: "ignore", label: "Ignore", hotkey: "3", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
+			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
+			// 3, not 2: a habit press of 2 (Ignore here, Don't send on the reply card) must never skip gate 2.
+			Button({ key: "take-send", label: "Process and send", hotkey: "3", plain: true, onPress: () => void choose($, "take-send").catch(() => {}) }),
 		]);
 		// As gate 2: a request taller than the band keeps its keys under the title, inside the window.
 		const rows = group.reduce((n, g, i) => n + rowsFor(g.text, e.props?.bodyColumns ?? 80) + (g.reLine ? 1 : 0) + (i > 0 ? 1 : 0), 0);

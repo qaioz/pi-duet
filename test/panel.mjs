@@ -649,8 +649,8 @@ addEventListener("message", async (ev) => {
 		const labels = {};
 		for (const [k, r] of Object.entries(runs)) labels[k] = await r.panel.locator("#waiting .item .btn").first().textContent();
 		check(
-			"browser: gate 1 is Process · Process and send · Ignore, on every host",
-			Object.values(labels).every((l) => l === "Process") && (await panel.locator("#waiting .item .btn").nth(1).textContent()) === "Process and send" && (await panel.locator("#waiting .item .btn").nth(2).textContent()) === "Ignore",
+			"browser: gate 1 is Process · Ignore · Process and send, on every host",
+			Object.values(labels).every((l) => l === "Process") && (await panel.locator("#waiting .item .btn").nth(1).textContent()) === "Ignore" && (await panel.locator("#waiting .item .btn").nth(2).textContent()) === "Process and send",
 			JSON.stringify(labels),
 		);
 		const bgOf = (r) => r.panel.locator("#card").evaluate((c) => getComputedStyle(c).backgroundColor);

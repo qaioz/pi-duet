@@ -30,7 +30,7 @@ npx -y github:qaioz/pi-duet setup codex --room <room> --name <name>
 
 | | Form | Choices |
 |---|---|---|
-| Request in | `duet · karlo · 14:02` + the whole request | **Process** · **Process and send** · **Ignore** |
+| Request in | `duet · karlo · 14:02` + the whole request | **Process** · **Ignore** · **Process and send** |
 | Reply out | `send to karlo? · full reply` + the text | **Send** · **Don't send** |
 
 - The form shows exactly what Codex gets. Hidden characters are removed: `[hidden characters removed]`.

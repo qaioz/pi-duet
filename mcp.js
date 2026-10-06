@@ -617,7 +617,7 @@ async function askToTake(items, fromText) {
 		const r = await elicit(`${head}\n\n${why} · Ignore only\n\n${shown.slice(0, 2000)}${shown.length > 2000 ? "…" : ""}`, ["Ignore"]);
 		return r?.result?.action === "accept" && r.result.content?.answer === "Ignore" ? "ignore" : noAnswer(r);
 	}
-	const r = await elicit(`${head}\n\n${shown}`, ["Process", "Process and send", "Ignore"]);
+	const r = await elicit(`${head}\n\n${shown}`, ["Process", "Ignore", "Process and send"]);
 	const answer = r?.result?.action === "accept" ? r.result.content?.answer : undefined;
 	return answer === "Process" ? "take" : answer === "Process and send" ? "take-send" : answer === "Ignore" ? "ignore" : noAnswer(r);
 }

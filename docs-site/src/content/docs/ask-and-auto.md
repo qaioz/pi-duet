@@ -12,7 +12,7 @@ No ask mode, no gates. A request starts a pi turn at once · reply goes straight
 
 | Gate | When | Choices |
 |---|---|---|
-| 1 · request in | before your agent sees a request | **Process** · **Process and send** · **Ignore** |
+| 1 · request in | before your agent sees a request | **Process** · **Ignore** · **Process and send** |
 | 2 · reply out | before your agent's whole reply leaves | **Send** · **Don't send** |
 
 - Gate 2 shows the **full** reply, not a summary.

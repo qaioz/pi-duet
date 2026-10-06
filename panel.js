@@ -567,7 +567,7 @@ ${BRIDGE}
 		for (const id of [...opened.keys()]) if (!(s.outgoing || []).some((o) => o.id === id)) opened.delete(id);
 		for (const id of [...read.keys()]) if (!(s.waiting || []).some((m) => m.id === id)) read.delete(id);
 
-		// Gate 1: each request waiting, Process / Process and send / Ignore.
+		// Gate 1: each request waiting, Process / Ignore / Process and send (the same order as the terminals).
 		$("waiting").replaceChildren(...(s.waiting || []).map((m) => {
 			const c = el("div", "item");
 			const head = el("div", "row");
@@ -593,7 +593,7 @@ ${BRIDGE}
 			take.onclick = () => handTo(m.id, c, false);
 			takeSend.onclick = () => handTo(m.id, c, true);
 			skip.onclick = () => ignore(m.id, c);
-			acts.append(take, takeSend, skip);
+			acts.append(take, skip, takeSend);
 			c.append(acts);
 			return c;
 		}));

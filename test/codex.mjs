@@ -195,7 +195,7 @@ async function main() {
 	const declined = await until(async () => (await notes()).find((e) => e.note === "declined" && e.to === "nika"), 5000, "declined note").catch(() => undefined);
 	check(
 		"ask mode: the queued request shows a form; Ignore blocks the prompt and tells the other side",
-		/^duet · nika · \d\d:\d\d\n\nREQ-QUEUED/.test(form.params.message) && JSON.stringify(form.params.requestedSchema.properties.answer.enum) === '["Process","Process and send","Ignore"]' && ignoredOut?.decision === "block" && !!declined,
+		/^duet · nika · \d\d:\d\d\n\nREQ-QUEUED/.test(form.params.message) && JSON.stringify(form.params.requestedSchema.properties.answer.enum) === '["Process","Ignore","Process and send"]' && ignoredOut?.decision === "block" && !!declined,
 		`form: ${JSON.stringify(form.params.message.slice(0, 80))}; hook answer: ${JSON.stringify(ignoredOut)}; a "declined" note to nika on the relay: ${!!declined}`,
 	);
 	// The next one: "Process" lets the prompt run; nothing in that turn is refused; its reply waits for gate 2.
