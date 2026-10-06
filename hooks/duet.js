@@ -371,7 +371,7 @@ function sameName($, r, env) {
 	const via = viaLabel(env.via);
 	const text = `another ${oneLine(r.name)} is in this room${via ? ` (${via})` : ""} · use another name`;
 	remember($, { text, note: true });
-	$.ui.toast("duet: " + text);
+	$.ui.toast("duet: " + text, { timeoutMs: 10_000 }); // needs the user: long enough to be seen
 }
 
 function onEnvelope($, r, env) {
@@ -964,9 +964,10 @@ async function sendTool($, e, signal) {
 	} catch (err) {
 		return { result: "Not sent: " + String(err?.message ?? err) };
 	}
-	remember($, { who: "you", text });
+	// A reply sent on "Process and send" says so, in History and in what Claude reads.
+	remember($, { who: preSent ? "you · auto" : "you", text });
 	redraw($);
-	return { result: `Sent to ${sendTo ?? (peerList() || "the room")}${text.endsWith(HIDDEN_MARK) ? " · hidden characters removed" : ""}` };
+	return { result: `Sent to ${sendTo ?? (peerList() || "the room")}${preSent ? " (auto)" : ""}${text.endsWith(HIDDEN_MARK) ? " · hidden characters removed" : ""}` };
 }
 
 // ---------- drawing ----------

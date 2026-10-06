@@ -368,8 +368,15 @@ async function taken($: any, on: any, roomName: string, key: string, others: str
 	await join($, w.clock, roomName + " gaioz");
 	for (const n of ["karlo", ...others]) w.did.push(joinOf(n));
 	w.did.push(msg("run the tests"));
-	await w.clock.advance(50);
-	await settle(w.clock);
+	// Wait for the card itself (receiving and drawing it can take a few ticks), then press.
+	for (let i = 0; i < 40; i++) {
+		await w.clock.advance(50);
+		await settle(w.clock);
+		const band = await $.ui.mount(BAND as any);
+		const up = await band.find({ key }).catch(() => undefined);
+		await band.unmount();
+		if (up) break;
+	}
 	await press($, w.clock, key);
 	await duetTurn($, w.did, w.clock, "p1");
 	return w;
@@ -391,10 +398,10 @@ test("Process keeps gate 2: the reply waits for Send", async ($, on) => {
 	did.feeding = false;
 });
 
-test("Process and send: the linked reply goes out once with no gate 2 card; it shows in history; Claude reads 'Sent to karlo'", async ($, on) => {
+test("Process and send: the linked reply goes out once with no gate 2 card; it shows in history as 'you · auto'; Claude reads 'Sent to karlo (auto)'", async ($, on) => {
 	const { did, clock } = await taken($, on, "test-room-ps2", "take-send");
 	const r: any = await withClock(clock, $.tool.call({ tool: "mcp__duet__send", text: "2 failures" } as any));
-	expect(r.result).toBe("Sent to karlo");
+	expect(r.result).toBe("Sent to karlo (auto)");
 	// No `to`: what was OK'd goes to the sender only.
 	expect(msgPosts(did)[0].body).toMatchObject({ kind: "msg", text: "2 failures", to: "karlo", re: "id-run the tests" });
 	expect(did.toasts.join("\n")).not.toMatch(/reply to karlo waiting/);
@@ -404,6 +411,7 @@ test("Process and send: the linked reply goes out once with no gate 2 card; it s
 	await settle(clock, 4);
 	const pane = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
 	expect(await pane.find({ type: "Text", text: "2 failures" })).toBeDefined();
+	expect(await pane.find({ type: "Text", text: /you · auto/ } as any).catch(() => pane.find({ text: /you · auto/ } as any))).toBeDefined();
 	await pane.unmount();
 	// A second send in the same turn waits at gate 2.
 	const { p } = await sendWaiting($, clock, { text: "one more thing" });
@@ -426,7 +434,7 @@ test("Process and send: a send to someone else, or to the whole room, still wait
 	await withClock(clock, w.p);
 	expect(msgPosts(did).length).toBe(0);
 	const r: any = await withClock(clock, $.tool.call({ tool: "mcp__duet__send", text: "done", to: "karlo" } as any));
-	expect(r.result).toBe("Sent to karlo");
+	expect(r.result).toBe("Sent to karlo (auto)");
 	expect(msgPosts(did)[0].body).toMatchObject({ text: "done", to: "karlo", re: "id-run the tests" });
 	did.feeding = false;
 });
@@ -484,7 +492,7 @@ test("Process and send: a subagent the turn started may send the reply; one star
 	await $.turn.start({ turnId: "sub-1", agentId: "sub-a", text: "subtask" } as any);
 	await settle(clock, 2);
 	const r: any = await withClock(clock, $.tool.call({ tool: "mcp__duet__send", text: "from the subagent", agentId: "sub-a" } as any));
-	expect(r.result).toBe("Sent to karlo");
+	expect(r.result).toBe("Sent to karlo (auto)");
 	expect(msgPosts(did).map((p: any) => p.body.text)).toEqual(["from the subagent"]);
 	did.feeding = false;
 });
