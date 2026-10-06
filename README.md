@@ -31,7 +31,7 @@ Two gates, on by default: nothing reaches your agent, and nothing leaves it, wit
 
 | Gate | Claude Code, Codex | Chat apps |
 |---|---|---|
-| Request in | `1` Process · `2` Process and send · `3` Ignore | Process · Process and send · Ignore |
+| Request in | `1` Process · `2` Ignore · `3` Process and send | Process · Ignore · Process and send |
 | Reply out (full text) | `1` Send · `2` Don't send | Send · Don't send |
 
 **Process and send** OKs that one reply ahead: it goes out without the Send step. The next request asks again.
