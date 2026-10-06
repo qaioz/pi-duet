@@ -239,9 +239,9 @@ const AGENTS = {
 			where: "paste into Claude Code, open in your project folder",
 			text: `Set up duet and join room {room} as {name}. ${RUN}
 
-${joinFile("claude-code")} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && { case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac; d=$(mktemp -d); case "$(cd "$d" && claude plugin test 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off' ;; esac; rmdir "$d"; }
+${joinFile("claude-code")} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(cd "$d" && claude plugin test 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off' ;; esac && rmdir "$d"
 
-Then reply with only: Type /reload-plugins to join.
+Then reply with only: Type /reload-plugins to join (not needed if duet already said “joined”).
 If it printed "duet: mods are off", reply only: Claude Code's mods are off for your account, so duet can't run here yet. If it failed, say which step failed instead.`,
 			note: "Approve its one command · then /reload-plugins · Claude Code 2.1.287+",
 		},
