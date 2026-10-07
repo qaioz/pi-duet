@@ -439,13 +439,16 @@ async function deliver($) {
 	if (!autoActive() || !queue.length || busyWithPeer()) return;
 	if (autoTurns >= MAX_AUTO) {
 		paused = true;
+		pausedForTool = false;
 		$.ui.toast(`duet: ${MAX_AUTO} in a row · rest wait for you`);
 		redraw($);
 		return;
 	}
 	if (!(await sendToolReady($))) {
-		paused = true; // no way to answer: wait for the user, as at the cap
-		$.ui.toast(`duet: Claude has no ${SEND_TOOL} tool in this session · auto paused · /reload-plugins`);
+		if (!toolOff) return void deliver($).catch(() => {}); // found again while this looked: look again
+		// No way to answer: wait (the line above the prompt says why); resumes when the tool is back.
+		paused = true;
+		pausedForTool = true;
 		redraw($);
 		return;
 	}
@@ -496,6 +499,7 @@ async function submitWhenIdle($) {
 		expected = expected.filter((x) => x.text !== p.text);
 		if (room?.key === p.roomKey) queue.unshift(...p.envs);
 		paused = room?.mode === "auto" ? true : paused;
+		pausedForTool = false;
 		await saveTurn($);
 		$.ui.toast("duet: Claude Code refused the request: " + sanitize(result.drop, 120));
 		redraw($);
@@ -687,6 +691,7 @@ async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	history = Array.isArray(stored) ? stored.slice(-HISTORY_MAX) : [];
 	autoTurns = 0;
 	paused = false;
+	pausedForTool = false;
 	heldCursor = null;
 	await $.store.set("room:" + cwd, { code, name, relay, at: Date.now() });
 	await $.store.set("name", name);
@@ -705,6 +710,7 @@ async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 		} catch {}
 	}
 	if (!quiet) $.ui.log(`joined ${code} as ${name}${copied ? " · code copied" : ""}`);
+	logToolOff($);
 	redraw($);
 	void deliver($).catch(() => {});
 }
@@ -810,6 +816,7 @@ async function setMode($, mode) {
 	room.mode = mode;
 	autoTurns = 0;
 	paused = false;
+	pausedForTool = false;
 	const active = await $.store.get("active:" + sessionId);
 	if (active) await $.store.set("active:" + sessionId, { ...active, mode });
 	$.ui.log(mode === "auto" ? `auto · no gates · max ${MAX_AUTO} in a row` : "ask · both gates on");
@@ -848,7 +855,8 @@ async function choose($, action) {
 			choosing = false;
 		}
 		if (!ready) {
-			$.ui.toast(`duet: Claude has no ${SEND_TOOL} tool in this session · /reload-plugins, then Process again`);
+			// The line above the prompt stays; the toast answers this press.
+			$.ui.toast("duet: " + toolOffText());
 			return;
 		}
 		// The check waited: a leave, another press or a turn may have come in meanwhile.
@@ -977,6 +985,7 @@ async function takeJoinFile($, inRoomToo = false, nested = false) {
 	}
 	if (!got.take) return false;
 	joinOffer = { room: got.take.room, name: got.take.name, relay: got.take.relay, question: joinQuestion(got.take, home) };
+	logToolOff($);
 	redraw($);
 	return true;
 }
@@ -1031,6 +1040,99 @@ const SEND_SPEC = {
 	},
 };
 let sendToolError = "";
+// The send tool missing from Claude's tools, seen on a Mac (issue #33): ~/.claude.json had
+// projects["<folder>"].disabledMcpServers = ["duet"] (switched off in /mcp there), so Claude Code
+// never connects the server $.tool.register runs. Said on a line above the prompt that stays (while
+// in a room or offered one) and once in the transcript; requests wait. Looked at again on every
+// Process press and every TOOL_POLL_MS while missing; the line goes once the tool is there.
+const TOOL_POLL_MS = 10_000;
+const MCP_SERVER = "duet"; // the server name $.tool.register gives this plugin's tools
+let toolOff = null; // null while the tool is there (or Claude Code can't say); { switchedOff } while missing
+let toolPoll = null;
+let toolOffLogged = false;
+let toolSeen = 0; // bumped each time the tool is found: an older "missing" answer then doesn't count
+let pausedForTool = false; // auto paused only because the tool was missing: resumes when it is back (any other pause or unpause clears it)
+const toolOffText = () =>
+	toolOff?.switchedOff
+		? "duet's send tool is switched off in /mcp for this folder · /mcp → duet → Enable · requests wait until then"
+		: "duet's send tool is off in this folder · /mcp → duet → Enable, or /reload-plugins · requests wait until then";
+// Said only where it matters: in a room, or with a Join card up.
+const toolOffShown = () => !!toolOff && !!(room || joinOffer);
+
+// Is "duet" in this folder's disabledMcpServers in Claude Code's global config (read only, never
+// written)? Claude Code keys it by the git checkout's root, else by the folder it started in (with /
+// on Windows too). false whenever it can't be told.
+async function mcpSwitchedOff($) {
+	try {
+		const dir = ((await $.env.get("CLAUDE_CONFIG_DIR")) || home).replace(/[\\/]+$/, "");
+		if (!dir) return false;
+		const projects = JSON.parse(String(await $.fs.read(`${dir}/.claude.json`)))?.projects;
+		if (!projects || typeof projects !== "object") return false;
+		let key = cwd;
+		try {
+			const top = await $.process.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 3000 });
+			if (top.exitCode === 0 && top.stdout.trim()) key = top.stdout.trim();
+		} catch {}
+		const slash = key.replace(/\\/g, "/");
+		const entry = Object.hasOwn(projects, key) ? projects[key] : Object.hasOwn(projects, slash) ? projects[slash] : undefined;
+		const list = entry?.disabledMcpServers;
+		return Array.isArray(list) && list.includes(MCP_SERVER);
+	} catch {
+		return false;
+	}
+}
+
+function logToolOff($) {
+	if (!toolOffShown() || toolOffLogged) return;
+	toolOffLogged = true;
+	$.ui.log(toolOffText());
+}
+
+async function noteToolOff($) {
+	const seen = toolSeen;
+	const switchedOff = await mcpSwitchedOff($);
+	if (seen !== toolSeen) return; // found meanwhile (a Process press, the timer)
+	const changed = !toolOff || toolOff.switchedOff !== switchedOff;
+	toolOff = { switchedOff };
+	if (changed) toolOffLogged = false;
+	if (!toolPoll) toolPoll = $.clock.every(TOOL_POLL_MS, () => void checkSendTool($).catch(() => {}));
+	logToolOff($);
+	redraw($);
+}
+
+function noteToolOn($) {
+	toolSeen++;
+	toolPoll?.cancel?.();
+	toolPoll = null;
+	if (!toolOff) return;
+	const said = toolOffLogged;
+	toolOff = null;
+	toolOffLogged = false;
+	if (said) $.ui.log("duet's send tool is on · requests can be processed");
+	if (pausedForTool) {
+		pausedForTool = false;
+		paused = false;
+		void deliver($).catch(() => {});
+	}
+	redraw($);
+}
+
+// true / false, or null when Claude Code can't say (no tool list).
+async function hasSendTool($) {
+	try {
+		return (await $.tool.list()).some((t) => t.name === SEND_TOOL);
+	} catch {
+		return null;
+	}
+}
+
+// The start's check and the slow timer's: only looks (registering again waits up to 8 s).
+async function checkSendTool($) {
+	const has = await hasSendTool($);
+	if (has === true) noteToolOn($);
+	else if (has === false && !toolOff) await noteToolOff($); // still missing: nothing new to read
+}
+
 async function registerSendTool($) {
 	try {
 		await $.tool.register(SEND_SPEC);
@@ -1043,18 +1145,20 @@ async function registerSendTool($) {
 }
 // Is the send tool among the tools Claude can call now? Registered again if not. true when Claude
 // Code can't say (no tool list): the hand-over isn't held up on a guess.
+// Switched off in /mcp: registering again changes nothing (and waits up to 8 s), so it is skipped.
 async function sendToolReady($) {
-	const has = async () => {
-		try {
-			return (await $.tool.list()).some((t) => t.name === SEND_TOOL);
-		} catch {
-			return null;
-		}
-	};
-	const first = await has();
+	const first = await hasSendTool($);
+	if (first === true) noteToolOn($);
 	if (first !== false) return true;
-	await registerSendTool($);
-	return (await has()) !== false;
+	if (!(await mcpSwitchedOff($))) {
+		await registerSendTool($);
+		if ((await hasSendTool($)) !== false) {
+			noteToolOn($);
+			return true;
+		}
+	}
+	await noteToolOff($);
+	return false;
 }
 
 // ---------- the send tool ----------
@@ -1390,6 +1494,8 @@ export function register(on) {
 		cwd = e.cwd || (await $.session.cwd());
 		home = (await $.env.get("HOME")) || (await $.env.get("USERPROFILE")) || "";
 		duetDir = ((await $.env.get("DUET_HOME")) || `${home.replace(/[\\/]+$/, "")}/.duet`).replace(/\\/g, "/");
+		// The registration has waited (Claude Code holds it up to 8 s): is the tool among Claude's?
+		void checkSendTool($).catch(() => {});
 		const relay = (await $.env.get("DUET_SERVER")) || "";
 		// The website's line starts Claude Code with the room in DUET_ROOM / DUET_NAME. Read once, then
 		// cleared: nothing Claude Code starts (a shell, pi, an MCP server) inherits them, and a /clear
@@ -1568,6 +1674,7 @@ export function register(on) {
 			autoTurns = 0;
 			if (paused) {
 				paused = false;
+				pausedForTool = false;
 				redraw($);
 				void deliver($).catch(() => {});
 			}
@@ -1643,7 +1750,21 @@ export function register(on) {
 	});
 
 	on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-		const card = drawCard($, e);
+		// The send tool is missing: one line that stays above any card until the tool is back.
+		let notice = null;
+		let ev = e;
+		if (toolOffShown()) {
+			const { Text } = $.ui.resolve(e);
+			const text = toolOffText();
+			notice = Text({ key: "tool-off", bold: true, color: "red", children: [text] });
+			ev = { ...e, props: { ...e.props, maxRows: Math.max((e.props?.maxRows ?? 10) - rowsFor(text, e.props?.bodyColumns ?? 80), 4) } };
+		}
+		const drawn = drawCard($, ev);
+		let card = drawn;
+		if (notice) {
+			const { Box } = $.ui.resolve(e);
+			card = Box({ flexDirection: "column", children: drawn ? [notice, drawn] : [notice] });
+		}
 		if (!card) return next(e);
 		// Keep what other mods draw in the band, under the card.
 		const theirs = await next(e);

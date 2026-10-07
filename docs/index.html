@@ -244,7 +244,8 @@ const AGENTS = {
 ${joinFile("claude-code")} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(claude plugin test "$d" 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off here' ;; esac && rmdir "$d"
 
 Then reply with only: Type /reload-plugins, then press 1 to join (if duet's Join card already shows, just press 1).
-If it printed "duet: mods are off here", reply only: Claude Code's mods are off in this folder (disableAllHooks in its .claude settings or yours, or a switch by your organization or Anthropic), so duet can't run here yet. If it failed, say which step failed instead.`,
+If it printed "duet: mods are off here", reply only: Claude Code's mods are off in this folder (disableAllHooks in its .claude settings or yours, or a switch by your organization or Anthropic), so duet can't run here yet. If it failed, say which step failed instead.
+If duet later says its send tool is off in this folder: /mcp → duet → Enable.`,
 			note: "Approve its one command · then /reload-plugins, press 1 to join · Claude Code 2.1.287+ · the code stays in the session history: the terminal line keeps it out",
 		},
 		cases: [

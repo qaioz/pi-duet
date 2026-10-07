@@ -134,3 +134,9 @@ In your project folder: `d=$(mktemp -d); claude plugin test "$d"; rmdir "$d"` (i
 settings and tests the empty one). `no hooks module to load` = mods on. `hooks modules are turned off …` = off:
 `disableAllHooks` in this folder's `.claude/settings.json` or `settings.local.json`, in yours, or a switch by
 your organisation or Anthropic. duet can't run in Claude Code there until it's back.
+
+## Send tool off
+
+A red line above the prompt, `duet's send tool is switched off in /mcp for this folder · /mcp → duet → Enable`:
+Claude Code keeps that switch per folder (per git repo inside one). Enable it there; requests wait and the line
+goes once the tool is back. Without "switched off in /mcp": `/mcp → duet → Enable`, or `/reload-plugins`.
