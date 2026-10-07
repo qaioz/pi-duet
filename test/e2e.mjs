@@ -72,7 +72,11 @@ function startAgent(name, room, { realModel = false, extraEnv = {}, loadExt = tr
 			buf = buf.slice(nl + 1);
 			if (!line) continue;
 			try {
-				agent.events.push({ at: Date.now(), ...JSON.parse(line) });
+				const ev = JSON.parse(line);
+				agent.events.push({ at: Date.now(), ...ev });
+				// A confirm (the join file's "Join <room> as <name>?"): answered as agent.confirm says, if set.
+				if (ev.type === "extension_ui_request" && ev.method === "confirm" && agent.confirm !== undefined)
+					agent.send({ type: "extension_ui_response", id: ev.id, confirmed: agent.confirm });
 			} catch {}
 		}
 	});
@@ -375,8 +379,9 @@ async function printModeStaysOut(fake) {
 	);
 }
 
-// The site's prompt writes ~/.duet/join.json and the user types /reload: pi joins from it at start, and
-// polls while not in a room. Only a fresh file for pi in this folder is taken.
+// The site's prompt writes ~/.duet/join.json and the user types /reload: pi takes it at start, and
+// polls while not in a room. Only a fresh file for pi in this folder is taken, and taking it never
+// joins: pi's confirm asks "Join <room> as <name>? · [relay <host> · ]<folder>"; yes joins, no drops it (file gone).
 async function joinFile() {
 	const agentDir = join(ROOT, "joinfile-agent");
 	rmSync(agentDir, { recursive: true, force: true }); // no saved room
@@ -390,53 +395,78 @@ async function joinFile() {
 		return j;
 	};
 	const left = () => existsSync(path);
+	const confirms = (a) => a.events.filter((e) => e.type === "extension_ui_request" && e.method === "confirm");
+	const savedRoom = () => {
+		try {
+			return JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8")).room;
+		} catch {
+			return undefined;
+		}
+	};
+
+	// No: nothing joined, the file is gone, nothing remembered.
+	const declined = write({});
+	let a = startAgent("jo", "", { agentDir, cwd, extraEnv: { DUET_NAME: "" } });
+	a.confirm = false;
+	await until(() => confirms(a).length > 0, 20_000, "the confirm").catch(() => {});
+	await sleep(3000);
+	check(
+		"join file: pi asks first (its confirm: 'Join <room> as <name>? · relay <host> · <folder>'); no joins nothing and the file is gone",
+		confirms(a)[0]?.message === `Join ${declined.room} as jo? · relay ${SERVER} · ${cwd.length > 60 ? "…" + cwd.slice(-59) : cwd}` && !statusOf(a) && !left() && savedRoom() !== declined.room,
+		`confirm ${JSON.stringify(confirms(a)[0]?.message)}; status ${JSON.stringify(statusOf(a))}; file left: ${left()}; saved room: ${savedRoom() === declined.room ? "the file's" : "none"}`,
+	);
+	await a.stop();
 
 	const first = write({});
 	const heard = [];
 	const listener = subscribe({ server: SERVER, topic: topicFor(first.room), onEnvelope: (env) => heard.push(env) });
 	await sleep(1000);
-	let a = startAgent("jo", "", { agentDir, cwd, extraEnv: { DUET_NAME: "" } });
+	a = startAgent("jo", "", { agentDir, cwd, extraEnv: { DUET_NAME: "" } });
+	a.confirm = true;
 	const joined = await until(() => statusOf(a) === "duet: jo" && statusOf(a), 20_000, "join from the file").catch(() => statusOf(a));
 	await until(() => heard.some((e) => e.kind === "join" && e.from === "jo"), 10_000, "join announced").catch(() => {});
 	await until(() => notifies(a).includes("duet: joined as jo"), 10_000, "joined notice").catch(() => {});
 	listener.stop();
 	const saved = JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8"));
 	check(
-		"join file taken at start: joins, announces, deletes it, remembers the room",
-		joined === "duet: jo" && !left() && saved.room === first.room && saved.server === SERVER && heard.some((e) => e.kind === "join") && notifies(a).includes("duet: joined as jo"),
-		`status ${JSON.stringify(joined)}; file left: ${left()}; duet.json room matches: ${saved.room === first.room}; heard: ${heard.map((e) => `${e.kind} from ${e.from}`).join(", ") || "nothing"}`,
+		"join file taken at start, yes in the confirm: joins, announces, deletes it, remembers the room",
+		confirms(a).length === 1 && joined === "duet: jo" && !left() && saved.room === first.room && saved.server === SERVER && heard.some((e) => e.kind === "join") && notifies(a).includes("duet: joined as jo"),
+		`confirms ${confirms(a).length}; status ${JSON.stringify(joined)}; file left: ${left()}; duet.json room matches: ${saved.room === first.room}; heard: ${heard.map((e) => `${e.kind} from ${e.from}`).join(", ") || "nothing"}`,
 	);
 	// In a room already: a new file is not taken.
 	write({});
 	await sleep(4000);
-	check("join file ignored while in a room", left() && JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8")).room === first.room, `file left: ${left()}; status ${JSON.stringify(statusOf(a))}`);
+	check("join file ignored while in a room", left() && JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8")).room === first.room && confirms(a).length === 1, `file left: ${left()}; status ${JSON.stringify(statusOf(a))}`);
 	a.prompt("/duet off");
 	await until(() => notifies(a).includes("duet: left the room"), 10_000, "left");
 	rmSync(path, { force: true });
 	await a.stop();
 
-	// Not in a room, polling: another agent's, another folder's and a stale file are not taken.
+	// Not in a room, polling: another agent's, another folder's, one without a relay and a stale or future file are not taken.
 	a = startAgent("jo", "", { agentDir, cwd, extraEnv: { DUET_NAME: "" } });
+	a.confirm = true;
 	await sleep(3000); // started
 	const refused = [];
 	for (const [what, fields] of [
 		["Claude Code's", { agent: "claude-code" }],
 		["another folder's", { cwd: "/elsewhere", pcwd: "/elsewhere" }],
+		["a relay-less", { relay: undefined }],
 		["a stale", { at: Math.floor(Date.now() / 1000) - 31 * 60 }],
+		["a future", { at: Math.floor(Date.now() / 1000) + 60 }],
 	]) {
 		write(fields);
 		await sleep(4000);
 		refused.push({ what, left: left(), status: statusOf(a) });
 	}
 	check(
-		"join file for another agent / folder left alone; a stale one deleted; none joined",
-		refused[0].left && refused[1].left && !refused[2].left && refused.every((r) => !r.status),
-		refused.map((r) => `${r.what}: file left ${r.left}, status ${JSON.stringify(r.status)}`).join("; "),
+		"join file for another agent / folder / with no relay left alone; a stale or future one deleted; none asked or joined",
+		refused[0].left && refused[1].left && refused[2].left && !refused[3].left && !refused[4].left && refused.every((r) => !r.status) && confirms(a).length === 0,
+		refused.map((r) => `${r.what}: file left ${r.left}, status ${JSON.stringify(r.status)}`).join("; ") + `; confirms ${confirms(a).length}`,
 	);
-	// A file written after start is picked up by the poll.
+	// A file written after start is picked up by the poll, asked, and joined on yes.
 	const later = write({});
 	const polled = await until(() => statusOf(a) === "duet: jo" && statusOf(a), 15_000, "poll joins").catch(() => statusOf(a));
-	check("join file written after start is taken by the poll", polled === "duet: jo" && !left() && JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8")).room === later.room, `status ${JSON.stringify(polled)}; file left: ${left()}`);
+	check("join file written after start is taken by the poll, asked, joined on yes", confirms(a).length === 1 && polled === "duet: jo" && !left() && JSON.parse(readFileSync(join(agentDir, "duet.json"), "utf8")).room === later.room, `confirms ${confirms(a).length}; status ${JSON.stringify(polled)}; file left: ${left()}`);
 	await a.stop();
 }
 

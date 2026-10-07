@@ -30,7 +30,7 @@ import { pathToFileURL } from "node:url";
 import { appTools, cleanText, READS, SENDS, handOver, heldResult, JOIN_META, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomProps, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, isRoomCode, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.11.0"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.11.1"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -627,14 +627,19 @@ function liveStream(req, res, address) {
 			event(out);
 			return res.end();
 		}
-		// A panel drawn again in the same tab shares the token: the oldest of its streams gives way, told so
-		// (the panel then waits for the user's click instead of reopening and pushing the next one out).
-		// Done before the totals, so a seat's own redraw frees its slot rather than being refused.
+		// A panel drawn again in the same tab shares the token: at the seat's cap one of its own streams gives
+		// way, told so (the panel then waits for the user's click instead of reopening and pushing the next
+		// one out): its oldest from this address if this address is full, else its oldest. Only when the new
+		// stream is then admitted: a stream is never ended for a request that still gets 429.
 		const same = [...live].filter((l) => l.key === key);
-		if (same.length >= LIMIT.live.perSeat) same[0].end("evicted");
-		if (live.size >= LIMIT.live.all || [...live].filter((l) => l.address === address).length >= LIMIT.live.perAddress) {
+		const atAddress = [...live].filter((l) => l.address === address).length;
+		const victim = same.length >= LIMIT.live.perSeat ? (atAddress >= LIMIT.live.perAddress && same.find((l) => l.address === address)) || same[0] : null;
+		const freed = victim ? 1 : 0;
+		const addressFreed = victim?.address === address ? 1 : 0;
+		if (live.size - freed >= LIMIT.live.all || atAddress - addressFreed >= LIMIT.live.perAddress) {
 			return res.writeHead(429, { ...cors, "retry-after": "60", "content-type": "text/plain" }).end("too many live panels\n");
 		}
+		victim?.end("evicted");
 		res.writeHead(200, head);
 		let last = "";
 		let quiet = Date.now();

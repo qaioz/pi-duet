@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isName, isPlaceholderName, isRelayUrl, isRoomCode } from "./transport.js";
+import { cleanText, isName, isPlaceholderName, isRelayUrl, isRoomCode } from "./transport.js";
 
 export const LOCK_FRESH_MS = 60_000;
 export const LOCK_BEAT_MS = 20_000;
@@ -105,6 +105,9 @@ export function releaseLock(path, me) {
 // The site's prompt writes it, then the user starts (or reloads) their agent in that folder:
 //   { agent: "claude-code" | "codex" | "pi", room, name, relay, cwd, pcwd, at }   (at: Unix seconds)
 // The client it names takes it once, in that folder, within 30 minutes, and only when not in a room.
+// Taking it never joins: the client shows "Join <room> as <name>?" and the user's own answer joins.
+// Same rules as hooks/wire.js readJoinFile (Claude Code): a relay is required, `at` is a number not
+// ahead of this clock (a time ahead is cleared, like a stale one).
 
 export const JOIN_FRESH_S = 30 * 60;
 export { isRoomCode }; // transport.js: one rule for every client
@@ -135,17 +138,19 @@ export const sameFolder = (paths, folder, nested = false) => {
 };
 export function acceptJoin(j, { agent, folder, nested = false, now = Date.now() }) {
 	if (!j || typeof j !== "object" || !j.agent) return { skip: "empty" };
-	const age = now / 1000 - Number(j.at);
+	if (typeof j.at !== "number") return { skip: "invalid" };
+	const age = now / 1000 - j.at;
 	if (!(age <= JOIN_FRESH_S)) return { skip: "stale" };
+	if (age < 0) return { skip: "stale" }; // ahead of this clock: not the prompt's `date +%s`, and never taken
 	if (j.agent !== agent) return { skip: "agent" };
-	if (age < -5 * 60) return { skip: "future" };
 	if (!sameFolder([j.cwd, j.pcwd], folder, nested)) return { skip: "folder" };
-	const relay = noSlash(j.relay);
+	const relay = typeof j.relay === "string" ? noSlash(j.relay) : "";
 	if (!isRoomCode(j.room) || !isName(j.name) || isPlaceholderName(j.name) || !isRelayUrl(relay)) return { skip: "invalid" };
-	return { room: j.room, name: j.name, relay };
+	// The folder shown is this window's own: the file's cwd is free text, and only one of cwd/pcwd matched.
+	return { room: j.room, name: j.name, relay, folder };
 }
 
-/** Take the join file if it is for this client: removed before the caller joins, so it joins once. */
+/** Take the join file if it is for this client: removed before the caller asks the user, so it is offered once. */
 export function takeJoinFile(me, path = joinFilePath()) {
 	let j;
 	try {
@@ -158,4 +163,27 @@ export function takeJoinFile(me, path = joinFilePath()) {
 	if (got.skip) return undefined;
 	rmSync(path, { force: true });
 	return got;
+}
+
+// What the user is asked before a join file joins (every client): "Join <room> as <name>? · <folder>",
+// with "· relay <host>" before the folder when it isn't duet's own relay. The relay is never cut; the
+// folder (the window's own, home as ~) is one line, its end kept, at most FOLDER_MAX characters.
+const FOLDER_MAX = 60;
+export const DUET_RELAY = "https://duet.gaioz.online";
+export function joinQuestion({ room, name, relay, folder }, home = "") {
+	let where = String(folder ?? "").replace(/[\\/]+$/, "") || "/";
+	const h = String(home ?? "").replace(/[\\/]+$/, "");
+	if (h && (where === h || where.startsWith(h + "/") || where.startsWith(h + "\\"))) where = "~" + where.slice(h.length);
+	where = where.replace(/\s+/g, " ");
+	if (where.length > FOLDER_MAX) where = "…" + where.slice(-(FOLDER_MAX - 1));
+	let relayHost = "";
+	if (relay && relay !== DUET_RELAY) {
+		try {
+			relayHost = new URL(relay).host;
+		} catch {
+			relayHost = String(relay);
+		}
+		if (relay.startsWith("http://")) relayHost = "http://" + relayHost;
+	}
+	return cleanText(`Join ${room} as ${name}?${relayHost ? ` · relay ${relayHost}` : ""} · ${where}`).replace(/\s+/g, " ");
 }

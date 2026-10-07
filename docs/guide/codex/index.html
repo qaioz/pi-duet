@@ -78,8 +78,9 @@
 <ol>
 <li>On <a href="https://qaioz.github.io/pi-duet/">the website</a>: <strong>Copy prompt</strong>, paste it into Codex, open in your project folder.</li>
 <li>duet already there: Codex calls <code dir="auto">duet_join</code>, done. Otherwise approve its one shell command, then start a
-new Codex session in this folder and say “join duet” (first time: trust duet’s hooks). duet joins on that
-first prompt: Codex tells duet the folder only when a turn starts.</li>
+new Codex session in this folder and say “join duet” (first time: trust duet’s hooks). A form asks
+<code dir="auto">Join &lt;room&gt; as &lt;name&gt;? · &lt;folder&gt;</code>: <strong>Join</strong>. Codex tells duet the folder only when a turn starts.
+No form (Full Access): duet says “a join is waiting”; your own “join duet” joins.</li>
 </ol>
 <p>The room code is in the prompt (and in <code dir="auto">duet_join</code>’s arguments), so it stays in the session history and reaches
 the model’s provider. Every Codex route joins through the model; only <code dir="auto">setup codex</code> (IDE) keeps it out.</p>

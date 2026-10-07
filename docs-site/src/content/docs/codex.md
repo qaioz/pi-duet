@@ -6,8 +6,9 @@ description: duet for Codex CLI, the desktop app and the IDE extension.
 
 1. On [the website](https://qaioz.github.io/pi-duet/): **Copy prompt**, paste it into Codex, open in your project folder.
 2. duet already there: Codex calls `duet_join`, done. Otherwise approve its one shell command, then start a
-   new Codex session in this folder and say "join duet" (first time: trust duet's hooks). duet joins on that
-   first prompt: Codex tells duet the folder only when a turn starts.
+   new Codex session in this folder and say "join duet" (first time: trust duet's hooks). A form asks
+   `Join <room> as <name>? · <folder>`: **Join**. Codex tells duet the folder only when a turn starts.
+   No form (Full Access): duet says "a join is waiting"; your own "join duet" joins.
 
 The room code is in the prompt (and in `duet_join`'s arguments), so it stays in the session history and reaches
 the model's provider. Every Codex route joins through the model; only `setup codex` (IDE) keeps it out.

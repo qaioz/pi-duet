@@ -1395,6 +1395,31 @@ async function liveTests() {
 		`own 4th: ${ownGot.status}, oldest evicted: ${threeGot[0].events.at(-1)?.evicted === true}, other seat: ${other.status}`,
 	);
 	full.proc.kill();
+
+	// A seat at its cap asking from another address: one of its own streams gives way only when the new
+	// one is then admitted. From an address full of other seats: 429, and none of its streams is ended.
+	const cross = await hosted({ DUET_LIVE_PER_IP: "3" });
+	// Three seats (the most one address may join): x, and two others that fill address A with three streams.
+	const [x, o1, o2] = [0, 1, 2].map(() => client(cross.url));
+	for (const [c, n] of [[x, "xan"], [o1, "oa"], [o2, "ob"]]) await c.call("duet_room_join", { room: `t-${randomUUID()}`, name: n });
+	const B = { "x-forwarded-for": "198.51.100.2" };
+	const A = { "x-forwarded-for": "203.0.113.2" };
+	const C = { "x-forwarded-for": "192.0.2.9" };
+	const onB = [0, 1, 2].map(async (i) => (await sleep(150 * i), liveRead(cross.url, x.token, 4000, B)));
+	const fillA = [o1, o1, o2].map((c) => liveRead(cross.url, c.token, 4000, A));
+	await sleep(900);
+	const refused = await liveRead(cross.url, x.token, 800, A);
+	await sleep(200);
+	const admitted = liveRead(cross.url, x.token, 1200, C);
+	const [onBGot, admittedGot] = [await Promise.all(onB), await admitted];
+	const fillGot = await Promise.all(fillA);
+	const evictedAt = onBGot.map((g) => g.events.some((e) => e.evicted === true));
+	check(
+		"live: a seat's stream is evicted only when its new one is admitted: from a full address 429 with none ended; from a free address 200 and its oldest ended",
+		fillGot.every((g) => g.status === 200 && g.events.every((e) => e.inRoom)) && refused.status === 429 && admittedGot.status === 200 && evictedAt.filter(Boolean).length === 1 && evictedAt[0] === true,
+		`address A: ${fillGot.map((g) => g.status).join(",")}; from full address: ${refused.status}; from a free address: ${admittedGot.status}; its streams on B evicted: ${JSON.stringify(evictedAt)}`,
+	);
+	cross.proc.kill();
 	lev.stop();
 
 	await liveBrowserTests(h);

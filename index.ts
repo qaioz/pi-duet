@@ -2,10 +2,11 @@
 // Incoming messages become new turns in this session; the agent replies with duet_send.
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { LOCK_BEAT_MS, describeHolder, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeJoinFile, takeLock } from "./lock.js";
+import { LOCK_BEAT_MS, describeHolder, joinQuestion, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeJoinFile, takeLock } from "./lock.js";
 import { envelope, firstLine, fitName, isForMe, isPlaceholderName, isRelayUrl, placeFor, publish, subscribe, topicFor } from "./transport.js";
 
 const RECENT_MS = 30 * 60_000; // a peer counts as "here" if seen this recently
@@ -170,15 +171,33 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// The site's prompt wrote ~/.duet/join.json for pi in this folder (lock.js), and the user typed
-	// /reload. Never over a room this window is in, or an env join (DUET_ROOM).
+	// /reload. Never over a room this window is in, or an env join (DUET_ROOM). Taking it never joins:
+	// pi's confirm asks "Join <room> as <name>? · <folder>" and only a yes joins. The file is gone
+	// either way. A start that asked first rejoins the saved room on a no.
 	let joining = false;
-	async function fromJoinFile(nested = false) {
-		if (joining || sub || process.env.DUET_ROOM) return;
-		const j = takeJoinFile({ agent: "pi", folder: process.cwd(), nested });
-		if (!j) return;
-		joining = true;
-		await joinAs({ room: j.room, name: j.name, server: j.relay }, true).finally(() => (joining = false));
+	let asking: AbortController | undefined;
+	const takeOffer = (nested: boolean) =>
+		joining || asking || sub || process.env.DUET_ROOM ? undefined : takeJoinFile({ agent: "pi", folder: process.cwd(), nested });
+	async function askJoin(j: { room: string; name: string; relay: string; folder: string }, rejoinOnNo: boolean) {
+		const question = joinQuestion(j, homedir());
+		if (!ui) return;
+		const ask = (asking = new AbortController());
+		let yes = false;
+		try {
+			yes = await ui.confirm("duet", question, { signal: ask.signal });
+		} catch {}
+		if (asking !== ask) return; // /duet typed meanwhile: that wins
+		asking = undefined;
+		if (ask.signal.aborted || sub) return;
+		if (yes) {
+			joining = true;
+			await joinAs({ room: j.room, name: j.name, server: j.relay }, true).finally(() => (joining = false));
+		} else if (rejoinOnNo && room && name) await joinRoom();
 	}
+	const dropOffer = () => {
+		asking?.abort();
+		asking = undefined;
+	};
 	let poll: ReturnType<typeof setInterval> | undefined;
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -187,9 +206,13 @@ export default function (pi: ExtensionAPI) {
 		if (!ui) return;
 		// Polled too, so a pi that already has duet joins from a prompt pasted later.
 		clearInterval(poll);
-		poll = setInterval(() => void fromJoinFile().catch(() => {}), 2500);
+		poll = setInterval(() => {
+			const j = takeOffer(false);
+			if (j) void askJoin(j, false).catch(() => {});
+		}, 2500);
 		poll.unref?.();
-		await fromJoinFile(true);
+		const offer = takeOffer(true);
+		if (offer) return void askJoin(offer, true).catch(() => {}); // the saved room waits for the answer
 		if (sub || !room || !name) return;
 		await joinRoom();
 		// A join from the environment (the site's "start fresh" command) says hello like /duet does.
@@ -202,6 +225,7 @@ export default function (pi: ExtensionAPI) {
 	// The runtime is rebuilt on /new, /resume, /reload…; session_start will rejoin.
 	pi.on("session_shutdown", async () => {
 		clearInterval(poll);
+		dropOffer();
 		leave();
 	});
 
@@ -231,6 +255,7 @@ export default function (pi: ExtensionAPI) {
 				const owner = !sub && lockOwner();
 				if (owner) return notify(`duet: this window is not in the room; ${heldBy(owner)}`, "error"); // leave its settings alone
 				takeJoinFile({ agent: "pi", folder: process.cwd(), nested: true }); // leaving: a join file mustn't put the window straight back
+				dropOffer();
 				leave();
 				// Forget the cursor too: rejoining later must not replay hours of backlog as turns.
 				updateConfig((c) => (delete c.cursors[cursorKey()], delete c.room, delete c.name));
@@ -242,6 +267,7 @@ export default function (pi: ExtensionAPI) {
 			if (isPlaceholderName(parts[1])) return notify(`duet: "${parts[1]}" is the website's placeholder: use your own name`, "error");
 			if (parts[2] && !isRelayUrl(parts[2].replace(/\/+$/, ""))) return notify("duet: the server must be an http(s) URL", "error");
 			takeJoinFile({ agent: "pi", folder: process.cwd(), nested: true }); // newer than a pasted prompt's join file: that one goes
+			dropOffer();
 			await joinAs({ room: parts[0], name: fitName(parts[1]), server: (parts[2] || process.env.DUET_SERVER || DEFAULT_SERVER).replace(/\/+$/, "") }, !!parts[2]);
 		},
 	});

@@ -19,9 +19,9 @@ a room while you are in none. Once you are in a room, neither moves you: Leave, 
 | **VS Code** (Copilot agent mode) | `code --add-mcp '{"name":"duet","command":"npx","args":["-y","github:qaioz/pi-duet","--room","<room>","--name","<name>"]}'` |
 | **Goose** | `goose session --with-extension "npx -y github:qaioz/pi-duet --room <room> --name <name>"` |
 
-Name it `duet`: the connector keeps the name you give it, and a room code as the name says nothing
-once that room is gone. Renaming later in Claude: Customize → Connectors → the
-connector → edit.
+Name it `duet` when you add it: the connector keeps the name you give it, and a room code as the name says
+nothing once that room is gone. claude.ai can't rename a connector (its menu has only Refresh tools list and
+Remove): to rename, Remove it, then add it again.
 
 Team, Enterprise, workspaces: an owner may have to allow custom connectors or custom MCP servers.
 

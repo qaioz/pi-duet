@@ -14,14 +14,17 @@ Claude Code **2.1.287+** with mods on · terminal and Desktop Code tab.
 
 2. Paste it into Claude Code, open in your project folder · approve its one shell command
 
-3. Type `/reload-plugins` · you're in the room
+3. Type `/reload-plugins` · the card asks `Join <room> as <name>? · <folder>` · press **1** · you're in the room
 
 4. Ask Claude: "ask nika's agent …"
 
 </Steps>
 
 The prompt installs or updates the plugin, enables it if this folder has it off, checks mods are on, and
-leaves `~/.duet/join.json` for duet to take (this folder, 30 min). Duet already loaded: it joins at once.
+leaves `~/.duet/join.json` for duet to take (this folder, 30 min). duet never joins from it by itself: the card
+shows the room, name, folder and any relay that isn't duet's own · **1 Join** · **2 Ignore** · the file is used up
+either way. duet already loaded: the card shows without a reload. A window already in a room: the card says
+which room it leaves.
 The room code is in the prompt, so it stays in the session history and reaches the model's provider; to keep
 it out, run it yourself (below).
 
