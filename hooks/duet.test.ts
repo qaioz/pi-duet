@@ -8,7 +8,7 @@ const USER = { kind: "composer" };
 let lastDid: any = null; // the world of the running test, for the press helpers
 
 // Everything session.start calls, answered in Claude Code's place. Returns what the mod did.
-function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean; env?: Record<string, string>; answer?: (q: string) => string | undefined; store?: Record<string, unknown>; missing?: string[]; failOnce?: string[] } = {}) {
+function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; feed?: boolean; env?: Record<string, string>; answer?: (q: string) => string | undefined; store?: Record<string, unknown>; missing?: string[]; failOnce?: string[]; gitRoot?: string } = {}) {
 	const did = { waits: [] as string[], sleepers: [] as (() => void)[], modes: [] as string[], copies: [] as string[], files: new Map<string, string>(), asks: [] as string[], logs: [] as string[], toasts: [] as string[], posts: [] as any[], store: new Map<string, unknown>(), tools: [] as string[], commands: [] as string[], submits: [] as string[], spawned: [] as string[], gates: [] as (() => void)[], feeding: !!opts.feed, fs: new Map<string, string>(), unasked: false, checkThrows: false, nextAgent: "sub-1", userTurn: null as null | ((text: string) => Promise<void>), seq: 0, push: (env: any, attachmentUrl?: string) => {} };
 	lastDid = did;
 	const clock = mock.clock(on, { now: 1_000_000 });
@@ -47,6 +47,8 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 			did.waits.push(e.argv[0] + "!");
 			return { value: { exitCode: 1, stdout: "", stderr: "" } };
 		}
+		// `git rev-parse --show-toplevel`: the checkout's root (opts.gitRoot), else not a git checkout.
+		if (e.argv?.[0] === "git" && e.argv.includes("rev-parse")) return { value: opts.gitRoot ? { exitCode: 0, stdout: opts.gitRoot + "\n", stderr: "" } : { exitCode: 128, stdout: "", stderr: "not a git repository" } };
 		if (["sleep", "ping", "powershell"].includes(e.argv?.[0])) {
 			did.waits.push(e.argv[0]);
 			// Held until the test presses something (a busy loop would keep the test kit from settling).
@@ -1627,7 +1629,7 @@ test("send tool: missing when the user presses Process: registered again; still 
 	await settle(clock, 10);
 	expect(did.submits.length).toBe(0);
 	expect(did.tools).toEqual(["send", "send"]); // tried again
-	expect(did.toasts.at(-1)).toBe("duet: duet's send tool is off in this folder · /mcp → duet → Enable · requests wait until then");
+	expect(did.toasts.at(-1)).toBe("duet: duet's send tool is off in this folder · /mcp → duet → Enable, or /reload-plugins · requests wait until then");
 	expect(JSON.stringify(await bandText($))).toContain("what is 3+3?"); // still waiting at gate 1
 	(did as any).dropTool = false;
 	await press($, clock, "take");
@@ -1711,9 +1713,9 @@ test("gate 1: presses while the send tool is being checked don't start the reque
 
 // Issue #33: ~/.claude.json had projects["<folder>"].disabledMcpServers = ["duet"]: Claude Code never
 // connected the plugin's tool server there, and Process was swallowed with nothing on screen.
-const OFF_GENERIC = "duet's send tool is off in this folder · /mcp → duet → Enable · requests wait until then";
+const OFF_GENERIC = "duet's send tool is off in this folder · /mcp → duet → Enable, or /reload-plugins · requests wait until then";
 const OFF_MCP = "duet's send tool is switched off in /mcp for this folder · /mcp → duet → Enable · requests wait until then";
-const claudeJson = (disabled: string[]) => JSON.stringify({ projects: { [CWD]: { allowedTools: [], disabledMcpServers: disabled } } });
+const claudeJson = (disabled: string[], key = CWD) => JSON.stringify({ projects: { [key]: { allowedTools: [], disabledMcpServers: disabled } } });
 
 test("send tool off at start: a line above the prompt that stays, said once in the transcript; the cause read from ~/.claude.json", async ($, on) => {
 	const { did, clock, start } = world(on);
@@ -1805,4 +1807,34 @@ test("send tool off in auto: requests wait (auto paused) and start by themselves
 	await until(clock, () => duetSubmits(did).length > 0);
 	expect(duetSubmits(did)[0]).toContain("auto one");
 	did.feeding = false;
+});
+
+test("send tool off: in a git checkout the cause is read from the checkout root's entry (Claude Code's key), not the subfolder's", async ($, on) => {
+	const { did, clock, start } = world(on, { gitRoot: "/work" });
+	did.fs.set("/home/g/.claude.json", JSON.stringify({ projects: { "/work": { disabledMcpServers: ["duet"] }, [CWD]: { disabledMcpServers: [] } } }));
+	(did as any).dropTool = true;
+	await $.session.start(start());
+	await join($, clock, "test-room-100 gaioz");
+	await until(clock, () => did.logs.includes(OFF_MCP));
+	expect(await bandText($)).toContain(OFF_MCP);
+});
+
+test("send tool off: an entry only for the subfolder of a checkout is not Claude Code's: the generic line", async ($, on) => {
+	const { did, clock, start } = world(on, { gitRoot: "/work" });
+	did.fs.set("/home/g/.claude.json", claudeJson(["duet"]));
+	(did as any).dropTool = true;
+	await $.session.start(start());
+	await join($, clock, "test-room-101 gaioz");
+	await until(clock, () => did.logs.includes(OFF_GENERIC));
+	expect(await bandText($)).toContain(OFF_GENERIC);
+});
+
+test("send tool off: an unreadable ~/.claude.json gives the generic line", async ($, on) => {
+	const { did, clock, start } = world(on);
+	did.fs.set("/home/g/.claude.json", "{ not json");
+	(did as any).dropTool = true;
+	await $.session.start(start());
+	await join($, clock, "test-room-102 gaioz");
+	await until(clock, () => did.logs.includes(OFF_GENERIC));
+	expect(await bandText($)).toContain(OFF_GENERIC);
 });

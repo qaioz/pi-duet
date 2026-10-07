@@ -439,11 +439,13 @@ async function deliver($) {
 	if (!autoActive() || !queue.length || busyWithPeer()) return;
 	if (autoTurns >= MAX_AUTO) {
 		paused = true;
+		pausedForTool = false;
 		$.ui.toast(`duet: ${MAX_AUTO} in a row · rest wait for you`);
 		redraw($);
 		return;
 	}
 	if (!(await sendToolReady($))) {
+		if (!toolOff) return void deliver($).catch(() => {}); // found again while this looked: look again
 		// No way to answer: wait (the line above the prompt says why); resumes when the tool is back.
 		paused = true;
 		pausedForTool = true;
@@ -497,6 +499,7 @@ async function submitWhenIdle($) {
 		expected = expected.filter((x) => x.text !== p.text);
 		if (room?.key === p.roomKey) queue.unshift(...p.envs);
 		paused = room?.mode === "auto" ? true : paused;
+		pausedForTool = false;
 		await saveTurn($);
 		$.ui.toast("duet: Claude Code refused the request: " + sanitize(result.drop, 120));
 		redraw($);
@@ -688,6 +691,7 @@ async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	history = Array.isArray(stored) ? stored.slice(-HISTORY_MAX) : [];
 	autoTurns = 0;
 	paused = false;
+	pausedForTool = false;
 	heldCursor = null;
 	await $.store.set("room:" + cwd, { code, name, relay, at: Date.now() });
 	await $.store.set("name", name);
@@ -812,6 +816,7 @@ async function setMode($, mode) {
 	room.mode = mode;
 	autoTurns = 0;
 	paused = false;
+	pausedForTool = false;
 	const active = await $.store.get("active:" + sessionId);
 	if (active) await $.store.set("active:" + sessionId, { ...active, mode });
 	$.ui.log(mode === "auto" ? `auto · no gates · max ${MAX_AUTO} in a row` : "ask · both gates on");
@@ -1045,32 +1050,33 @@ const MCP_SERVER = "duet"; // the server name $.tool.register gives this plugin'
 let toolOff = null; // null while the tool is there (or Claude Code can't say); { switchedOff } while missing
 let toolPoll = null;
 let toolOffLogged = false;
-let pausedForTool = false; // auto paused because the tool was missing: resumes when it is back
+let toolSeen = 0; // bumped each time the tool is found: an older "missing" answer then doesn't count
+let pausedForTool = false; // auto paused only because the tool was missing: resumes when it is back (any other pause or unpause clears it)
 const toolOffText = () =>
 	toolOff?.switchedOff
 		? "duet's send tool is switched off in /mcp for this folder · /mcp → duet → Enable · requests wait until then"
-		: "duet's send tool is off in this folder · /mcp → duet → Enable · requests wait until then";
+		: "duet's send tool is off in this folder · /mcp → duet → Enable, or /reload-plugins · requests wait until then";
 // Said only where it matters: in a room, or with a Join card up.
 const toolOffShown = () => !!toolOff && !!(room || joinOffer);
 
 // Is "duet" in this folder's disabledMcpServers in Claude Code's global config (read only, never
-// written)? The key is the folder Claude Code started in; a git checkout's root is tried too. false
-// whenever it can't be told.
+// written)? Claude Code keys it by the git checkout's root, else by the folder it started in (with /
+// on Windows too). false whenever it can't be told.
 async function mcpSwitchedOff($) {
 	try {
 		const dir = ((await $.env.get("CLAUDE_CONFIG_DIR")) || home).replace(/[\\/]+$/, "");
 		if (!dir) return false;
 		const projects = JSON.parse(String(await $.fs.read(`${dir}/.claude.json`)))?.projects;
 		if (!projects || typeof projects !== "object") return false;
-		const off = (key) => {
-			const list = Object.hasOwn(projects, key) ? projects[key]?.disabledMcpServers : undefined;
-			return Array.isArray(list) && list.includes(MCP_SERVER);
-		};
-		if (off(cwd)) return true;
-		if (Object.hasOwn(projects, cwd)) return false;
-		const top = await $.process.run(["git", "rev-parse", "--show-toplevel"], { timeoutMs: 3000 });
-		const root = top.exitCode === 0 ? top.stdout.trim() : "";
-		return !!root && root !== cwd && off(root);
+		let key = cwd;
+		try {
+			const top = await $.process.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 3000 });
+			if (top.exitCode === 0 && top.stdout.trim()) key = top.stdout.trim();
+		} catch {}
+		const slash = key.replace(/\\/g, "/");
+		const entry = Object.hasOwn(projects, key) ? projects[key] : Object.hasOwn(projects, slash) ? projects[slash] : undefined;
+		const list = entry?.disabledMcpServers;
+		return Array.isArray(list) && list.includes(MCP_SERVER);
 	} catch {
 		return false;
 	}
@@ -1083,7 +1089,9 @@ function logToolOff($) {
 }
 
 async function noteToolOff($) {
+	const seen = toolSeen;
 	const switchedOff = await mcpSwitchedOff($);
+	if (seen !== toolSeen) return; // found meanwhile (a Process press, the timer)
 	const changed = !toolOff || toolOff.switchedOff !== switchedOff;
 	toolOff = { switchedOff };
 	if (changed) toolOffLogged = false;
@@ -1093,6 +1101,7 @@ async function noteToolOff($) {
 }
 
 function noteToolOn($) {
+	toolSeen++;
 	toolPoll?.cancel?.();
 	toolPoll = null;
 	if (!toolOff) return;
@@ -1121,7 +1130,7 @@ async function hasSendTool($) {
 async function checkSendTool($) {
 	const has = await hasSendTool($);
 	if (has === true) noteToolOn($);
-	else if (has === false) await noteToolOff($);
+	else if (has === false && !toolOff) await noteToolOff($); // still missing: nothing new to read
 }
 
 async function registerSendTool($) {
@@ -1665,6 +1674,7 @@ export function register(on) {
 			autoTurns = 0;
 			if (paused) {
 				paused = false;
+				pausedForTool = false;
 				redraw($);
 				void deliver($).catch(() => {});
 			}
