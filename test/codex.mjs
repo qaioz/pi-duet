@@ -729,7 +729,7 @@ async function joinFileTests() {
 		return { s, folder, path, start, prompt, stop, status: async () => (await s.call("duet_status", {}, { id: `${tag}-${Date.now()}`, folder })).text, left: () => (existsSync(path) ? readFileSync(path, "utf8").trim() : "(gone)") };
 	};
 	const fileFor = (room, extra = {}) => (folder) => ({ agent: "codex", room, name: "gaioz", relay: SERVER, cwd: `${folder}/`, pcwd: folder, at: Math.floor(Date.now() / 1000), ...extra });
-	const question = (room, folder) => `Join ${room} as gaioz? · ${folder} · relay ${SERVER}`;
+	const question = (room, folder) => `Join ${room} as gaioz? · relay ${SERVER} · ${folder.length > 60 ? "…" + folder.slice(-59) : folder}`; // the folder capped at 60, its end kept
 
 	// SessionStart takes it and says so; the user's prompt shows the form; Join joins.
 	const r1 = freshRoom();
@@ -748,7 +748,7 @@ async function joinFileTests() {
 		`${a.start.systemMessage}; before the form: ${aSt0.slice(0, 30)}; file: ${a.left()}`,
 	);
 	check(
-		"Codex plugin: the next prompt shows the form 'duet · Join <room> as <name>? · <folder> · relay <host>' (Join / Ignore); Join joins in ask",
+		"Codex plugin: the next prompt shows the form 'duet · Join <room> as <name>? · relay <host> · <folder>' (Join / Ignore); Join joins in ask",
 		aAsk.params.message === `duet · ${question(r1, a.folder)}` && JSON.stringify(aAsk.params.requestedSchema.properties.answer.enum) === '["Join","Ignore"]' &&
 			aOut.systemMessage === `duet: joined "${r1.slice(0, 4)}…" as gaioz · ask` && aOut.hookSpecificOutput?.additionalContext?.includes("mode: ask") && aSt.includes("· connected"),
 		`form: ${JSON.stringify(aAsk.params.message)}; ${aOut.systemMessage}; ${aSt.slice(0, 60)}`,

@@ -33,7 +33,10 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 	on("session.id", () => ({ value: "sess-1" }));
 	on("session.surfaces", () => ({ value: opts.interactive === false ? [] : ["terminal"] }));
 	// The tools Claude can call: what this mod registered (opts.dropTool: one Claude Code lost).
-	on("tool.list", () => ({ value: did.tools.filter((t) => !(did as any).dropTool).map((t) => ({ name: `mcp__duet__${t}`, description: "", mcp: true })) }));
+	on("tool.list", async () => {
+		await (did as any).listGate; // a test may hold $.tool.list open (a slow answer from Claude Code)
+		return { value: did.tools.filter((t) => !(did as any).dropTool).map((t) => ({ name: `mcp__duet__${t}`, description: "", mcp: true })) };
+	});
 	on("session.cwd", () => ({ value: CWD }));
 	// gate 2 waits in short blocking processes (`sleep`, else `ping`, else PowerShell). A command in
 	// opts.missing can't start here, as on native Windows where the PATH has no `sleep`.
@@ -1346,9 +1349,11 @@ test("a room's saved history is capped in bytes, not characters: non-ASCII text 
 	const { did, clock, start } = world(on, { store: { ["history:" + key]: big } });
 	await $.session.start(start());
 	await join($, clock, "test-room-90 gaioz");
+	// Leave only once joined (a slow join under load made /duet off a no-op: the history was never saved).
+	await until(clock, () => did.logs.some((l) => l.startsWith("joined test-room-90 as gaioz")));
 	await $.command.run({ command: "duet", args: "off", origin: USER } as any);
 	const size = () => new TextEncoder().encode(JSON.stringify(did.store.get("history:" + key))).length;
-	await until(clock, () => size() <= 512 * 1024);
+	for (let k = 0; k < 5 && size() > 512 * 1024; k++) await until(clock, () => size() <= 512 * 1024);
 	const saved: any[] = did.store.get("history:" + key) as any;
 	const bytes = size();
 	expect(bytes).toBeLessThanOrEqual(512 * 1024);
@@ -1383,7 +1388,7 @@ test("join file: taken on session.start: emptied, the card asks, nothing joins u
 	expect(did.fs.get(JOIN_FILE)).toBe("{}");
 	expect(did.posts.length).toBe(0);
 	const card = await bandText($);
-	expect(card).toContain("Join test-room-80 as nika? · /work/repo · relay http://127.0.0.1:18080");
+	expect(card).toContain("Join test-room-80 as nika? · relay http://127.0.0.1:18080 · /work/repo");
 	expect(card).toContain('"join-offer"');
 	expect(card).toContain('"join-ignore"');
 	await press($, clock, "join-offer");
@@ -1517,7 +1522,7 @@ test("join file: after a reload in a room, one pasted since shows the card (no s
 	expect(did.logs).not.toContain("joined test-room-85 as nika");
 	await $.command.run({ command: "duet", args: "status", origin: USER } as any);
 	expect(did.logs.at(-1)).toMatch(/test-room-84 · you are gaioz$/);
-	expect(await bandText($)).toContain("Join test-room-85 as nika? · /work/repo · relay http://127.0.0.1:18080 · leaves test-room-84");
+	expect(await bandText($)).toContain("Join test-room-85 as nika? · relay http://127.0.0.1:18080 · /work/repo · leaves test-room-84");
 	await press($, clock, "join-offer");
 	await until(clock, () => did.logs.includes("joined test-room-85 as nika"));
 	await $.command.run({ command: "duet", args: "status", origin: USER } as any);
@@ -1566,7 +1571,7 @@ test("join file: from a subfolder (the shell cd'd) it is offered on start or rel
 	await $.session.start(start()); // /reload-plugins
 	await until(clock, () => did.fs.get(JOIN_FILE) === "{}");
 	await settle(clock, 20);
-	expect(await bandText($)).toContain("Join test-room-88 as nika? · /work/repo/sub");
+	expect(await bandText($)).toContain("Join test-room-88 as nika? · relay http://127.0.0.1:18080 · /work/repo"); // the window's own folder
 	await press($, clock, "join-offer");
 	await until(clock, () => did.logs.includes("joined test-room-88 as nika"));
 });
@@ -1629,4 +1634,77 @@ test("send tool: missing when the user presses Process: registered again; still 
 	await until(clock, () => did.submits.length > 0);
 	expect(did.submits[0]).toContain("what is 3+3?");
 	did.feeding = false;
+});
+
+test("join file: the card shows this window's folder, not the file's cwd, and the relay before it (PR #34 review)", async ($, on) => {
+	const { did, clock, start } = world(on);
+	did.fs.set(JOIN_FILE, joinFile({ room: "test-room-91", pcwd: CWD, cwd: CWD + "-the-one-you-trust" + "/sub".repeat(40), relay: "https://evil.example" }));
+	await $.session.start(start());
+	await until(clock, () => did.fs.get(JOIN_FILE) === "{}");
+	await settle(clock, 20);
+	expect(await bandText($)).toContain(`Join test-room-91 as nika? · relay evil.example · ${CWD}"`);
+});
+
+test("cards: for a moment after the Join card and a room card replace each other, 1 and 2 do nothing (PR #34 review)", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-92 gaioz");
+	await until(clock, () => did.logs.includes("joined test-room-92 as gaioz"));
+	did.fs.set(JOIN_FILE, joinFile({ room: "test-room-93" }));
+	await $.session.start(start()); // /reload-plugins in the room: the Join card
+	await until(clock, () => did.fs.get(JOIN_FILE) === "{}");
+	await settle(clock, 20);
+	expect(await bandText($)).toContain("Join test-room-93");
+	// A request arrives: its card replaces the Join card. A 1 at once was meant for Join: nothing happens.
+	did.push(msg("run the tests"));
+	await settle(clock, 4);
+	await press($, clock, "take");
+	expect(duetSubmits(did).length).toBe(0);
+	expect(did.toasts.at(-1)).toMatch(/card just changed/);
+	await clock.advance(700);
+	await press($, clock, "take");
+	expect(duetSubmits(did).length).toBe(1);
+	await duetTurn($, did, clock, "t1");
+	await $.turn.complete(done("t1"));
+	await settle(clock, 10);
+	// And back: the Join card returns under the cursor; a 1 at once doesn't join.
+	await bandText($);
+	expect(await bandText($)).toContain("Join test-room-93");
+	await press($, clock, "join-offer");
+	await settle(clock, 10);
+	expect(did.logs).not.toContain("joined test-room-93 as nika");
+	await clock.advance(700);
+	await press($, clock, "join-offer");
+	await until(clock, () => did.logs.includes("joined test-room-93 as nika"));
+});
+
+test("gate 1: presses while the send tool is being checked don't start the request twice or decline it too (PR #34 review)", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-94 gaioz");
+	did.push(msg("one request"));
+	await settle(clock);
+	let open!: () => void;
+	(did as any).listGate = new Promise<void>((r) => (open = r));
+	await press($, clock, "take");
+	await press($, clock, "take");
+	await press($, clock, "ignore");
+	open();
+	(did as any).listGate = null;
+	await settle(clock, 10);
+	expect(duetSubmits(did).length).toBe(1);
+	expect(did.posts.filter((p: any) => p.body?.kind === "note" && p.body?.note === "declined").length).toBe(0);
+	// A leave while the check waits: nothing starts.
+	await duetTurn($, did, clock, "t1");
+	await $.turn.complete(done("t1"));
+	await settle(clock, 10);
+	did.push(msg("second request"));
+	await settle(clock);
+	(did as any).listGate = new Promise<void>((r) => (open = r));
+	await press($, clock, "take");
+	await $.command.run({ command: "duet", args: "off", origin: USER } as any);
+	open();
+	(did as any).listGate = null;
+	await settle(clock, 10);
+	expect(duetSubmits(did).length).toBe(1);
 });

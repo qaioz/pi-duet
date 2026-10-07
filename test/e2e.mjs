@@ -381,7 +381,7 @@ async function printModeStaysOut(fake) {
 
 // The site's prompt writes ~/.duet/join.json and the user types /reload: pi takes it at start, and
 // polls while not in a room. Only a fresh file for pi in this folder is taken, and taking it never
-// joins: pi's confirm asks "Join <room> as <name>? · <folder>"; yes joins, no drops it (file gone).
+// joins: pi's confirm asks "Join <room> as <name>? · [relay <host> · ]<folder>"; yes joins, no drops it (file gone).
 async function joinFile() {
 	const agentDir = join(ROOT, "joinfile-agent");
 	rmSync(agentDir, { recursive: true, force: true }); // no saved room
@@ -411,8 +411,8 @@ async function joinFile() {
 	await until(() => confirms(a).length > 0, 20_000, "the confirm").catch(() => {});
 	await sleep(3000);
 	check(
-		"join file: pi asks first (its confirm: 'Join <room> as <name>? · <folder>'); no joins nothing and the file is gone",
-		confirms(a)[0]?.message === `Join ${declined.room} as jo? · ${cwd} · relay ${SERVER}` && !statusOf(a) && !left() && savedRoom() !== declined.room,
+		"join file: pi asks first (its confirm: 'Join <room> as <name>? · relay <host> · <folder>'); no joins nothing and the file is gone",
+		confirms(a)[0]?.message === `Join ${declined.room} as jo? · relay ${SERVER} · ${cwd.length > 60 ? "…" + cwd.slice(-59) : cwd}` && !statusOf(a) && !left() && savedRoom() !== declined.room,
 		`confirm ${JSON.stringify(confirms(a)[0]?.message)}; status ${JSON.stringify(statusOf(a))}; file left: ${left()}; saved room: ${savedRoom() === declined.room ? "the file's" : "none"}`,
 	);
 	await a.stop();

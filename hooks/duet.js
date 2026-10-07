@@ -827,18 +827,36 @@ function firstGroup() {
 }
 
 // Gate 1: a press acts at once. "take" (Process), "take-send" (Process and send), "ignore".
+let choosing = false; // a gate-1 press is checking the send tool: a second press waits its turn
 async function choose($, action) {
+	if (choosing) return;
 	const envs = firstGroup();
 	if (!envs.length || !room) return;
+	const r = room;
 	const take = action === "take" || action === "take-send";
 	if (take && busyWithPeer()) {
 		$.ui.toast("duet: busy with the last request");
 		return;
 	}
 	// No send tool here: Claude would have no way to answer but another tool. Keep the request waiting.
-	if (take && !(await sendToolReady($))) {
-		$.ui.toast(`duet: Claude has no ${SEND_TOOL} tool in this session · /reload-plugins, then Process again`);
-		return;
+	if (take) {
+		choosing = true;
+		let ready = false;
+		try {
+			ready = await sendToolReady($);
+		} finally {
+			choosing = false;
+		}
+		if (!ready) {
+			$.ui.toast(`duet: Claude has no ${SEND_TOOL} tool in this session · /reload-plugins, then Process again`);
+			return;
+		}
+		// The check waited: a leave, another press or a turn may have come in meanwhile.
+		if (room !== r || !envs.every((e) => queue.includes(e))) return;
+		if (busyWithPeer()) {
+			$.ui.toast("duet: busy with the last request");
+			return;
+		}
 	}
 	queue = queue.filter((e) => !envs.includes(e));
 	if (take) {
@@ -1127,6 +1145,32 @@ function rowsFor(text, columns) {
 	return String(text).split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / w)), 0);
 }
 
+// The join card and the room's cards share hotkeys 1 and 2, and either can replace the other between
+// two presses (a request arrives under a Join card, or a Join card shows once the last request is
+// settled). For ARM_MS after such a switch their keys do nothing, so a press meant for the card that
+// just went never lands on the new one.
+const ARM_MS = 600;
+let lastKeyCard = ""; // "join" | "room": the last card with keys drawn
+let keysArmed = true;
+let armTimer = null;
+function noteKeys($, kind) {
+	if (kind === lastKeyCard) return;
+	const switched = lastKeyCard !== "";
+	lastKeyCard = kind;
+	if (!switched) return;
+	keysArmed = false;
+	armTimer?.cancel?.();
+	armTimer = $.clock.after(ARM_MS, () => {
+		keysArmed = true;
+		armTimer = null;
+	});
+}
+const armed = ($) => {
+	if (keysArmed) return true;
+	$.ui.toast("duet: the card just changed · press again");
+	return false;
+};
+
 function drawCard($, e) {
 	const { Box, Text, Button } = $.ui.resolve(e);
 	const frame = (color, children) => Box({ flexDirection: "column", borderStyle: "round", borderColor: color, paddingX: 1, children });
@@ -1134,22 +1178,25 @@ function drawCard($, e) {
 	// A join file taken: the user's own press joins. Under any card of the room this window is in.
 	const offerCard = () =>
 		joinOffer &&
+		(noteKeys($, "join"), true) &&
 		frame(BLUE, [
-			Text({ bold: true, children: [`${oneLine(joinOffer.question)}${room ? ` · leaves ${oneLine(room.code)}` : ""}`] }),
+			// Not cut to oneLine's 200: the relay must stay on the card (joinQuestion caps the folder itself).
+			Text({ bold: true, children: [`${sanitize(joinOffer.question, 1000).replace(/\n/g, " ")}${room ? ` · leaves ${oneLine(room.code)}` : ""}`] }),
 			buttons([
-				Button({ key: "join-offer", label: "Join", hotkey: "1", plain: true, onPress: () => answerJoinOffer($, true) }),
-				Button({ key: "join-ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => answerJoinOffer($, false) }),
+				Button({ key: "join-offer", label: "Join", hotkey: "1", plain: true, onPress: () => armed($) && answerJoinOffer($, true) }),
+				Button({ key: "join-ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => armed($) && answerJoinOffer($, false) }),
 			]),
 		]);
 	if (!room) return offerCard() || null;
 	// Gate 2 first: Claude's tool call is waiting on it.
 	if (outbox.length) {
 		const item = outbox[0];
+		noteKeys($, "room");
 		const more = outbox.length > 1 ? ` · +${outbox.length - 1}` : "";
 		const title = Text({ bold: true, children: [`Send to ${oneLine(item.to)}? · full reply${more}`] });
 		const keys = buttons([
-			Button({ key: "send", label: "Send", hotkey: "1", plain: true, onPress: () => decide($, item, "send") }),
-			Button({ key: "dont-send", label: "Don't send", hotkey: "2", plain: true, onPress: () => decide($, item, "drop") }),
+			Button({ key: "send", label: "Send", hotkey: "1", plain: true, onPress: () => armed($) && decide($, item, "send") }),
+			Button({ key: "dont-send", label: "Don't send", hotkey: "2", plain: true, onPress: () => armed($) && decide($, item, "drop") }),
 		]);
 		const body = textRows(Text, item.text, "r");
 		// A bare digit presses only Buttons inside the band's window: a reply taller than the band
@@ -1168,6 +1215,7 @@ function drawCard($, e) {
 	if (queue.length && autoActive()) return frame(AMBER, [Text({ dimColor: true, children: [`${queue.length} waiting · auto`] })]);
 	if (queue.length) {
 		// Gate 1.
+		noteKeys($, "room");
 		const group = firstGroup();
 		const env = group[0];
 		const via = viaLabel(peers.get(env.from)?.via);
@@ -1186,10 +1234,10 @@ function drawCard($, e) {
 			],
 		});
 		const keys = buttons([
-			Button({ key: "take", label: "Process", hotkey: "1", plain: true, onPress: () => void choose($, "take").catch(() => {}) }),
-			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
+			Button({ key: "take", label: "Process", hotkey: "1", plain: true, onPress: () => armed($) && void choose($, "take").catch(() => {}) }),
+			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => armed($) && void choose($, "ignore").catch(() => {}) }),
 			// 3, not 2: a habit press of 2 (Ignore here, Don't send on the reply card) must never skip gate 2.
-			Button({ key: "take-send", label: "Process and send", hotkey: "3", plain: true, onPress: () => void choose($, "take-send").catch(() => {}) }),
+			Button({ key: "take-send", label: "Process and send", hotkey: "3", plain: true, onPress: () => armed($) && void choose($, "take-send").catch(() => {}) }),
 		]);
 		// As gate 2: a request taller than the band keeps its keys under the title, inside the window.
 		const rows = group.reduce((n, g, i) => n + rowsFor(g.text, e.props?.bodyColumns ?? 80) + (g.reLine ? 1 : 0) + (i > 0 ? 1 : 0), 0);

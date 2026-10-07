@@ -77,16 +77,21 @@ export function readJoinFile(text, agent, folder, nowMs, nested = false) {
 	if (!sameFolder([j.cwd, j.pcwd], folder, nested)) return null;
 	const relay = typeof j.relay === "string" ? j.relay.replace(/\/+$/, "") : "";
 	if (!isRoomCode(j.room) || !isName(j.name) || isPlaceholderName(j.name) || !isRelayUrl(relay)) return null;
-	return { take: { room: j.room, name: j.name, relay, folder: typeof j.cwd === "string" && j.cwd ? j.cwd : j.pcwd } };
+	// The folder shown is this window's own: the file's cwd is free text, and only one of cwd/pcwd matched.
+	return { take: { room: j.room, name: j.name, relay, folder } };
 }
 
 // What the user is asked before a join file joins (every client): "Join <room> as <name>? · <folder>",
-// plus "· relay <host>" when it isn't duet's own relay. The folder with the home folder as ~.
+// with "· relay <host>" before the folder when it isn't duet's own relay. The relay is never cut; the
+// folder (the window's own, home as ~) is one line, its end kept, at most FOLDER_MAX characters.
+const FOLDER_MAX = 60;
 export const DUET_RELAY = "https://duet.gaioz.online";
 export function joinQuestion({ room, name, relay, folder }, home = "") {
 	let where = String(folder ?? "").replace(/[\\/]+$/, "") || "/";
 	const h = String(home ?? "").replace(/[\\/]+$/, "");
 	if (h && (where === h || where.startsWith(h + "/") || where.startsWith(h + "\\"))) where = "~" + where.slice(h.length);
+	where = where.replace(/\s+/g, " ");
+	if (where.length > FOLDER_MAX) where = "…" + where.slice(-(FOLDER_MAX - 1));
 	let relayHost = "";
 	if (relay && relay !== DUET_RELAY) {
 		try {
@@ -96,7 +101,7 @@ export function joinQuestion({ room, name, relay, folder }, home = "") {
 		}
 		if (relay.startsWith("http://")) relayHost = "http://" + relayHost;
 	}
-	return cleanText(`Join ${room} as ${name}? · ${where}${relayHost ? ` · relay ${relayHost}` : ""}`);
+	return cleanText(`Join ${room} as ${name}?${relayHost ? ` · relay ${relayHost}` : ""} · ${where}`).replace(/\s+/g, " ");
 }
 
 const hex = (bytes) => Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");

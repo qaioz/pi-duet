@@ -318,7 +318,7 @@ test("readJoinFile: own agent, fresh, this folder (cwd or pwd -P, trailing slash
 	const now = 2_000_000_000_000;
 	const file = (f = {}) => JSON.stringify({ agent: "claude-code", room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online", cwd: "/w/repo/", pcwd: "/real/repo", at: now / 1000 - 60, ...f });
 	const read = (f, folder = "/w/repo") => wire.readJoinFile(file(f), "claude-code", folder, now);
-	assert.deepEqual(read(), { take: { room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online", folder: "/w/repo/" } });
+	assert.deepEqual(read(), { take: { room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online", folder: "/w/repo" } }); // the window's own folder, not the file's cwd
 	assert.ok(read({}, "/w/repo//").take);
 	assert.ok(read({}, "/real/repo").take);
 	assert.equal(read({ relay: "https://duet.gaioz.online/" }).take.relay, "https://duet.gaioz.online");
@@ -366,6 +366,27 @@ test("join file: Claude Code (wire.js) and Codex/pi (lock.js) take the same file
 	])
 		assert.equal(wire.joinQuestion(o, "/home/g"), lock.joinQuestion(o, "/home/g"));
 	assert.equal(lock.joinQuestion({ room: "r-1x", name: "nika", relay: "https://duet.gaioz.online", folder: "/home/g/proj/" }, "/home/g"), "Join r-1x as nika? · ~/proj");
-	assert.equal(lock.joinQuestion({ room: "r-1x", name: "nika", relay: "https://relay.example/p", folder: "/w/x" }, "/home/g"), "Join r-1x as nika? · /w/x · relay relay.example");
-	assert.equal(lock.joinQuestion({ room: "r-1x", name: "nika", relay: "http://10.0.0.5:8080", folder: "/w/x" }, "/home/g"), "Join r-1x as nika? · /w/x · relay http://10.0.0.5:8080");
+	assert.equal(lock.joinQuestion({ room: "r-1x", name: "nika", relay: "https://relay.example/p", folder: "/w/x" }, "/home/g"), "Join r-1x as nika? · relay relay.example · /w/x");
+	assert.equal(lock.joinQuestion({ room: "r-1x", name: "nika", relay: "http://10.0.0.5:8080", folder: "/w/x" }, "/home/g"), "Join r-1x as nika? · relay http://10.0.0.5:8080 · /w/x");
+});
+
+test("join file: the card shows the window's own folder, the relay before it, the folder capped to one line (PR #34 review)", async () => {
+	const lock = await import("../lock.js");
+	const now = 2_000_000_000_000;
+	const folder = "/home/u/work/app";
+	// pcwd matches; cwd is free text the file's writer chose.
+	const lie = { room: "amber-otter-4821-x7q2", name: "gaioz", relay: "https://evil.example", pcwd: folder, cwd: "/home/u/work/app-the-one-you-trust" + "/sub".repeat(30), at: now / 1000 - 5 };
+	const w = wire.readJoinFile(JSON.stringify({ ...lie, agent: "claude-code" }), "claude-code", folder, now);
+	assert.equal(w.take.folder, folder);
+	const l = lock.acceptJoin({ ...lie, agent: "codex", cwd: folder + "\n\n(relay: duet's own)\n\n\n\n" }, { agent: "codex", folder, now });
+	assert.equal(l.folder, folder);
+	for (const q of [wire.joinQuestion(w.take, "/home/u"), lock.joinQuestion(l, "/home/u")]) assert.equal(q, "Join amber-otter-4821-x7q2 as gaioz? · relay evil.example · ~/work/app");
+	// A real but long folder (or one with a newline in its name) is cut at its start, on one line; the relay stays whole.
+	const longHost = "https://" + "a".repeat(60) + ".evil.example";
+	for (const jq of [wire.joinQuestion, lock.joinQuestion]) {
+		const q = jq({ room: "r-1x", name: "nika", relay: longHost, folder: "/w/" + "deep/".repeat(40) + "x\ny" }, "/home/g");
+		assert.ok(q.startsWith(`Join r-1x as nika? · relay ${"a".repeat(60)}.evil.example · …`), q);
+		assert.ok(!/[\n\r]/.test(q) && q.endsWith("/x y"), q);
+		assert.ok(q.split(" · ").at(-1).length <= 60, q);
+	}
 });
