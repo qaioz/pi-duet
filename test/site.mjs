@@ -57,7 +57,7 @@ async function allCommands(page) {
 }
 
 // The prompts, word for word as the release-8 spec has them.
-const JOIN = (agent, relay) => `case "$PWD$(pwd -P)" in *'"'*|*'\\'*) echo 'duet: this folder path has a quote or backslash: use the terminal line instead' && false ;; esac && mkdir -p ~/.duet && printf '{"cwd":"%s","pcwd":"%s","agent":"${agent}","room":"{room}","name":"{name}","relay":"${relay}","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
+const JOIN = (agent, relay) => `case "$PWD$(pwd -P)" in *'"'*|*'\\'*|*[[:cntrl:]]*) echo 'duet: this folder path has a quote, backslash or control character: use the terminal line instead' && false ;; esac && mkdir -p ~/.duet && printf '{"cwd":"%s","pcwd":"%s","agent":"${agent}","room":"{room}","name":"{name}","relay":"${relay}","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
 const RUN = "Run this as one shell command:";
 const PROMPTS = (r, n, relay) =>
 	Object.fromEntries(
@@ -217,7 +217,7 @@ try {
 	try {
 		const line = after.claude.text.split("\n\n")[1];
 		const upto = line.slice(0, line.indexOf(" > ~/.duet/join.json") + " > ~/.duet/join.json".length);
-		for (const [k, dir] of Object.entries({ quote: 'x","relay":"https://evil.example","room":"evil-room', backslash: "x\\y" })) {
+		for (const [k, dir] of Object.entries({ quote: 'x","relay":"https://evil.example","room":"evil-room', backslash: "x\\y", newline: "x\ny", tab: "x\ty" })) {
 			const cwd = join(home, dir);
 			mkdirSync(cwd, { recursive: true });
 			rmSync(join(home, ".duet/join.json"), { force: true });
@@ -225,7 +225,7 @@ try {
 				execFileSync("sh", ["-c", upto], { cwd, env: { ...process.env, HOME: home, PWD: cwd }, stdio: "pipe" });
 				bad[k] = "ran";
 			} catch (e) {
-				bad[k] = `${String(e.stdout).includes("duet: this folder path has a quote or backslash") ? "stopped" : "failed"}${existsSync(join(home, ".duet/join.json")) ? " +file" : ""}`;
+				bad[k] = `${String(e.stdout).includes("duet: this folder path has a quote, backslash or control character") ? "stopped" : "failed"}${existsSync(join(home, ".duet/join.json")) ? " +file" : ""}`;
 			}
 		}
 		const printfOnly = upto.slice(upto.indexOf("mkdir -p ~/.duet"));
@@ -237,8 +237,8 @@ try {
 	}
 	rmSync(home, { recursive: true, force: true });
 	check(
-		"join file: a folder path with \" or \\ stops the command (nothing written); paths come first so a crafted one can't override relay/room",
-		bad.quote === "stopped" && bad.backslash === "stopped" && bad.lastWins === true,
+		"join file: a folder path with \", \\ or a control character stops the command (nothing written); paths come first so a crafted one can't override relay/room",
+		bad.quote === "stopped" && bad.backslash === "stopped" && bad.newline === "stopped" && bad.tab === "stopped" && bad.lastWins === true,
 		JSON.stringify(bad).replaceAll(room, "<room>"),
 	);
 	const now = Math.floor(Date.now() / 1000);
@@ -338,7 +338,7 @@ exit 0
 			vscodeJson?.name === "duet" && vscodeJson.args.join(" ") === `-y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}` &&
 			chat.goose[0].cmd === `goose session --with-extension "npx -y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}"` &&
 			notesFilled && /Nothing starts your agent by itself/.test(chatText) && /Process · Process and send · Ignore/.test(chatText) && /Send · Don't send/.test(chatText) &&
-			(SERVER === "https://duet.gaioz.online" || (/hosted server uses duet\.gaioz\.online/.test(chatText) && /duet\.mcpb uses duet\.gaioz\.online/.test(chatText))) && !/guard|fence/i.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && /Developer mode/.test(chatText) &&
+			(SERVER === "https://duet.gaioz.online" || (/hosted server uses duet\.gaioz\.online/.test(chatText) && /duet\.mcpb uses duet\.gaioz\.online/.test(chatText))) && !/guard|fence/i.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && !/Security and login/.test(chatText) &&
 			/Add custom MCP server/.test(chatText) && /Create as a plugin/.test(chatText) && /stays in the chat history/.test(chatText),
 		JSON.stringify(Object.fromEntries(Object.entries(chat).map(([k, v]) => [k, v.map((c) => c.cmd.replace(room, "<room>"))]))).slice(0, 400),
 	);

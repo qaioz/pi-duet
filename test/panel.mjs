@@ -288,9 +288,12 @@ async function localTests() {
 
 // ---------- hosted.js over HTTP ----------
 
-function hosted(env = {}) {
+// A free port first, so the server's PUBLIC_URL (where the panel's live stream goes) is this server.
+const freePort = () => new Promise((r) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => r(port)); }); });
+async function hosted(env = {}) {
+	const port = await freePort();
 	return new Promise((resolveP, reject) => {
-		const proc = spawn(process.execPath, [join(REPO, "hosted.js")], { env: { PATH: process.env.PATH, PORT: "0", DUET_SERVER: SERVER, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+		const proc = spawn(process.execPath, [join(REPO, "hosted.js")], { env: { PATH: process.env.PATH, PORT: String(port), PUBLIC_URL: `http://127.0.0.1:${port}`, DUET_SERVER: SERVER, ...env }, stdio: ["ignore", "pipe", "pipe"] });
 		procs.push(proc);
 		let out = "";
 		proc.stdout.on("data", (d) => {
@@ -471,8 +474,8 @@ async function hostedTests() {
 	ear.stop();
 	const meta = toPanel._meta?.["duet/join"] ?? {};
 	check(
-		"hosted: duet_room with room and name hands them to the panel (_meta duet/join, with a time and a one-time id) without joining (nothing reaches the room) or logging; a bad one: a clear refusal, no _meta",
-		meta.room === askedRoom && meta.name === "zura" && Math.abs(Date.now() - meta.at) < 60_000 && /^[0-9a-f]{16}$/.test(meta.id ?? "") && !toPanel.isError && !toPanel.content[0].text.includes(askedRoom) &&
+		"hosted: duet_room with room and name hands them to the panel's form (_meta duet/join) without joining (nothing reaches the room) or logging; the model is told the user clicks Join; a bad one: a clear refusal, no _meta",
+		meta.room === askedRoom && meta.name === "zura" && !toPanel.isError && !toPanel.content[0].text.includes(askedRoom) && /clicks Join/.test(toPanel.content[0].text) &&
 			badHosted.isError && /^Not joined · room code/.test(badHosted.content[0].text) && !badHosted._meta && badHostedName.isError && !badHostedName._meta &&
 			overheard.length === 0 && !h.logs().includes(askedRoom),
 		`heard in the room: ${overheard.length} · ${toPanel.content[0].text} / ${badHosted.content[0].text} / ${badHostedName.content[0].text}`,
@@ -946,16 +949,31 @@ addEventListener("message", async (ev) => {
 			await c.page.close();
 		}
 
-		// duet_room with a room and name (hosted): the panel fills its form and joins by itself.
+		// duet_room with a room and name (hosted): the panel fills its form; only the user's Join click joins.
 		{
 			const h2 = await hosted(); // its own server: the panels above use this address's rooms
 			const askedRoom = `t-${randomUUID()}`;
+			const overheard = [];
+			const ear = subscribe({ server: SERVER, topic: topicFor(askedRoom), onEnvelope: (e) => overheard.push(e) });
+			await sleep(800);
 			const result = await client(h2.url).model("duet_room", { room: askedRoom, name: "zura" });
-			const r = await open({ tool: { args: { room: askedRoom, name: "zura" }, result }, mcpUrl: `${h2.url}/mcp` });
+			// The panel from the same server its calls go to (its stream goes there too).
+			const src2 = (await client(h2.url).request("resources/read", { uri: "ui://duet/room" })).result.contents[0].text;
+			const r = await open({ tool: { args: { room: askedRoom, name: "zura" }, result }, mcpUrl: `${h2.url}/mcp`, src: src2 });
+			await r.panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
+			await sleep(2500);
+			const filled = [await r.panel.locator("#room").inputValue(), await r.panel.locator("#name").inputValue()];
+			const heardBefore = overheard.length;
+			await r.panel.locator("#join-btn").click();
 			await r.panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 }).catch(() => {});
 			const shownCode = await r.panel.locator("#sub .code").textContent().catch(() => "");
 			const sub = await r.panel.locator("#sub").textContent().catch(() => "");
-			check("browser: duet_room with room and name: the panel joins by itself", shownCode === askedRoom && sub.includes("zura") && !r.errors.length, `shown: ${JSON.stringify(sub)}; error: ${JSON.stringify(await r.panel.locator("#error").textContent())}; page errors: ${JSON.stringify(r.errors)}`);
+			ear.stop();
+			check(
+				"browser: duet_room with room and name fills the panel's form and joins nothing; the user's Join click joins",
+				filled[0] === askedRoom && filled[1] === "zura" && heardBefore === 0 && shownCode === askedRoom && sub.includes("zura") && !r.errors.length,
+				`form ${JSON.stringify(filled)}; heard in the room before the click: ${heardBefore}; shown after: ${JSON.stringify(sub)}; error: ${JSON.stringify(await r.panel.locator("#error").textContent())}; page errors: ${JSON.stringify(r.errors)}`,
+			);
 			// A second duet_room (e.g. a request from the other side asked the model for it) while in a room:
 			// the panel stays; after the user's Leave the new room is filled in, not joined.
 			const otherRoom = `t-${randomUUID()}`;
@@ -967,12 +985,12 @@ addEventListener("message", async (ev) => {
 			await r.panel.locator("#leave").click();
 			await r.panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 }).catch(() => {});
 			await sleep(1500);
-			const filled = [await r.panel.locator("#room").inputValue(), await r.panel.locator("#name").inputValue()];
+			const filled2 = [await r.panel.locator("#room").inputValue(), await r.panel.locator("#name").inputValue()];
 			const stillOut = await r.panel.locator("#join:not(.hidden)").count();
 			check(
 				"browser: a second duet_room while in a room doesn't move the panel; after Leave it is filled in, the user presses Join",
-				stayCode === askedRoom && /Still in this room/.test(stayErr) && !stayErr.includes(otherRoom) && filled[0] === otherRoom && filled[1] === "mallory" && stillOut === 1 && !r.errors.length,
-				`stayed in asked: ${stayCode === askedRoom}; note: ${JSON.stringify(stayErr)}; after Leave: filled other ${filled[0] === otherRoom} as ${filled[1]}, form shown ${stillOut}; page errors ${JSON.stringify(r.errors)}`,
+				stayCode === askedRoom && /Still in this room/.test(stayErr) && !stayErr.includes(otherRoom) && filled2[0] === otherRoom && filled2[1] === "mallory" && stillOut === 1 && !r.errors.length,
+				`stayed in asked: ${stayCode === askedRoom}; note: ${JSON.stringify(stayErr)}; after Leave: filled other ${filled2[0] === otherRoom} as ${filled2[1]}, form shown ${stillOut}; page errors ${JSON.stringify(r.errors)}`,
 			);
 			await r.page.close();
 			h2.proc.kill();
@@ -1210,6 +1228,364 @@ async function installTests() {
 	);
 }
 
+// ---------- release 9: annotations, the panel's live stream, no tool call on load ----------
+
+// Reads a /live stream: every state event until the server ends it (or ms pass).
+async function liveRead(base, token, ms = 3000, headers = {}) {
+	const ctl = new AbortController();
+	const timer = setTimeout(() => ctl.abort(), ms);
+	const events = [];
+	let status = 0, head = {};
+	try {
+		const r = await fetch(`${base}/live`, { method: "POST", headers: { "content-type": "text/plain", ...headers }, body: JSON.stringify({ token }), signal: ctl.signal });
+		status = r.status;
+		head = { acao: r.headers.get("access-control-allow-origin"), type: r.headers.get("content-type") };
+		if (r.ok) {
+			const dec = new TextDecoder();
+			let buf = "";
+			for await (const chunk of r.body) {
+				buf += dec.decode(chunk, { stream: true });
+				let cut;
+				while ((cut = buf.indexOf("\n\n")) >= 0) {
+					const ev = buf.slice(0, cut);
+					buf = buf.slice(cut + 2);
+					const d = ev.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
+					if (d) events.push(JSON.parse(d));
+				}
+			}
+		}
+	} catch {}
+	clearTimeout(timer);
+	return { status, head, events };
+}
+
+async function liveTests() {
+	// Annotations: every tool says what it does; none is destructive; duet_room is read-only on the hosted
+	// server (it joins nothing there) and not on the local one (a room in the call joins it).
+	const h = await hosted();
+	const a = client(h.url);
+	await a.request("initialize", { protocolVersion: "2025-06-18", capabilities: UI_CAPS, clientInfo: { name: "claude-ai", version: "1" } });
+	const tools = (await a.request("tools/list")).result.tools;
+	const desk = stdio("live-desk", { args: ["--folder="] });
+	await desk.init("claude-ai", UI_CAPS);
+	const localTools = (await desk.request("tools/list")).result.tools;
+	desk.stop();
+	const ann = (list) => list.filter((t) => t._meta?.ui).map((t) => `${t.name}:${t.annotations?.readOnlyHint ? "r" : "w"}${t.annotations?.destructiveHint === false ? "" : "!"}${t.title ? "" : "?"}`);
+	const by = (list, n) => list.find((t) => t.name === n);
+	check(
+		"annotations: every chat tool has a title and readOnlyHint/destructiveHint, none destructive; hosted duet_room is read-only, local duet_room is not; state and read are read-only",
+		[...tools, ...localTools.filter((t) => t._meta?.ui)].every((t) => t.title && typeof t.annotations?.readOnlyHint === "boolean" && t.annotations.destructiveHint === false) &&
+			by(tools, "duet_room").annotations.readOnlyHint === true && by(localTools, "duet_room").annotations.readOnlyHint === false &&
+			by(tools, "duet_room_state").annotations.readOnlyHint && by(tools, "duet_read").annotations.readOnlyHint && !by(tools, "duet_take").annotations.readOnlyHint && !by(tools, "duet_send").annotations.readOnlyHint,
+		`hosted ${ann(tools).join(" ")} · local ${ann(localTools).join(" ")}`,
+	);
+
+	// The panel declares the server's own origin (and nothing else) and gets the stream's URL; the card
+	// declares nothing; DUET_LIVE=0 declares nothing at all.
+	const panelRes = (await a.request("resources/read", { uri: "ui://duet/room" })).result.contents[0];
+	const off = await hosted({ DUET_LIVE: "0" });
+	const offRes = (await client(off.url).request("resources/read", { uri: "ui://duet/room" })).result.contents[0];
+	const offLive = await fetch(`${off.url}/live`, { method: "POST", body: "{}" });
+	const local = (await (async () => { const d = stdio("live-desk2", { args: ["--folder="] }); await d.init("claude-ai", UI_CAPS); const r = (await d.request("resources/read", { uri: "ui://duet/room" })).result.contents[0]; d.stop(); return r; })());
+	check(
+		"live: the hosted panel declares only its server's origin in connectDomains and knows /live; DUET_LIVE=0 and the local server declare none",
+		JSON.stringify(panelRes._meta.ui.csp) === JSON.stringify({ connectDomains: [h.url], resourceDomains: [] }) && panelRes.text.includes(JSON.stringify(`${h.url}/live`)) &&
+			JSON.stringify(offRes._meta.ui.csp.connectDomains) === "[]" && !offRes.text.includes("/live\"") && offLive.status === 404 &&
+			JSON.stringify(local._meta.ui.csp.connectDomains) === "[]" && !local.text.includes("/live\""),
+		`hosted ${JSON.stringify(panelRes._meta.ui.csp)}; off ${JSON.stringify(offRes._meta.ui.csp)} (/live ${offLive.status}); local ${JSON.stringify(local._meta.ui.csp)}`,
+	);
+	off.proc.kill();
+	const noUrl = await hosted({ PUBLIC_URL: "" });
+	const noUrlRes = (await client(noUrl.url).request("resources/read", { uri: "ui://duet/room" })).result.contents[0];
+	const noUrlLive = await fetch(`${noUrl.url}/live`, { method: "POST", body: "{}" });
+	check(
+		"live: a server without PUBLIC_URL offers no stream and its panel declares no domain (no token goes to duet's own server)",
+		JSON.stringify(noUrlRes._meta.ui.csp.connectDomains) === "[]" && !noUrlRes.text.includes("mcp-duet.gaioz.online") && noUrlLive.status === 404,
+		`csp ${JSON.stringify(noUrlRes._meta.ui.csp)}; /live ${noUrlLive.status}`,
+	);
+	noUrl.proc.kill();
+
+	// The stream: no token → 400; an unknown token → one "not in a room" event, then it ends; any origin.
+	const bad = await liveRead(h.url, "short");
+	const get = await fetch(`${h.url}/live`);
+	const unknown = await liveRead(h.url, randomUUID().replace(/-/g, "") + "q", 3000, { origin: "https://abc123.claudemcpcontent.com" });
+	check(
+		"live: a bad token is refused, GET is not allowed; an unknown seat gets one 'not in a room' event and the stream ends; any origin may read it (ACAO *)",
+		bad.status === 400 && get.status === 405 && unknown.status === 200 && unknown.events.length === 1 && unknown.events[0].inRoom === false && unknown.head.acao === "*" && /text\/event-stream/.test(unknown.head.type) &&
+			!!unknown.events[0].server && panelRes.text.includes(JSON.stringify(unknown.events[0].server)),
+		`bad ${bad.status}; GET ${get.status}; unknown ${unknown.status} ${JSON.stringify(unknown.events)} acao ${unknown.head.acao}`,
+	);
+
+	// A seat's stream carries exactly duet_room_state's state, and pushes a peer's request at once.
+	const room = `t-${randomUUID()}`;
+	const lev = peer(room, "lev");
+	await a.call("duet_room_join", { room, name: "maya" });
+	const reading = liveRead(h.url, a.token, 4000, { origin: "https://web-sandbox.oaiusercontent.com" });
+	await sleep(1200);
+	await lev.say("LIVE-REQ please check the build");
+	const got = await reading;
+	const viaTool = data(await a.call("duet_room_state"));
+	const last = got.events.at(-1) ?? {};
+	const keys = (o) => Object.keys(o).sort().join(",");
+	check(
+		"live: a seat's stream sends its state at once and again when a request arrives; the same fields as duet_room_state, never the room code",
+		got.status === 200 && got.events.length >= 2 && got.events[0].inRoom && !got.events[0].waiting.length && last.waiting?.[0]?.text === "LIVE-REQ please check the build" &&
+			keys(last) === keys(viaTool) && !JSON.stringify(got.events).includes(room),
+		`${got.events.length} events; first waiting ${got.events[0]?.waiting?.length}; last waiting ${JSON.stringify(last.waiting?.map((w) => w.text))}; keys same as the tool: ${keys(last) === keys(viaTool)}`,
+	);
+
+	// Joining another room with the same token (a new seat under the same key) keeps the stream going on
+	// the new seat: no "not in a room" (which once turned the stream off for good).
+	const roomB = `t-${randomUUID()}`;
+	const moving = liveRead(h.url, a.token, 4000);
+	await sleep(800);
+	await a.call("duet_room_join", { room: roomB, name: "mira" });
+	const moved = await moving;
+	check(
+		"live: joining another room with the same token keeps the stream on the new seat (no 'not in a room')",
+		moved.events.length >= 2 && moved.events.every((e) => e.inRoom) && moved.events[0].name === "maya" && moved.events.at(-1).name === "mira",
+		`events ${JSON.stringify(moved.events.map((e) => [e.inRoom, e.name]))}`,
+	);
+
+	// A fourth stream for one seat (four panels in one chat tab) pushes the oldest out, telling it so.
+	const four = [0, 1, 2, 3].map(async (i) => (await sleep(300 * i), liveRead(h.url, a.token, 2500)));
+	const fourGot = await Promise.all(four);
+	check(
+		"live: a fourth stream for one seat ends the oldest with an 'evicted' event (the panel then waits for a click); the others keep it",
+		fourGot[0].events.at(-1)?.evicted === true && fourGot.slice(1).every((g) => g.events.length >= 1 && g.events.every((e) => e.inRoom)),
+		`${fourGot.map((g) => JSON.stringify(g.events.map((e) => (e.evicted ? "evicted" : e.inRoom)))).join(" ")}`,
+	);
+
+	// Leave ends the stream with "not in a room"; the per-address cap answers 429.
+	const leaving = liveRead(h.url, a.token, 5000);
+	await sleep(800);
+	await a.call("duet_room_leave");
+	const left = await leaving;
+	const capped = await hosted({ DUET_LIVE_PER_IP: "1" });
+	const c1 = client(capped.url);
+	await c1.call("duet_room_join", { room: `t-${randomUUID()}`, name: "ana" });
+	const first = liveRead(capped.url, c1.token, 2500);
+	await sleep(500);
+	const second = await liveRead(capped.url, c1.token, 1500);
+	await first;
+	check(
+		"live: leaving ends the stream with 'not in a room'; over the per-address cap the stream is refused (the panel polls instead)",
+		left.events.at(-1)?.inRoom === false && left.events.length >= 2 && second.status === 429,
+		`after leave: ${JSON.stringify(left.events.map((e) => e.inRoom))}; second stream from one address: ${second.status}`,
+	);
+	capped.proc.kill();
+
+	// At the per-address cap, a seat's own fourth stream (its panel drawn again) evicts its oldest instead
+	// of being refused; another seat from that address is still refused.
+	const full = await hosted({ DUET_LIVE_PER_IP: "3" });
+	const f1 = client(full.url);
+	const f2 = client(full.url);
+	await f1.call("duet_room_join", { room: `t-${randomUUID()}`, name: "ana" });
+	await f2.call("duet_room_join", { room: `t-${randomUUID()}`, name: "ben" });
+	const three = [0, 1, 2].map(async (i) => (await sleep(200 * i), liveRead(full.url, f1.token, 3000)));
+	await sleep(900);
+	const own = liveRead(full.url, f1.token, 1500);
+	await sleep(300);
+	const other = await liveRead(full.url, f2.token, 1000);
+	const ownGot = await own;
+	const threeGot = await Promise.all(three);
+	check(
+		"live: at the per-address cap a seat's own redraw evicts its oldest stream (not 429); another seat from that address gets 429",
+		ownGot.status === 200 && threeGot[0].events.at(-1)?.evicted === true && other.status === 429,
+		`own 4th: ${ownGot.status}, oldest evicted: ${threeGot[0].events.at(-1)?.evicted === true}, other seat: ${other.status}`,
+	);
+	full.proc.kill();
+	lev.stop();
+
+	await liveBrowserTests(h);
+	h.proc.kill();
+}
+
+// The panel in Chromium with the stream: no tool call before the user's click; while streaming, no
+// polling; a host whose CSP blocks the stream gets polling, and the panel still works.
+async function liveBrowserTests(h) {
+	if (!existsSync(PW)) return check("live browser", true, `skipped: no playwright-core at ${PW}`);
+	const { chromium } = await import(PW);
+	// The host page proxies tools/call through its own origin (/mcp), so a CSP of connect-src 'self'
+	// blocks only the panel's stream to the duet server (the srcdoc frame inherits the page's CSP).
+	const hostPage = `<!doctype html><meta charset="utf-8"><body style="margin:0">
+<iframe id="f" sandbox="allow-scripts allow-same-origin" style="width:100%;height:700px;border:0;display:block"></iframe>
+<iframe id="f2" sandbox="allow-scripts allow-same-origin" style="width:100%;height:500px;border:0;display:block"></iframe>
+<script>
+window.calls = []; window.messages = [];
+addEventListener("message", async (ev) => {
+	const m = ev.data;
+	const reply = (r) => ev.source.postMessage({ jsonrpc: "2.0", id: m.id, ...r }, "*");
+	if (m.method === "ui/initialize") reply({ result: { protocolVersion: "2026-01-26", hostInfo: { name: "claude-ai", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline"] } } });
+	else if (m.method === "tools/call") {
+		window.calls.push(m.params.name);
+		const r = await fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: m.params }) }).then((r) => r.json());
+		reply(r.error ? { error: r.error } : { result: r.result });
+	} else if (m.method === "ui/message") { window.messages.push(m.params); reply({ result: {} }); }
+	else if (m.id !== undefined) reply({ result: {} });
+});
+</script>`;
+	const site = createServer(async (req, res) => {
+		if (req.url === "/mcp") {
+			let body = "";
+			for await (const c of req) body += c;
+			const r = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body });
+			return res.writeHead(r.status, { "content-type": "application/json" }).end(await r.text());
+		}
+		const csp = req.url.includes("strict") ? { "content-security-policy": "connect-src 'self'" } : {};
+		res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...csp }).end(hostPage);
+	});
+	await new Promise((r) => site.listen(0, "127.0.0.1", r));
+	const base = `http://127.0.0.1:${site.address().port}/`;
+	const html = (await client(h.url).request("resources/read", { uri: "ui://duet/room" })).result.contents[0].text;
+	const browser = await chromium.launch();
+	try {
+		for (const strict of [false, true]) {
+			const page = await browser.newPage({ viewport: { width: 400, height: 900 } });
+			const errors = [];
+			page.on("pageerror", (e) => errors.push(e.message));
+			await page.goto(base + (strict ? "strict" : ""));
+			await page.evaluate((src) => (document.getElementById("f").srcdoc = src), html);
+			const panel = page.frameLocator("#f");
+			await panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
+			await sleep(1500);
+			const onLoad = await page.evaluate(() => window.calls.slice());
+			const room = `t-${randomUUID()}`;
+			const kai = peer(room, "kai");
+			await panel.locator("#room").fill(room);
+			await panel.locator("#name").fill("lin");
+			await panel.locator("#join-btn").click();
+			await panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 });
+			await sleep(strict ? 1500 : 1000);
+			const mode = await panel.locator("html").getAttribute("data-live");
+			const before = (await page.evaluate(() => window.calls.length));
+			await kai.say("STREAM-REQ run the tests");
+			await panel.locator("#waiting .item").first().waitFor({ timeout: 15_000 });
+			const t0 = Date.now();
+			await sleep(9000);
+			const idle = await page.evaluate((n) => window.calls.slice(n), before);
+			const idleStates = idle.filter((n) => n === "duet_room_state").length;
+			if (!strict) {
+				check(
+					"live browser: opening the panel calls no tool (one host prompt, for duet_room, not two); in a room the stream keeps it current with no polling",
+					onLoad.length === 0 && mode === "on" && idleStates === 0 && !errors.length,
+					`tool calls on load: ${JSON.stringify(onLoad)}; data-live ${mode}; duet_room_state calls in ${Math.round((Date.now() - t0) / 1000)} s after the request: ${idleStates}; errors ${JSON.stringify(errors)}`,
+				);
+				// Process still works (gate 1 unchanged); the handed request leaves the panel through the stream.
+				await panel.locator("#waiting .item .btn").first().click();
+				await until(() => page.evaluate(() => window.messages.length), 10_000, "ui/message");
+				await panel.locator("#waiting .item").first().waitFor({ state: "detached", timeout: 10_000 });
+				const msg = await page.evaluate(() => window.messages[0].content[0].text);
+				// A second panel in the same chat (same tab: same token and seat) drawn now finds the room
+				// through the stream, without a tool call.
+				const callsBefore = await page.evaluate(() => window.calls.length);
+				await page.evaluate((src) => (document.getElementById("f2").srcdoc = src), html);
+				const two = page.frameLocator("#f2");
+				await two.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 });
+				const callsAfter = await page.evaluate((n) => window.calls.slice(n), callsBefore);
+				check(
+					"live browser: Process hands the framed request over on the click; a panel drawn again in the chat finds its room through the stream, calling no tool",
+					msg.startsWith("[duet] from kai") && msg.includes("STREAM-REQ") && callsAfter.filter((n) => n !== "duet_take").length === 0,
+					`message ${JSON.stringify(msg.slice(0, 50))}; tool calls by the redrawn panel: ${JSON.stringify(callsAfter)}`,
+				);
+			} else {
+				const shown = await panel.locator("#waiting .item .text").first().textContent();
+				check(
+					"live browser: a host whose CSP blocks the stream: the panel falls back to polling and still shows the request (and draws the join form with no tool call)",
+					onLoad.length === 0 && /^off:/.test(mode ?? "") && idleStates >= 1 && shown === "STREAM-REQ run the tests",
+					`tool calls on load: ${JSON.stringify(onLoad)}; data-live ${mode}; duet_room_state polls in 9 s: ${idleStates}; shown ${JSON.stringify(shown)}`,
+				);
+			}
+			kai.stop();
+			await page.close();
+		}
+		// A tab that joined before, whose seat the server has since dropped (idle, restart): the stream says
+		// so and the panel draws the join form, with no tool call.
+		{
+			const page = await browser.newPage({ viewport: { width: 400, height: 900 } });
+			await page.goto(base);
+			await page.evaluate(() => sessionStorage.setItem("duet-room", "t-gone-room-1234"));
+			await page.evaluate((src) => (document.getElementById("f").srcdoc = src), html);
+			const panel = page.frameLocator("#f");
+			await panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 });
+			await sleep(1500);
+			const calls = await page.evaluate(() => window.calls.slice());
+			const kept = await page.evaluate(() => sessionStorage.getItem("duet-room"));
+			check(
+				"live browser: a tab whose seat is gone (idle, restart): the stream's 'not in a room' draws the join form with no tool call, and the stale room is forgotten",
+				calls.length === 0 && kept === null,
+				`tool calls: ${JSON.stringify(calls)}; duet-room after: ${JSON.stringify(kept)}`,
+			);
+			await page.close();
+		}
+		// A tab that joined before, whose stream a host or proxy accepts but holds back with no error: after a
+		// short grace the panel asks once and shows the room (not 45 s of nothing until the silence check).
+		{
+			const page = await browser.newPage({ viewport: { width: 400, height: 900 } });
+			await page.goto(base);
+			await page.evaluate((src) => (document.getElementById("f").srcdoc = src), html);
+			const panel = page.frameLocator("#f");
+			const room = `t-${randomUUID()}`;
+			await panel.locator("#room").fill(room);
+			await panel.locator("#name").fill("lin");
+			await panel.locator("#join-btn").click();
+			await panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 });
+			// From now on every new /live request hangs: no answer, no error.
+			const held = [];
+			await page.route(`${h.url}/live`, (route) => { held.push(route); });
+			const n0 = await page.evaluate(() => window.calls.length);
+			const t0 = Date.now();
+			await page.evaluate((src) => (document.getElementById("f2").srcdoc = src), html);
+			const two = page.frameLocator("#f2");
+			await two.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 20_000 }).catch(() => {});
+			const took = Date.now() - t0;
+			const shown = await two.locator("#sub .code").textContent().catch(() => "");
+			const calls = await page.evaluate((n) => window.calls.slice(n), n0);
+			check(
+				"live browser: a held-back stream (no error) on a tab that joined before: after a short grace the panel asks once and shows the room",
+				held.length >= 1 && shown === room && calls.includes("duet_room_state") && took < 15_000,
+				`held streams ${held.length}; shown ${JSON.stringify(shown)} after ${Math.round(took / 1000)} s; calls ${JSON.stringify(calls)}`,
+			);
+			await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
+			// Leave: the seat would count toward the per-address room cap (3) of the checks below.
+			await panel.locator("#leave").click();
+			await panel.locator("#join:not(.hidden)").waitFor({ timeout: 10_000 }).catch(() => {});
+			await page.close();
+		}
+		// Room switch with the same token (as duet_room_join from a second panel): the panel keeps streaming
+		// (once, a "not in a room" here turned the stream off for good and the panel polled).
+		{
+			const page = await browser.newPage({ viewport: { width: 400, height: 900 } });
+			await page.goto(base);
+			await page.evaluate((src) => (document.getElementById("f").srcdoc = src), html);
+			const panel = page.frameLocator("#f");
+			await panel.locator("#room").fill(`t-${randomUUID()}`);
+			await panel.locator("#name").fill("lin");
+			await panel.locator("#join-btn").click();
+			await panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 });
+			await sleep(1000);
+			const token = await page.evaluate(() => sessionStorage.getItem("duet-panel"));
+			const c = client(h.url);
+			const n0 = await page.evaluate(() => window.calls.length);
+			await c.request("tools/call", { name: "duet_room_join", arguments: { token, room: `t-${randomUUID()}`, name: "lin2" } });
+			await panel.locator("#sub", { hasText: "lin2" }).waitFor({ timeout: 10_000 }).catch(() => {});
+			await sleep(6000);
+			const after = await page.evaluate((n) => window.calls.slice(n), n0);
+			const mode = await panel.locator("html").getAttribute("data-live");
+			const sub = await panel.locator("#sub").textContent();
+			check(
+				"live browser: the seat moves to another room under the same token: the panel follows it on the stream, no polling",
+				sub.includes("lin2") && mode === "on" && after.filter((n) => n === "duet_room_state").length === 0,
+				`sub ${JSON.stringify(sub)}; data-live ${mode}; calls after the move: ${JSON.stringify(after)}`,
+			);
+			await page.close();
+		}
+	} finally {
+		await browser.close();
+		site.close();
+	}
+}
+
 try {
 	rmSync(ROOT, { recursive: true, force: true });
 	await installTests();
@@ -1217,6 +1593,7 @@ try {
 	await hostedTests();
 	await presendTests();
 	await browserTests();
+	await liveTests();
 } catch (err) {
 	check("harness", false, err.stack);
 }

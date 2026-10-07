@@ -72,7 +72,7 @@ export function readJoinFile(text, agent, folder, nowMs, nested = false) {
 	if (age > JOIN_FRESH_S) return { clear: true };
 	if (age < -5 * 60 || j.agent !== agent) return null;
 	if (!sameFolder([j.cwd, j.pcwd], folder, nested)) return null;
-	if (!isRoomCode(j.room) || typeof j.name !== "string" || !j.name || isPlaceholderName(j.name) || (j.relay !== undefined && !isRelayUrl(j.relay))) return null;
+	if (!isRoomCode(j.room) || !isName(j.name) || isPlaceholderName(j.name) || (j.relay !== undefined && !isRelayUrl(j.relay))) return null;
 	return { take: { room: j.room, name: j.name, relay: j.relay } };
 }
 

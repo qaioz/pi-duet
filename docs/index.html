@@ -230,7 +230,7 @@ const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").replace(/^[_-]+/, "").
 // The folder paths go in raw: a path with " or \ stops the command (it would break the JSON), and they come
 // first, so whatever a folder name holds, JSON.parse keeps the real agent, room, name, relay and time (last wins).
 const joinFile = (agent) =>
-	`case "$PWD$(pwd -P)" in *'"'*|*'\\'*) echo 'duet: this folder path has a quote or backslash: use the terminal line instead' && false ;; esac && mkdir -p ~/.duet && printf '{"cwd":"%s","pcwd":"%s","agent":"${agent}","room":"{room}","name":"{name}","relay":"{relay}","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
+	`case "$PWD$(pwd -P)" in *'"'*|*'\\'*|*[[:cntrl:]]*) echo 'duet: this folder path has a quote, backslash or control character: use the terminal line instead' && false ;; esac && mkdir -p ~/.duet && printf '{"cwd":"%s","pcwd":"%s","agent":"${agent}","room":"{room}","name":"{name}","relay":"{relay}","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
 const RUN = "Run this as one shell command:";
 
 // Each case: [where it is typed, the command]. {room}, {name} and the relay are filled in. The first
@@ -338,7 +338,7 @@ If it failed, say which step failed instead.`,
 		prompt: {
 			where: "then say, in a new chat",
 			text: "Open duet: call duet_room with room {room} and name {name}.",
-			note: "The code stays in the chat history · private: say “open duet”, type it into the panel · already in a room: Leave, then Join",
+			note: "The panel opens with it filled in: click Join · the code stays in the chat history · private: say “open duet”, type it into the panel · already in a room: Leave, then Join",
 		},
 		cases: [
 			{
@@ -355,7 +355,7 @@ If it failed, say which step failed instead.`,
 					["connector URL", HOSTED],
 					["room code, the private way: into the duet panel", "{room}"],
 				],
-				note: "Customize → Connectors → Add custom connector · paste the URL · no sign-in · Team, Enterprise: an owner may have to allow it{hosted-relay}",
+				note: "Customize → Connectors → Add custom connector · name: duet · paste the URL · no sign-in · Claude asks before duet room: Always allow · Team, Enterprise: an owner may have to allow it{hosted-relay}",
 			},
 			{
 				key: "chatgpt",
@@ -364,7 +364,7 @@ If it failed, say which step failed instead.`,
 					["connector URL", HOSTED],
 					["room code, the private way: into the duet panel", "{room}"],
 				],
-				note: "Settings → Security and login → Developer mode (not every plan) · chatgpt.com/plugins → + → Add custom MCP server · paste the URL, no auth → Create as a plugin · install it from your plugins · new chat{hosted-relay}",
+				note: "ChatGPT on the web · chatgpt.com/plugins → + → Add custom MCP server (it replaced Developer mode) · name: duet · paste the URL, No authentication → I understand and want to continue → Create as a plugin · install it from your plugins · new chat{hosted-relay}",
 			},
 			{
 				key: "vscode",
