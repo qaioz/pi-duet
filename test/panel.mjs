@@ -1374,6 +1374,27 @@ async function liveTests() {
 		`after leave: ${JSON.stringify(left.events.map((e) => e.inRoom))}; second stream from one address: ${second.status}`,
 	);
 	capped.proc.kill();
+
+	// At the per-address cap, a seat's own fourth stream (its panel drawn again) evicts its oldest instead
+	// of being refused; another seat from that address is still refused.
+	const full = await hosted({ DUET_LIVE_PER_IP: "3" });
+	const f1 = client(full.url);
+	const f2 = client(full.url);
+	await f1.call("duet_room_join", { room: `t-${randomUUID()}`, name: "ana" });
+	await f2.call("duet_room_join", { room: `t-${randomUUID()}`, name: "ben" });
+	const three = [0, 1, 2].map(async (i) => (await sleep(200 * i), liveRead(full.url, f1.token, 3000)));
+	await sleep(900);
+	const own = liveRead(full.url, f1.token, 1500);
+	await sleep(300);
+	const other = await liveRead(full.url, f2.token, 1000);
+	const ownGot = await own;
+	const threeGot = await Promise.all(three);
+	check(
+		"live: at the per-address cap a seat's own redraw evicts its oldest stream (not 429); another seat from that address gets 429",
+		ownGot.status === 200 && threeGot[0].events.at(-1)?.evicted === true && other.status === 429,
+		`own 4th: ${ownGot.status}, oldest evicted: ${threeGot[0].events.at(-1)?.evicted === true}, other seat: ${other.status}`,
+	);
+	full.proc.kill();
 	lev.stop();
 
 	await liveBrowserTests(h);

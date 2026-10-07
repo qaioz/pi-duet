@@ -19,8 +19,8 @@ a room while you are in none. Once you are in a room, neither moves you: Leave, 
 | **VS Code** (Copilot agent mode) | `code --add-mcp '{"name":"duet","command":"npx","args":["-y","github:qaioz/pi-duet","--room","<room>","--name","<name>"]}'` |
 | **Goose** | `goose session --with-extension "npx -y github:qaioz/pi-duet --room <room> --name <name>"` |
 
-Name it `duet`: Claude shows that name on its prompts ("… from duet"); a room code as the name says
-nothing, and it sits in your connector list. Renaming later in Claude: Customize → Connectors → the
+Name it `duet`: the connector keeps the name you give it, and a room code as the name says nothing
+once that room is gone. Renaming later in Claude: Customize → Connectors → the
 connector → edit.
 
 Team, Enterprise, workspaces: an owner may have to allow custom connectors or custom MCP servers.

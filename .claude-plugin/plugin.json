@@ -1,6 +1,6 @@
 {
   "name": "duet",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Pair your Claude Code with another developer's coding agent (pi, Claude Code or Codex) through a shared room.",
   "author": {
     "name": "qaioz"

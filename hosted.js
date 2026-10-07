@@ -627,13 +627,14 @@ function liveStream(req, res, address) {
 			event(out);
 			return res.end();
 		}
+		// A panel drawn again in the same tab shares the token: the oldest of its streams gives way, told so
+		// (the panel then waits for the user's click instead of reopening and pushing the next one out).
+		// Done before the totals, so a seat's own redraw frees its slot rather than being refused.
+		const same = [...live].filter((l) => l.key === key);
+		if (same.length >= LIMIT.live.perSeat) same[0].end("evicted");
 		if (live.size >= LIMIT.live.all || [...live].filter((l) => l.address === address).length >= LIMIT.live.perAddress) {
 			return res.writeHead(429, { ...cors, "retry-after": "60", "content-type": "text/plain" }).end("too many live panels\n");
 		}
-		// A panel drawn again in the same tab shares the token: the oldest of its streams gives way, told so
-		// (the panel then waits for the user's click instead of reopening and pushing the next one out).
-		const same = [...live].filter((l) => l.key === key);
-		if (same.length >= LIMIT.live.perSeat) same[0].end("evicted");
 		res.writeHead(200, head);
 		let last = "";
 		let quiet = Date.now();

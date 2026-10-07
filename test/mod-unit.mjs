@@ -325,7 +325,7 @@ test("readJoinFile: own agent, fresh, this folder (cwd or pwd -P, trailing slash
 	assert.ok(read({ relay: undefined }).take);
 	assert.deepEqual(read({ at: now / 1000 - 31 * 60 }), { clear: true });
 	assert.deepEqual(read({ at: now / 1000 - 31 * 60, agent: "codex" }), { clear: true }); // stale: nobody takes it
-	for (const bad of [{ agent: "codex" }, { agent: undefined }, { at: now / 1000 + 600 }, { at: String(now / 1000) }, { room: "a;b" }, { room: "off" }, { name: "YOUR_NAME" }, { name: "" }, { name: 7 }, { relay: "ftp://x" }])
+	for (const bad of [{ agent: "codex" }, { agent: undefined }, { at: now / 1000 + 600 }, { at: String(now / 1000) }, { room: "a;b" }, { room: "off" }, { name: "YOUR_NAME" }, { name: "" }, { name: 7 }, { name: "a b" }, { name: "x".repeat(200) }, { name: "ni\u200bka" }, { relay: "ftp://x" }])
 		assert.equal(read(bad), null, JSON.stringify(bad));
 	assert.equal(read({}, "/w/other"), null);
 	assert.equal(read({ cwd: undefined, pcwd: undefined }), null);
