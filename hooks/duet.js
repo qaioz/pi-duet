@@ -29,7 +29,7 @@
 // validator refuses `$` passed to an imported function. wire.js is pure.
 import {
 	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
-	isName, isPlaceholderName, isRelayUrl, isRoomCode, newRoomCode, randomId, readJoinFile, sanitize, stripHidden, HIDDEN_MARK, sha256hex, timeOf, topicFor,
+	isName, isPlaceholderName, isRelayUrl, isRoomCode, joinQuestion, newRoomCode, randomId, readJoinFile, sanitize, stripHidden, HIDDEN_MARK, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
 const PANE = "duet";
@@ -74,6 +74,7 @@ let connError = "";
 let heartbeat = null;
 let joinPoll = null; // the join file's timer, while not in a room (interactive sessions only)
 let watchJoin = false; // this session looks for the join file (it can draw): again after a leave
+let joinOffer = null; // { room, name, relay, question }: a join file taken, waiting for 1 Join / 2 Ignore
 let heldCursor = null; // the newest resume point, saved once nothing received is still open
 const seen = new Set();
 const peers = new Map(); // name -> { via, at, left }
@@ -442,6 +443,13 @@ async function deliver($) {
 		redraw($);
 		return;
 	}
+	if (!(await sendToolReady($))) {
+		paused = true; // no way to answer: wait for the user, as at the cap
+		$.ui.toast(`duet: Claude has no ${SEND_TOOL} tool in this session · auto paused · /reload-plugins`);
+		redraw($);
+		return;
+	}
+	if (!autoActive() || !queue.length || busyWithPeer()) return;
 	autoTurns++;
 	await startPeerTurn($, queue.splice(0, BATCH_MAX));
 }
@@ -827,6 +835,11 @@ async function choose($, action) {
 		$.ui.toast("duet: busy with the last request");
 		return;
 	}
+	// No send tool here: Claude would have no way to answer but another tool. Keep the request waiting.
+	if (take && !(await sendToolReady($))) {
+		$.ui.toast(`duet: Claude has no ${SEND_TOOL} tool in this session · /reload-plugins, then Process again`);
+		return;
+	}
 	queue = queue.filter((e) => !envs.includes(e));
 	if (take) {
 		await startPeerTurn($, envs, action === "take-send");
@@ -913,19 +926,21 @@ async function openPane($) {
 
 // Back in the room after a restart, without asking: the folder remembers its room until /duet off.
 async function autoRejoin($) {
-	if (room || joinsInFlight || !(await canDraw($))) return;
+	if (room || joinsInFlight || joinOffer || !(await canDraw($))) return;
 	const rec = await $.store.get("room:" + cwd);
 	if (!rec?.code || room || joinsInFlight) return; // a join started while this looked
 	await join($, rec.code, rec.name, "ask", true, rec.relay);
 }
 
 // The website's prompt writes ~/.duet/join.json and the user types /reload-plugins (or, with duet
-// already loaded, nothing: the poll finds it). Taken once: emptied before joining, so no other window
-// takes it too. A file for another agent or folder is left alone; a stale one is emptied.
-// The newest thing the user did wins: after a reload the window first takes up its room again, then a
-// join file pasted since moves it (switch); a /duet typed after the prompt empties the file (dropJoinFile).
-async function takeJoinFile($, switchRoom = false, nested = false) {
-	if ((room && !switchRoom) || joinsInFlight) return false;
+// already loaded, nothing: the poll finds it). Taken once: emptied at once, so no other window takes
+// it too. A file for another agent or folder is left alone; a stale one is emptied. Taking it never
+// joins: it shows the card "Join <room> as <name>? · <folder>" (1 Join, 2 Ignore), so a room is joined
+// by the user's own hand even when something else wrote the file. The poll looks only while not in a
+// room; a reload in a room looks too (inRoomToo) and shows the same card, which says what it leaves.
+// A /duet typed after the prompt empties the file (dropJoinFile).
+async function takeJoinFile($, inRoomToo = false, nested = false) {
+	if ((room && !inRoomToo) || joinsInFlight) return false;
 	const path = `${duetDir}/join.json`;
 	let text;
 	try {
@@ -936,19 +951,34 @@ async function takeJoinFile($, switchRoom = false, nested = false) {
 		return false;
 	}
 	const got = readJoinFile(text, "claude-code", cwd, Date.now(), nested);
-	if (!got || (room && !switchRoom) || joinsInFlight) return false;
+	if (!got || (room && !inRoomToo) || joinsInFlight) return false;
 	try {
 		await $.fs.write(path, "{}");
 	} catch {
 		return false;
 	}
 	if (!got.take) return false;
-	void join($, got.take.room, got.take.name, "ask", false, got.take.relay).catch(() => {});
+	joinOffer = { room: got.take.room, name: got.take.name, relay: got.take.relay, question: joinQuestion(got.take, home) };
+	redraw($);
 	return true;
+}
+
+// The join card's press: 1 joins (ask mode), 2 drops it (the file is already gone either way).
+function answerJoinOffer($, yes) {
+	const o = joinOffer;
+	joinOffer = null;
+	redraw($);
+	if (!o) return;
+	if (yes) void join($, o.room, o.name, "ask", false, o.relay).catch(() => {});
+	else void autoRejoin($).catch(() => {}); // a start that showed the card first: back to the folder's room
 }
 
 // A /duet <room> or /duet new typed by the user: a join file for this window is older than it, so it goes.
 async function dropJoinFile($) {
+	if (joinOffer) {
+		joinOffer = null;
+		redraw($);
+	}
 	const path = `${duetDir}/join.json`;
 	try {
 		if (!(await $.fs.exists(path))) return;
@@ -959,6 +989,54 @@ async function dropJoinFile($) {
 function pollJoinFile($) {
 	joinPoll?.cancel?.();
 	joinPoll = $.clock.every(JOIN_POLL_MS, () => void takeJoinFile($).catch(() => {}));
+}
+
+// The send tool: registered first thing in session.start (before anything that could throw or wait),
+// and checked again before a request is handed to Claude. Seen on a Mac (2026-10-07, issue #33):
+// a session where Claude had no mcp__duet__send, and on Process it reached for another duet tool (a
+// claude.ai connector) instead. Never silently: a refusal is said.
+const SEND_SPEC = {
+	name: "send",
+	description:
+		"Send a message to the other agent(s) in your duet room (another developer's coding agent on their computer). " +
+		"Use it to answer a duet request, or when your user asks you to tell the other side something. " +
+		"Your text replies are seen only by your own user; this tool is the only way to reach the other side. " +
+		"Send one complete reply when you're done, not progress updates or several small messages; split only if it is over ~3.5 KB. " +
+		"In ask mode your user sees the whole reply and presses Send or Don't send; if they don't send it, don't send it again.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			text: { type: "string", description: "The message. Split longer content into several calls." },
+			to: { type: "string", description: "Recipient name, if the room has more than one other person." },
+		},
+		required: ["text"],
+	},
+};
+let sendToolError = "";
+async function registerSendTool($) {
+	try {
+		await $.tool.register(SEND_SPEC);
+		sendToolError = "";
+		return true;
+	} catch (err) {
+		sendToolError = String(err?.message ?? err);
+		return false;
+	}
+}
+// Is the send tool among the tools Claude can call now? Registered again if not. true when Claude
+// Code can't say (no tool list): the hand-over isn't held up on a guess.
+async function sendToolReady($) {
+	const has = async () => {
+		try {
+			return (await $.tool.list()).some((t) => t.name === SEND_TOOL);
+		} catch {
+			return null;
+		}
+	};
+	const first = await has();
+	if (first !== false) return true;
+	await registerSendTool($);
+	return (await has()) !== false;
 }
 
 // ---------- the send tool ----------
@@ -1053,7 +1131,17 @@ function drawCard($, e) {
 	const { Box, Text, Button } = $.ui.resolve(e);
 	const frame = (color, children) => Box({ flexDirection: "column", borderStyle: "round", borderColor: color, paddingX: 1, children });
 	const buttons = (list) => Box({ flexDirection: "row", columnGap: 3, flexWrap: "wrap", children: list });
-	if (!room) return null;
+	// A join file taken: the user's own press joins. Under any card of the room this window is in.
+	const offerCard = () =>
+		joinOffer &&
+		frame(BLUE, [
+			Text({ bold: true, children: [`${oneLine(joinOffer.question)}${room ? ` · leaves ${oneLine(room.code)}` : ""}`] }),
+			buttons([
+				Button({ key: "join-offer", label: "Join", hotkey: "1", plain: true, onPress: () => answerJoinOffer($, true) }),
+				Button({ key: "join-ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => answerJoinOffer($, false) }),
+			]),
+		]);
+	if (!room) return offerCard() || null;
 	// Gate 2 first: Claude's tool call is waiting on it.
 	if (outbox.length) {
 		const item = outbox[0];
@@ -1108,7 +1196,7 @@ function drawCard($, e) {
 		const fits = rows + 4 <= (e.props?.maxRows ?? 10);
 		return frame(AMBER, fits ? [head, ...body, keys] : [head, keys, ...body]);
 	}
-	return null;
+	return offerCard() || null;
 }
 
 // Two tabs: 1 History (read-only) and 2 Settings (c copy code, a ask/auto, l leave).
@@ -1250,6 +1338,7 @@ export function register(on) {
 			await $.command.register({ name: "duet", description: "Pair with another developer's agent: /duet new, /duet <room>, /duet off", argumentHint: "[new | <room> [name] [relay] | off | ask | auto | status]", immediate: true });
 		} catch {}
 		ready = new Promise((r) => (markReady = r));
+		if (!(await registerSendTool($))) $.ui.log(`duet: the send tool didn't register (${sanitize(sendToolError, 120)}) · /reload-plugins`);
 		cwd = e.cwd || (await $.session.cwd());
 		home = (await $.env.get("HOME")) || (await $.env.get("USERPROFILE")) || "";
 		duetDir = ((await $.env.get("DUET_HOME")) || `${home.replace(/[\\/]+$/, "")}/.duet`).replace(/\\/g, "/");
@@ -1308,6 +1397,7 @@ export function register(on) {
 			const owner = active ? await $.store.get(active.lockKey) : null;
 			if (active && owner?.token === active.token && !owner.released) {
 				token = active.token;
+				// A join file pasted since: the card, never a switch by itself.
 				void join($, active.code, active.name, active.mode, true, active.relay)
 					.then(() => takeJoinFile($, true, true))
 					.catch(() => {});
@@ -1321,25 +1411,6 @@ export function register(on) {
 			if (!room) pollJoinFile($);
 		}
 		markReady();
-		try {
-			await $.tool.register({
-				name: "send",
-				description:
-					"Send a message to the other agent(s) in your duet room (another developer's coding agent on their computer). " +
-					"Use it to answer a duet request, or when your user asks you to tell the other side something. " +
-					"Your text replies are seen only by your own user; this tool is the only way to reach the other side. " +
-					"Send one complete reply when you're done, not progress updates or several small messages; split only if it is over ~3.5 KB. " +
-					"In ask mode your user sees the whole reply and presses Send or Don't send; if they don't send it, don't send it again.",
-				inputSchema: {
-					type: "object",
-					properties: {
-						text: { type: "string", description: "The message. Split longer content into several calls." },
-						to: { type: "string", description: "Recipient name, if the room has more than one other person." },
-					},
-					required: ["text"],
-				},
-			});
-		} catch {}
 		return next(e);
 	});
 

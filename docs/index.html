@@ -149,7 +149,7 @@
 				<header><h2>3 · Talk to your agent</h2><p>“ask nika's agent to run the tests” · two gates</p></header>
 				<section>
 					<div class="gates">
-						<div class="gate"><b>Request in</b><div><kbd class="kbd">1</kbd> Process · <kbd class="kbd">2</kbd> Process and send · <kbd class="kbd">3</kbd> Ignore</div></div>
+						<div class="gate"><b>Request in</b><div><kbd class="kbd">1</kbd> Process · <kbd class="kbd">2</kbd> Ignore · <kbd class="kbd">3</kbd> Process and send</div></div>
 						<div class="gate"><b>Reply out</b><div><kbd class="kbd">1</kbd> Send · <kbd class="kbd">2</kbd> Don't send</div></div>
 					</div>
 					<p class="note">Ask, the default on Claude Code, Codex, chat apps · Process and send: that one reply skips Send · auto: no gates, 8 turns in a row max · pi: always auto</p>
@@ -243,9 +243,9 @@ const AGENTS = {
 
 ${joinFile("claude-code")} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(claude plugin test "$d" 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off here' ;; esac && rmdir "$d"
 
-Then reply with only: Type /reload-plugins to join (not needed if duet already said “joined”).
+Then reply with only: Type /reload-plugins, then press 1 to join (if duet's Join card already shows, just press 1).
 If it printed "duet: mods are off here", reply only: Claude Code's mods are off in this folder (disableAllHooks in its .claude settings or yours, or a switch by your organization or Anthropic), so duet can't run here yet. If it failed, say which step failed instead.`,
-			note: "Approve its one command · then /reload-plugins · Claude Code 2.1.287+ · the code stays in the session history: the terminal line keeps it out",
+			note: "Approve its one command · then /reload-plugins, press 1 to join · Claude Code 2.1.287+ · the code stays in the session history: the terminal line keeps it out",
 		},
 		cases: [
 			{
@@ -280,9 +280,9 @@ If it printed "duet: mods are off here", reply only: Claude Code's mods are off 
 
 ${joinFile("codex")} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet
 
-Then reply with only: Start a new Codex session in this folder and say "join duet" (first time: trust duet's hooks).
+Then reply with only: Start a new Codex session in this folder, say "join duet", then choose Join (first time: trust duet's hooks).
 If it failed, say which step failed instead.`,
-			note: "Approve its one command · then a new Codex session: say “join duet” · the code stays in the session history (Codex joins through its model either way)",
+			note: "Approve its one command · then a new Codex session: say “join duet”, choose Join · the code stays in the session history (Codex joins through its model either way)",
 		},
 		cases: [
 			{
@@ -298,7 +298,7 @@ If it failed, say which step failed instead.`,
 				note: "Writes ~/.codex/config.toml · every Codex window joins · trust the hooks · Node 20+ · undo: npx -y github:qaioz/pi-duet setup codex --off",
 			},
 		],
-		receive: "Ask (default) · a form before Codex sees a request: Process · Process and send · Ignore · a form before a reply leaves: Send · Don't send. “duet auto”: no gates. After Esc or under Full Access: say “check duet”.",
+		receive: "Ask (default) · a form before Codex sees a request: Process · Ignore · Process and send · a form before a reply leaves: Send · Don't send. “duet auto”: no gates. After Esc or under Full Access: say “check duet”.",
 	},
 	pi: {
 		prompt: {
@@ -307,9 +307,9 @@ If it failed, say which step failed instead.`,
 
 ${joinFile("pi")} && pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet
 
-Then reply with only: Type /reload to join.
+Then reply with only: Type /reload, then confirm to join.
 If it failed, say which step failed instead.`,
-			note: "Then /reload · the code stays in the session history: the terminal line keeps it out",
+			note: "Then /reload, confirm to join · the code stays in the session history: the terminal line keeps it out",
 		},
 		cases: [
 			{
@@ -355,7 +355,7 @@ If it failed, say which step failed instead.`,
 					["connector URL", HOSTED],
 					["room code, the private way: into the duet panel", "{room}"],
 				],
-				note: "Customize → Connectors → Add custom connector · name: duet · paste the URL · no sign-in · Claude asks before duet room: Always allow · Team, Enterprise: an owner may have to allow it{hosted-relay}",
+				note: "Customize → Connectors → Add custom connector · name it duet when you add it (to rename: Remove, then add it again) · paste the URL · no sign-in · Claude asks before duet room: Always allow · Team, Enterprise: an owner may have to allow it{hosted-relay}",
 			},
 			{
 				key: "chatgpt",
@@ -379,7 +379,7 @@ If it failed, say which step failed instead.`,
 				note: "Goose CLI draws no panels: say “check duet” · Goose Desktop: the npx -y … part as a command-line extension",
 			},
 		],
-		receive: "Request waits in the duet panel: Process · Process and send · Ignore. Reply waits in a duet card: Send · Don't send. Nothing starts your agent by itself.",
+		receive: "Request waits in the duet panel: Process · Ignore · Process and send. Reply waits in a duet card: Send · Don't send. Nothing starts your agent by itself.",
 	},
 };
 

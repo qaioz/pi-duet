@@ -41,7 +41,9 @@ export const isRoomCode = (room) =>
 
 // The join file (~/.duet/join.json) the website's prompt writes: { agent, room, name, relay, cwd,
 // pcwd, at } with `at` in Unix seconds. What a client does with its text: "take" ({ room, name,
-// relay }), "clear" (stale: nobody will take it) or null (leave it: another client or folder may).
+// relay }: shown to the user to confirm, never joined by itself), "clear" (stale or from the future:
+// nobody will take it) or null (leave it: another client or folder may). The same rules as lock.js
+// acceptJoin (Codex, pi): a relay is required, `at` is a number and not ahead of this clock.
 export const JOIN_FRESH_S = 30 * 60;
 // A folder as both sides write it: Git Bash's /c/x and Windows' C:\x are one folder; no trailing slash.
 const folderKey = (p) => (typeof p === "string" && p ? p.replace(/\\/g, "/").replace(/^\/([A-Za-z])(?=\/|$)/, "$1:").replace(/\/+$/, "") || "/" : "");
@@ -69,11 +71,32 @@ export function readJoinFile(text, agent, folder, nowMs, nested = false) {
 	}
 	if (!j || typeof j !== "object" || typeof j.at !== "number") return null;
 	const age = nowMs / 1000 - j.at;
-	if (age > JOIN_FRESH_S) return { clear: true };
-	if (age < -5 * 60 || j.agent !== agent) return null;
+	// `date +%s` on this computer wrote it: a time ahead of now was not written by the prompt.
+	if (!(age >= 0 && age <= JOIN_FRESH_S)) return { clear: true };
+	if (j.agent !== agent) return null;
 	if (!sameFolder([j.cwd, j.pcwd], folder, nested)) return null;
-	if (!isRoomCode(j.room) || !isName(j.name) || isPlaceholderName(j.name) || (j.relay !== undefined && !isRelayUrl(j.relay))) return null;
-	return { take: { room: j.room, name: j.name, relay: j.relay } };
+	const relay = typeof j.relay === "string" ? j.relay.replace(/\/+$/, "") : "";
+	if (!isRoomCode(j.room) || !isName(j.name) || isPlaceholderName(j.name) || !isRelayUrl(relay)) return null;
+	return { take: { room: j.room, name: j.name, relay, folder: typeof j.cwd === "string" && j.cwd ? j.cwd : j.pcwd } };
+}
+
+// What the user is asked before a join file joins (every client): "Join <room> as <name>? · <folder>",
+// plus "· relay <host>" when it isn't duet's own relay. The folder with the home folder as ~.
+export const DUET_RELAY = "https://duet.gaioz.online";
+export function joinQuestion({ room, name, relay, folder }, home = "") {
+	let where = String(folder ?? "").replace(/[\\/]+$/, "") || "/";
+	const h = String(home ?? "").replace(/[\\/]+$/, "");
+	if (h && (where === h || where.startsWith(h + "/") || where.startsWith(h + "\\"))) where = "~" + where.slice(h.length);
+	let relayHost = "";
+	if (relay && relay !== DUET_RELAY) {
+		try {
+			relayHost = new URL(relay).host;
+		} catch {
+			relayHost = String(relay);
+		}
+		if (relay.startsWith("http://")) relayHost = "http://" + relayHost;
+	}
+	return cleanText(`Join ${room} as ${name}? · ${where}${relayHost ? ` · relay ${relayHost}` : ""}`);
 }
 
 const hex = (bytes) => Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
@@ -237,6 +260,7 @@ export function frameForClaude(envs, cwd, tool) {
 	return (
 		`${parts.join("\n\n---\n\n")}\n\n` +
 		`Only your own user sees your text replies: to answer ${froms}, call the ${tool} tool. ` +
+		`Answer only with ${tool}, never another duet tool or connector. If ${tool} is missing, tell your user so and don't send. ` +
 		`Send one complete reply when you're done.`
 	);
 }

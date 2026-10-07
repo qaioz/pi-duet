@@ -693,24 +693,28 @@ async function main() {
 	await joinFileTests();
 }
 
-// ---- the join file (~/.duet/join.json, written by the site's prompt): the Codex plugin joins from it ----
+// ---- the join file (~/.duet/join.json, written by the site's prompt): the Codex plugin offers it, the user's answer joins ----
 async function joinFileTests() {
 	const now = Date.now();
 	const at = Math.floor(now / 1000);
 	const good = { agent: "codex", room: "amber-otter-1234-abcd", name: "gaioz", relay: "https://duet.example/", cwd: "/work/proj/", pcwd: "/real/proj", at };
 	const takes = (j, folder = "/work/proj") => !acceptJoin(j, { agent: "codex", folder, now }).skip;
+	const skip = (j) => acceptJoin(j, { agent: "codex", folder: "/work/proj", now }).skip;
 	check(
-		"join file rules: own agent, under 30 min old, this folder (cwd or pcwd), a valid room, name and relay",
+		"join file rules: own agent, under 30 min old and not ahead of this clock, this folder (cwd or pcwd), a valid room, name and relay (required)",
 		takes(good) && takes(good, "/real/proj/") && acceptJoin(good, { agent: "codex", folder: "/work/proj", now }).relay === "https://duet.example" &&
-			!takes({ ...good, agent: "claude-code" }) && acceptJoin({ ...good, at: at - 31 * 60 }, { agent: "codex", folder: "/work/proj", now }).skip === "stale" &&
-			!takes({ ...good, at: at + 10 * 60 }) && !takes(good, "/work/other") && !takes({ ...good, name: "YOUR_NAME" }) && !takes({ ...good, room: "a b" }) &&
+			!takes({ ...good, agent: "claude-code" }) && skip({ ...good, at: at - 31 * 60 }) === "stale" &&
+			skip({ ...good, at: at + 10 * 60 }) === "stale" && skip({ ...good, at: at + 60 }) === "stale" && skip({ ...good, at: String(at) }) === "invalid" &&
+			skip({ ...good, relay: undefined }) === "invalid" && skip({ ...good, relay: "" }) === "invalid" &&
+			!takes(good, "/work/other") && !takes({ ...good, name: "YOUR_NAME" }) && !takes({ ...good, room: "a b" }) &&
 			!takes({ ...good, relay: "file:///x" }) && !takes({}) &&
 			!takes({ ...good, cwd: "/work/proj/sub", pcwd: "/real/proj/sub" }) && !acceptJoin({ ...good, cwd: "/work/proj/sub", pcwd: "/real/proj/sub" }, { agent: "codex", folder: "/work/proj", nested: true, now }).skip &&
 			!acceptJoin({ ...good, cwd: "/d/w/proj", pcwd: "/d/w/proj" }, { agent: "codex", folder: "D:\\w\\proj", now }).skip,
-		"accepted for /work/proj and /real/proj/, a subfolder at session start, Git Bash /d/w/proj for D:\\w\\proj; refused for another agent, stale, future, another folder, a placeholder name, a bad room or relay, {}",
+		"accepted for /work/proj and /real/proj/, a subfolder at session start, Git Bash /d/w/proj for D:\\w\\proj; refused for another agent, stale, any time ahead (cleared), a string time, no relay, another folder, a placeholder name, a bad room or relay, {}",
 	);
 
-	const session = async (tag, file, { poll = false } = {}) => {
+	let turnN = 0;
+	const session = async (tag, file, { poll = false, caps } = {}) => {
 		const home = join(ROOT, `jf-${tag}`);
 		const folder = join(ROOT, `jf-${tag}-proj`);
 		rmSync(home, { recursive: true, force: true });
@@ -718,53 +722,127 @@ async function joinFileTests() {
 		const path = join(home, ".duet", "join.json");
 		if (file && !poll) writeFileSync(path, JSON.stringify(file(folder)));
 		const s = startServer(`jf-${tag}`, "", { home, env: { DUET_PLUGIN: "1", DUET_JOIN_POLL_MS: "300" } });
-		await s.init();
+		await s.init(undefined, caps);
 		const start = json((await s.hook({ event: "SessionStart", thread: `thr-${tag}`, folder })).text) ?? {};
-		return { s, folder, path, start, status: async () => (await s.call("duet_status", {}, { id: `${tag}-${Date.now()}`, folder })).text, left: () => (existsSync(path) ? readFileSync(path, "utf8").trim() : "(gone)") };
+		const prompt = (text) => s.hook({ event: "UserPromptSubmit", thread: `thr-${tag}`, folder, turn: `t-${tag}-${++turnN}`, prompt: text }).then((r) => json(r.text) ?? {});
+		const stop = () => s.hook({ event: "Stop", thread: `thr-${tag}`, folder, turn: `t-${tag}-${turnN}` }).then((r) => json(r.text) ?? {});
+		return { s, folder, path, start, prompt, stop, status: async () => (await s.call("duet_status", {}, { id: `${tag}-${Date.now()}`, folder })).text, left: () => (existsSync(path) ? readFileSync(path, "utf8").trim() : "(gone)") };
 	};
 	const fileFor = (room, extra = {}) => (folder) => ({ agent: "codex", room, name: "gaioz", relay: SERVER, cwd: `${folder}/`, pcwd: folder, at: Math.floor(Date.now() / 1000), ...extra });
+	const question = (room, folder) => `Join ${room} as gaioz? · ${folder} · relay ${SERVER}`;
 
+	// SessionStart takes it and says so; the user's prompt shows the form; Join joins.
 	const r1 = freshRoom();
 	const a = await session("take", fileFor(r1));
+	const aSt0 = await a.status();
+	const aPrompt = a.prompt("join duet");
+	const aAsk = await a.s.answer("Join");
+	const aOut = await aPrompt;
 	const aSt = await until(async () => {
 		const t = await a.status();
 		return t.includes("· connected") && t;
-	}, 10_000, "joined from the file").catch(() => a.status());
+	}, 10_000, "joined from the form").catch(() => a.status());
 	check(
-		"Codex plugin: SessionStart takes a codex join file for its folder: joins (ask), tells the user, removes the file",
-		a.start.systemMessage === `duet: joined "${r1.slice(0, 4)}…" as gaioz · ask` && a.start.hookSpecificOutput?.additionalContext?.includes("mode: ask") && aSt.includes("· connected") && a.left() === "(gone)",
-		`${a.start.systemMessage}; context: ${JSON.stringify(a.start.hookSpecificOutput?.additionalContext?.slice(0, 80))}; ${aSt.slice(0, 60)}; file: ${a.left()}`,
+		"Codex plugin: SessionStart takes a codex join file (file removed) but doesn't join; it says a join is waiting",
+		a.start.systemMessage === `duet: a join is waiting · ${question(`${r1.slice(0, 4)}…`, a.folder)} · say "join duet"` && !a.start.systemMessage.includes(r1) && aSt0.startsWith("duet: not in a room") && a.left() === "(gone)",
+		`${a.start.systemMessage}; before the form: ${aSt0.slice(0, 30)}; file: ${a.left()}`,
+	);
+	check(
+		"Codex plugin: the next prompt shows the form 'duet · Join <room> as <name>? · <folder> · relay <host>' (Join / Ignore); Join joins in ask",
+		aAsk.params.message === `duet · ${question(r1, a.folder)}` && JSON.stringify(aAsk.params.requestedSchema.properties.answer.enum) === '["Join","Ignore"]' &&
+			aOut.systemMessage === `duet: joined "${r1.slice(0, 4)}…" as gaioz · ask` && aOut.hookSpecificOutput?.additionalContext?.includes("mode: ask") && aSt.includes("· connected"),
+		`form: ${JSON.stringify(aAsk.params.message)}; ${aOut.systemMessage}; ${aSt.slice(0, 60)}`,
 	);
 	await a.s.stop();
+
+	// Ignore: consumed, nothing joined; a "join duet" prompt is answered, not handed to the model.
+	const r2 = freshRoom();
+	const g = await session("ignore", fileFor(r2));
+	const gPrompt = g.prompt("join duet");
+	await g.s.answer("Ignore");
+	const gOut = await gPrompt;
+	await sleep(800);
+	const gSt = await g.status();
+	const gAgain = await g.prompt("hello");
+	check(
+		"Codex plugin: Ignore drops the join (file consumed, not joined, not asked again)",
+		gSt.startsWith("duet: not in a room") && g.left() === "(gone)" && gOut.decision === "block" && gOut.reason === "duet · join ignored" && g.s.asks.length === 1 && !gAgain.systemMessage,
+		`${gSt.slice(0, 30)}; file: ${g.left()}; prompt: ${JSON.stringify(gOut)}; forms: ${g.s.asks.length}`,
+	);
+	await g.s.stop();
+
+	// No form possible (an app without forms; Full Access declines them): not joined until the user's own "join duet".
+	const r3 = freshRoom();
+	const n = await session("noform", fileFor(r3), { caps: {} });
+	const nOther = await n.prompt("fix the build");
+	const nSt0 = await n.status();
+	const nJoin = await n.prompt("join duet");
+	const nSt = await until(async () => {
+		const t = await n.status();
+		return t.includes("· connected") && t;
+	}, 10_000, "joined on 'join duet'").catch(() => n.status());
+	check(
+		"Codex plugin: no form at all: another prompt doesn't join (it says a join is waiting); the user's own 'join duet' joins",
+		n.start.systemMessage?.startsWith("duet: a join is waiting · ") && nOther.systemMessage === n.start.systemMessage && nSt0.startsWith("duet: not in a room") &&
+			nJoin.systemMessage === `duet: joined "${r3.slice(0, 4)}…" as gaioz · ask` && nSt.includes("· connected") && n.s.asks.length === 0,
+		`other prompt: ${nOther.systemMessage}; then ${nSt0.slice(0, 25)}; "join duet": ${nJoin.systemMessage}; ${nSt.slice(0, 40)}`,
+	);
+	await n.s.stop();
+
+	const r4 = freshRoom();
+	const f = await session("full", fileFor(r4));
+	const fp1 = f.prompt("fix the build");
+	await f.s.answer(undefined, "decline");
+	const fOther = await fp1;
+	const fSt0 = await f.status();
+	const fp2 = f.prompt("join duet");
+	await f.s.answer(undefined, "decline");
+	const fJoin = await fp2;
+	check(
+		"Codex plugin: form declined (Full Access): not joined on another prompt; the user's own 'join duet' joins",
+		fOther.systemMessage?.startsWith("duet: a join is waiting · ") && fSt0.startsWith("duet: not in a room") && fJoin.systemMessage === `duet: joined "${r4.slice(0, 4)}…" as gaioz · ask`,
+		`other prompt: ${fOther.systemMessage}; ${fSt0.slice(0, 25)}; "join duet": ${fJoin.systemMessage}`,
+	);
+	await f.s.stop();
 
 	const b = await session("cc", fileFor(freshRoom(), { agent: "claude-code" }));
 	const c = await session("stale", fileFor(freshRoom(), { at: Math.floor(Date.now() / 1000) - 31 * 60 }));
 	const d = await session("elsewhere", (folder) => fileFor(freshRoom())(`${folder}-other`));
+	const fu = await session("future", fileFor(freshRoom(), { at: Math.floor(Date.now() / 1000) + 60 }));
+	const nr = await session("norelay", fileFor(freshRoom(), { relay: undefined }));
 	await sleep(1000); // a few polls
-	const [bSt, cSt, dSt] = [await b.status(), await c.status(), await d.status()];
+	const [bSt, cSt, dSt, fuSt, nrSt] = [await b.status(), await c.status(), await d.status(), await fu.status(), await nr.status()];
 	check(
-		"Codex plugin: ignores a claude-code join file and one for another folder (left for them), and a stale one (cleared)",
-		[bSt, cSt, dSt].every((t) => t.startsWith("duet: not in a room")) && !b.start.systemMessage && b.left().includes('"claude-code"') && c.left() === "(gone)" && d.left().includes("-other"),
-		`claude-code: ${bSt.slice(0, 25)}, file kept: ${b.left().includes('"claude-code"')}; stale: ${cSt.slice(0, 25)}, file: ${c.left()}; other folder: ${dSt.slice(0, 25)}, file kept: ${d.left().includes("-other")}`,
+		"Codex plugin: ignores a claude-code join file, one for another folder and one without a relay (left), a stale one and one from the future (cleared); offers none",
+		[bSt, cSt, dSt, fuSt, nrSt].every((t) => t.startsWith("duet: not in a room")) && [b, c, d, fu, nr].every((x) => !x.start.systemMessage) &&
+			b.left().includes('"claude-code"') && c.left() === "(gone)" && d.left().includes("-other") && fu.left() === "(gone)" && nr.left().includes('"gaioz"'),
+		`claude-code kept: ${b.left().includes('"claude-code"')}; stale: ${c.left()}; other folder kept: ${d.left().includes("-other")}; future: ${fu.left()}; no relay kept: ${nr.left().includes('"gaioz"')}`,
 	);
-	for (const x of [b, c, d]) await x.s.stop();
+	for (const x of [b, c, d, fu, nr]) await x.s.stop();
 
-	// Already open: polls the file while not in a room; never over the room it has.
-	const r2 = freshRoom();
-	const e = await session("poll", fileFor(r2), { poll: true });
-	writeFileSync(e.path, JSON.stringify(fileFor(r2)(e.folder)));
+	// Already open: the poll takes a file written later; the form shows when the turn ends; never over a room.
+	const r5 = freshRoom();
+	const e = await session("poll", fileFor(r5), { poll: true });
+	await e.prompt("set up duet");
+	writeFileSync(e.path, JSON.stringify(fileFor(r5)(e.folder)));
+	await until(() => e.left() === "(gone)", 10_000, "the poll takes it").catch(() => {});
+	const eSt0 = await e.status();
+	const eStop = e.stop();
+	const eAsk = await e.s.answer("Join");
+	const eOut = await eStop;
 	const eSt = await until(async () => {
 		const t = await e.status();
 		return t.includes("· connected") && t;
 	}, 10_000, "join from a polled file").catch(() => "");
-	const r3 = `u-${randomUUID()}`; // another start: the status shows only the code's first characters
-	writeFileSync(e.path, JSON.stringify(fileFor(r3)(e.folder)));
+	const r6 = `u-${randomUUID()}`;
+	writeFileSync(e.path, JSON.stringify(fileFor(r6)(e.folder)));
 	await sleep(1500);
 	const eSt2 = await e.status();
 	check(
-		"Codex plugin: an open session joins from a join file written later; one in a room keeps it (the file is left)",
-		eSt.includes(`room "${r2.slice(0, 4)}…"`) && eSt2.includes(`room "${r2.slice(0, 4)}…"`) && eSt2.includes("· connected") && e.left().includes(r3),
-		`first: ${eSt.slice(0, 50)}; after a second file: ${eSt2.slice(0, 50)}; file kept: ${e.left().includes(r3)}`,
+		"Codex plugin: an open session takes a join file written later, asks when the turn ends, Join joins; one in a room keeps it (the file is left)",
+		eSt0.startsWith("duet: not in a room") && eAsk.params.message === `duet · ${question(r5, e.folder)}` && eOut.systemMessage === `duet: joined "${r5.slice(0, 4)}…" as gaioz · ask` &&
+			eSt.includes(`room "${r5.slice(0, 4)}…"`) && eSt2.includes(`room "${r5.slice(0, 4)}…"`) && eSt2.includes("· connected") && e.left().includes(r6),
+		`before: ${eSt0.slice(0, 25)}; form: ${eAsk.params.message.slice(0, 40)}; ${eOut.systemMessage}; after a second file: ${eSt2.slice(0, 50)}; file kept: ${e.left().includes(r6)}`,
 	);
 	await e.s.stop();
 }

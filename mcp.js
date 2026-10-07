@@ -30,7 +30,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { LOCK_BEAT_MS, describeHolder, duetHome, isRoomCode, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeJoinFile, takeLock } from "./lock.js";
+import { LOCK_BEAT_MS, describeHolder, duetHome, isRoomCode, joinQuestion, lockHeld, lockPath, readLock, refreshLock, releaseLock, takeJoinFile, takeLock } from "./lock.js";
 import { appTools, drawsPanels, SENDS, handOver, heldResult, makeHolds, outgoingItem, PANEL_KEY_META, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { cleanText, envelope, firstLine, fitName, isEnvelope, isForMe, isName, isPlaceholderName, isRelayUrl, placeFor, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
@@ -39,7 +39,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.11.0";
+const VERSION = "0.11.1";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -550,18 +550,47 @@ async function rejoinFolder() {
 	else updateJson("rooms.json", (all) => (all[folder] = { ...rec, at: Date.now() }));
 }
 
-// The site's prompt wrote ~/.duet/join.json for Codex in this folder (lock.js): join from it, in ask
-// mode. Never over a room this session has; checked again every few seconds while it has none.
+// The site's prompt wrote ~/.duet/join.json for Codex in this folder (lock.js). Taking it never joins:
+// it becomes an offer, asked in a form ("duet · Join <room> as <name>? · <folder>", Join / Ignore) at
+// the next hook that can show one (the user's prompt, or the end of a turn). No form (Full Access, an
+// app without forms): the user's own prompt "join duet" accepts it. Never over a room this session has;
+// looked for every few seconds while it has none.
 let joinPoll;
-async function fromJoinFile(nested = false) {
+let joinOffer; // { room, name, relay, folder, question }
+// A hook's line shows the room code shortened, as every other duet line in Codex; the form shows it whole.
+const JOIN_WAITING = (o) => `duet: a join is waiting · ${joinQuestion({ ...o, room: shortRoom(o.room) }, homedir())} · say "join duet"`;
+const saysJoinDuet = (prompt) => /^\W*join duet\W*$/i.test(String(prompt ?? ""));
+function offerFromJoinFile(nested = false) {
 	if (!PLUGIN || !isCodex() || room || joining || !folder || oneOffRun()) return false;
 	const j = takeJoinFile({ agent: "codex", folder, nested });
 	if (!j) return false;
+	joinOffer = { room: j.room, name: j.name, relay: j.relay, folder: j.folder, question: joinQuestion(j, homedir()) };
+	return true;
+}
+// Ask about a waiting offer: { joined } (a line for the user), { ignored }, or { waiting } (no answer:
+// kept for "join duet"). `prompt`: the user's own prompt in this hook, if any.
+async function askJoinOffer(prompt) {
+	const o = joinOffer;
+	if (!o) return {};
+	if (room) {
+		joinOffer = undefined; // joined meanwhile by the user's own hand
+		return {};
+	}
+	const r = await elicit(`duet · ${o.question}`, ["Join", "Ignore"]);
+	const answer = r?.result?.action === "accept" ? r.result.content?.answer : undefined;
+	if (joinOffer !== o || room) return {}; // answered elsewhere meanwhile
+	if (answer === "Ignore") {
+		joinOffer = undefined;
+		await rejoinFolder();
+		return { ignored: true };
+	}
+	if (answer !== "Join" && !saysJoinDuet(prompt)) return { waiting: JOIN_WAITING(o) };
+	joinOffer = undefined;
 	try {
-		await joinAsUser(j.room, j.name, j.relay);
-		return true;
-	} catch {
-		return false; // held by another window here: status says so
+		await joinAsUser(o.room, o.name, o.relay);
+		return { joined: `duet: joined "${shortRoom(room)}" as ${name} · ask` };
+	} catch (err) {
+		return { joined: `duet: ${err.message}` };
 	}
 }
 
@@ -570,9 +599,7 @@ function learn({ thread, folder: where } = {}) {
 	if (typeof thread === "string" && thread) codexThread = thread;
 	if (PLUGIN && !folder && typeof where === "string" && /^([A-Za-z]:)?[\\/]/.test(where)) folder = where;
 	if (PLUGIN && folder && !joinPoll) {
-		joinPoll = setInterval(async () => {
-			if (await fromJoinFile()) helloDone = false; // joined between prompts: the next prompt gets the catch-up
-		}, JOIN_POLL_MS);
+		joinPoll = setInterval(() => offerFromJoinFile(), JOIN_POLL_MS); // asked at the next prompt or turn end
 		joinPoll.unref();
 	}
 }
@@ -697,12 +724,12 @@ const hookContext = (event, text) => (text ? JSON.stringify({ hookSpecificOutput
 
 async function hello(a) {
 	learn(a);
-	const fromFile = await fromJoinFile(true);
-	await rejoinFolder();
+	// A join file waits for the user's answer; the folder's remembered room only without one (Ignore rejoins it).
+	if (!offerFromJoinFile(true) && !joinOffer) await rejoinFolder();
 	// A room from the command line (setup codex): a new session in a folder takes it from an older one there.
 	if (room && name && !sub) await joinRoom({ steal: !oneOffRun() });
 	helloDone = true;
-	return { text: catchUp(), joined: fromFile ? `duet: joined "${shortRoom(room)}" as ${name} · ask` : "" };
+	return { text: catchUp(), waiting: joinOffer && !room ? JOIN_WAITING(joinOffer) : "" };
 }
 
 async function onHook(a = {}) {
@@ -710,10 +737,10 @@ async function onHook(a = {}) {
 	const event = a.event;
 	const turn = typeof a.turn === "string" ? a.turn : "";
 	if (event === "SessionStart") {
-		const { text, joined } = await hello(a);
+		// No form here (the hook has 10 s): a join file waits for the user's next prompt, and says so.
+		const { text, waiting } = await hello(a);
 		setImmediate(deliver);
-		// Joined from the site's prompt: the user sees it too.
-		if (joined) return JSON.stringify({ systemMessage: joined, ...(text ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } } : {}) });
+		if (waiting) return JSON.stringify({ systemMessage: waiting, ...(text ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } } : {}) });
 		return hookContext("SessionStart", text);
 	}
 	learn(a);
@@ -730,6 +757,16 @@ async function onHook(a = {}) {
 			if (turn) {
 				ownPrompts.set(turn, prompt.slice(0, 4000));
 				if (ownPrompts.size > 50) ownPrompts.delete(ownPrompts.keys().next().value);
+			}
+			// A join file waiting: the form now (or, without one, this prompt being "join duet").
+			if (joinOffer) {
+				const got = await askJoinOffer(prompt);
+				const line = got.joined || got.waiting || "";
+				const context = got.joined ? catchUp() : first;
+				if (line) return JSON.stringify({ systemMessage: line, ...(context ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context } } : {}) });
+				// "join duet" was only for the join: answered, so the model doesn't go looking for a room.
+				if (got.ignored && saysJoinDuet(prompt)) return JSON.stringify({ decision: "block", reason: "duet · join ignored" });
+				return hookContext("UserPromptSubmit", got.ignored ? catchUp() || first : first);
 			}
 			return hookContext("UserPromptSubmit", first);
 		}
@@ -764,6 +801,14 @@ async function onHook(a = {}) {
 	}
 	if (event === "Stop") {
 		preSends.delete(turn); // the turn's replies are done: an OK given ahead ends here
+		// A join file taken during the turn (the poll): asked as the turn ends.
+		if (joinOffer && !room) {
+			busy = null;
+			const got = await askJoinOffer();
+			if (got.joined) helloDone = false; // the next prompt gets the catch-up
+			const line = got.joined || got.waiting || "";
+			return line ? JSON.stringify({ systemMessage: line }) : "";
+		}
 		// The turn is ending: hand over what arrived meanwhile, as its continuation.
 		if (inRoom() && inbox.length && !codexHold()) {
 			// Out of the inbox while the user decides (and the turn counts as running), so nothing pushes
@@ -1242,12 +1287,14 @@ async function callTool(tool, a, ctx) {
 			if (!isRelayUrl(s)) throw new Error("Relay: a plain http(s) URL only");
 			if (sub && r === room && n === name && s === server) return `Already in "${shortRoom(r)}" as ${n}`;
 			if (PLUGIN && folder) takeJoinFile({ agent: "codex", folder, nested: true }); // newer than a pasted prompt's join file: that one goes
+			joinOffer = undefined;
 			await joinAsUser(r, n, s);
 			return `Joined "${shortRoom(r)}" as ${n} · ask · your user gives the other person the same code`;
 		}
 		case "duet_leave": {
 			needUser(ctx, "leaving the room happens");
 			if (PLUGIN && folder) takeJoinFile({ agent: "codex", folder, nested: true }); // leaving: a join file mustn't put the session straight back
+			joinOffer = undefined;
 			if (!room) return "Not in a room";
 			leaveAsUser();
 			return "Left the room";

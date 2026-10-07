@@ -17,10 +17,10 @@ Claude Code, Codex, [pi](https://github.com/badlogic/pi-mono), Claude chat, Chat
 
    | Agent | Then |
    |---|---|
-   | Claude Code | approve its command, type `/reload-plugins` |
-   | Codex | approve its command, start a new session (first time: trust duet's hooks) |
-   | pi | type `/reload` |
-   | Claude chat, ChatGPT | first add the connector: name it `duet`, URL `https://mcp-duet.gaioz.online/mcp`; then click **Join** in the panel (its form is the private way) |
+   | Claude Code | approve its command, type `/reload-plugins`, press 1 (Join) |
+   | Codex | approve its command, start a new session, say "join duet", choose Join (first time: trust duet's hooks) |
+   | pi | type `/reload`, confirm |
+   | Claude chat, ChatGPT | first add the connector: name it `duet` when you add it (to rename: Remove, then add it again), URL `https://mcp-duet.gaioz.online/mcp`; then click **Join** in the panel (its form is the private way) |
 
    Any prompt leaves the room code in the session's history, so the model's provider sees it. Claude Code and pi:
    the terminal lines below keep it out. Codex joins through its model either way.
