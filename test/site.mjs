@@ -44,7 +44,7 @@ if (!site) {
 }
 const relayQuery = SERVER === "https://duet.gaioz.online" ? "" : `?relay=${encodeURIComponent(SERVER)}`;
 const start = site + relayQuery; // the landing
-const rooms = start + "#rooms"; // 01 · Pick a room
+const rooms = start + "#rooms"; // 01 · Start a room
 
 // In a room the card shows one step at a time: go to 02, pick the tool, Continue to 03 (name, prompt, commands).
 async function pick(page, agent) {
@@ -491,8 +491,8 @@ exit 0
 	await page.click(`#rooms li:has(a[href$="#${room}"]) .forget`);
 	const forgotten = !(await page.$(`#rooms a[href$="#${room}"]`));
 	check(
-		"your rooms: remembered with who was in it, opens from the list, Forget removes it",
-		!!mine && mine.text.includes("nika") && mine.text.includes("gaioz") && reopened && forgotten,
+		"past rooms: remembered in this browser, opens from the list, Forget removes it",
+		!!mine && reopened && forgotten,
 		`${remembered.length} rooms listed; this one: ${JSON.stringify(mine?.text.replace(room.split("-").slice(0, 3).join("-"), "<room>"))}; reopened ${reopened}; forgotten ${forgotten}`,
 	);
 

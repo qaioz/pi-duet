@@ -210,7 +210,7 @@
 	h2 { margin: 0; font-size: 26px; font-weight: 500; letter-spacing: -0.03em; }
 	h2 em { font-family: "Instrument Serif", Georgia, serif; font-weight: 400; font-size: 1.2em; }
 
-	/* 01 · Pick a room */
+	/* 01 · Start a room */
 	.join { display: flex; align-items: stretch; height: 64px; border-radius: 20px; background: var(--field); border: 1px solid var(--line); overflow: hidden; transition: border-color .3s; }
 	.join:focus-within { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 	.join label { display: flex; align-items: center; padding: 0 14px 0 22px; color: var(--muted); }
@@ -220,20 +220,21 @@
 	.join button:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 	.err { margin: 10px 8px 0; color: #a3402f; font-size: 13.5px; }
 	.dark .err { color: #f0a08e; }
-	.rooms-head { display: flex; justify-content: space-between; padding: 24px 20px 10px; }
+	.or { margin: 0; padding: 22px 26px 8px; }
+	.past { max-width: 440px; margin: 28px auto 0; padding: 0 8px; animation: stepIn .6s .3s cubic-bezier(.22, 1, .36, 1) both; }
+	.rooms-head { display: flex; justify-content: space-between; padding: 0 14px 6px; }
 	.eyebrow { font-family: "Geist Mono", monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
 	#rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-	#rooms li { position: relative; display: flex; align-items: center; animation: stepIn .55s cubic-bezier(.22, 1, .36, 1) both; }
-	#rooms li.empty { padding: 14px 20px; color: var(--muted); font-size: 14px; }
-	.room { flex: 1; min-width: 0; display: flex; align-items: center; gap: 16px; min-height: 76px; padding: 0 56px 0 16px; border-radius: 20px; color: var(--ink); transition: background .3s; }
+	#rooms li { position: relative; display: flex; align-items: center; }
+	#rooms li.empty { padding: 10px 14px; color: var(--faint); font-size: 13.5px; }
+	.room { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 0 44px 0 14px; border-radius: 12px; color: var(--muted); transition: background .3s, color .3s; }
 	.room:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); color: var(--ink); }
 	.tile { display: flex; align-items: center; justify-content: center; flex: none; width: 48px; height: 48px; border-radius: 14px; font-family: "Instrument Serif", Georgia, serif; font-size: 24px; }
 	.tile.t0 { background: var(--tile-a); color: var(--tile-a-ink); } .tile.t1 { background: var(--tile-b); color: var(--tile-b-ink); }
 	.tile.t2 { background: var(--tile-c); color: var(--tile-c-ink); } .tile.t3 { background: var(--tile-d); color: var(--tile-d-ink); }
-	.room .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-	.room .code { font-family: "Geist Mono", monospace; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.room .who { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.forget { position: absolute; right: 10px; display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 12px; background: transparent; color: var(--faint); cursor: pointer; opacity: .6; transition: opacity .25s, background .25s, color .25s; }
+	.room .code { font-family: "Geist Mono", monospace; font-size: 13.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.room .who { margin-left: auto; font-size: 12.5px; color: var(--faint); white-space: nowrap; }
+	.forget { position: absolute; right: 6px; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 12px; background: transparent; color: var(--faint); cursor: pointer; opacity: .6; transition: opacity .25s, background .25s, color .25s; }
 	#rooms li:hover .forget, .forget:focus-visible { opacity: 1; }
 	.forget:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
 	.trust { display: flex; align-items: center; gap: 8px; margin: 0; padding: 16px 20px 12px; font-size: 12.5px; color: var(--muted); }
@@ -440,21 +441,26 @@
 		</div>
 	</section>
 
-	<!-- 01 · Pick a room -->
+	<!-- 01 · Start a room -->
 	<section class="card hidden" id="start" aria-labelledby="start-title">
 		<div class="head">
-			<div><span class="num">01</span><h2 id="start-title">Pick a room</h2></div>
+			<div><span class="num">01</span><h2 id="start-title">Start a room</h2></div>
 			<button class="btn primary big" type="button" id="start-btn"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>New room</button>
 		</div>
+		<p class="or eyebrow">or paste an invitation</p>
 		<form class="join" id="join-form">
 			<label for="join-code"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3 9h11M10 5l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sr">Room link or code</span></label>
-			<input id="join-code" type="text" autocomplete="off" spellcheck="false" placeholder="Paste a room link or code">
+			<input id="join-code" type="text" autocomplete="off" spellcheck="false" placeholder="Invitation link or code">
 			<button type="submit">Join</button>
 		</form>
-		<p class="err hidden" id="join-error" role="alert">That isn't a duet room link or code</p>
-		<div class="rooms-head"><span class="eyebrow">Your rooms</span><span class="eyebrow" id="rooms-count"></span></div>
-		<ul id="rooms"></ul>
+		<p class="err hidden" id="join-error" role="alert">That isn't a duet invitation link or code</p>
 		<p class="trust"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="5.5" width="8" height="5.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>Link = access to your agent · trusted people only</p>
+	</section>
+
+	<!-- Past rooms: a small list under the card, from this browser only -->
+	<section class="past hidden" id="past" aria-labelledby="past-title">
+		<div class="rooms-head"><span class="eyebrow" id="past-title">Past rooms</span><span class="eyebrow" id="rooms-count"></span></div>
+		<ul id="rooms"></ul>
 	</section>
 
 	<!-- In a room: 02 I'm using… → 03 Set up → You're in -->
@@ -1200,16 +1206,13 @@ function drawRooms() {
 	const rooms = savedRooms();
 	list.textContent = "";
 	$("rooms-count").textContent = rooms.length || "";
-	if (!rooms.length) return list.append(el("li", "empty", "No rooms yet · start one, or paste a link"));
+	if (!rooms.length) return list.append(el("li", "empty", "None yet"));
 	rooms.forEach((r, i) => {
 		const li = el("li");
 		const a = el("a", "room");
 		a.href = roomLink(r.code, r.relay);
 		a.title = r.code;
-		const txt = el("span", "txt");
-		const who = r.who.length ? r.who.join(" · ") : "nobody here yet";
-		txt.append(el("span", "code", short(r.code)), el("span", "who", `${who} · ${ago(r.at)}${r.relay !== DEFAULT_RELAY ? " · " + r.relay : ""}`));
-		a.append(el("span", `tile t${i % 4}`, r.code.charAt(0).toUpperCase()), txt);
+		a.append(el("span", "code", short(r.code)), el("span", "who", `${ago(r.at)}${r.relay !== DEFAULT_RELAY ? " · " + r.relay : ""}`));
 		const forget = el("button", "forget");
 		forget.type = "button";
 		forget.setAttribute("aria-label", `Forget ${short(r.code)}`);
@@ -1227,6 +1230,7 @@ function showRoom() {
 	const landing = !code && location.hash !== "#rooms";
 	$("landing").classList.toggle("hidden", landing === false);
 	$("start").classList.toggle("hidden", landing || !!code);
+	$("past").classList.toggle("hidden", landing || !!code);
 	$("room").classList.toggle("hidden", !code);
 	$("convo-open").classList.toggle("hidden", !code);
 	document.querySelector(".steps").classList.toggle("hidden", landing);
@@ -1415,7 +1419,7 @@ const demo = (() => {
 		if (sc === 0 || sc === 1) {
 			L = `<div class="win light"><div class="wbar"><span class="wtag">You</span><span class="url">${esc(location.host + location.pathname)}</span></div><div class="wbody">` +
 				(sc === 0
-					? `<p class="mh">Instantly make <em>any two agents talk.</em></p><div class="mcard"><div class="mrow"><span class="mt">Pick a room</span><span class="mbtn">+ New room<span class="rip" style="--r: 1.45s"></span>${CURSOR(.5)}</span></div><div class="mroom"><span class="mtile">A</span>amber-otter-4821 <i>· now</i></div></div>`
+					? `<p class="mh">Instantly make <em>any two agents talk.</em></p><div class="mcard"><div class="mrow"><span class="mt">Start a room</span><span class="mbtn">+ New room<span class="rip" style="--r: 1.45s"></span>${CURSOR(.5)}</span></div><div class="mroom"><span class="mtile">A</span>amber-otter-4821 <i>· now</i></div></div>`
 					: `<div class="mcard"><div class="mrow"><span class="mt">I'm using…</span><span class="mn">amber-otter-4821</span></div>${opts(st.a * 22)}<span class="mbtn wide"><span class="sw" style="--t: 2.2s"><span class="a">Copy prompt</span><span class="b">Copied ✓</span></span><span class="rip" style="--r: 2.15s"></span>${CURSOR(1.2)}</span></div>`) +
 				`</div></div>`;
 		} else if (sc >= 2) {
