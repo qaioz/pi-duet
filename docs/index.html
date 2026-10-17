@@ -615,15 +615,15 @@ function goToRoom(code, relay) {
 	if (relay === RELAY) location.hash = code;
 	else location.href = roomLink(code, relay);
 }
-// A pasted link or a bare code; a link may carry its own plain http(s) relay.
+// A pasted link (with or without https://) or a bare code. A link's relay goes along as written: the
+// room page checks it on load, and an odd one is ignored there with a note, as when the link is opened.
 function parseRoom(text) {
 	let code = text.trim();
 	let relay = RELAY;
 	try {
-		const u = new URL(code);
+		const u = new URL(/^[^\s:/?#]+(:\d{1,5})?\/\S*#/.test(code) ? "https://" + code : code);
 		code = u.hash.slice(1);
-		const r = (u.searchParams.get("relay") || "").replace(/\/+$/, "");
-		relay = RELAY_RE.test(r) ? r : DEFAULT_RELAY;
+		relay = (u.searchParams.get("relay") || "").replace(/\/+$/, "") || DEFAULT_RELAY;
 	} catch {
 		code = code.replace(/^#/, "");
 	}
@@ -714,7 +714,10 @@ function render() {
 	box.append(el("p", "receive", a.receive));
 	const tools = document.querySelector(".tools");
 	tools.style.setProperty("--i", ORDER.indexOf(agent));
-	tools.querySelectorAll("[role=radio]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.agent === agent)));
+	tools.querySelectorAll("[role=radio]").forEach((b) => {
+		b.setAttribute("aria-checked", String(b.dataset.agent === agent));
+		b.tabIndex = b.dataset.agent === agent ? 0 : -1; // one Tab stop; the arrow keys move within
+	});
 	$("tool-name").textContent = a.name;
 	$("feat").textContent = a.feat;
 	drawStatus();
@@ -809,7 +812,8 @@ async function listen() {
 			const env = JSON.parse(body);
 			if (env?.v !== 1 || typeof env.from !== "string") return;
 			const prev = people.get(env.from);
-			people.set(env.from, { at: new Date(env.ts), via: VIA[env.via] || prev?.via || "" });
+			if (env.kind === "note" && env.note === "left") people.delete(env.from);
+			else people.set(env.from, { at: new Date(env.ts), via: VIA[env.via] || prev?.via || "" });
 			addEvent(env);
 		} catch {
 			return;
@@ -833,12 +837,20 @@ function drawPeople() {
 	drawStatus();
 }
 
-// Your agent's join arrives on the relay: then you're in. Until then the page says it's waiting.
+// Your agent's join arrives on the relay: then you're in, until your name leaves. Until then the page
+// says it's waiting. Display only: anyone in the room can post under any name.
 const joined = () => !!typedName() && people.has(typedName());
+let shownStatus = "";
 function drawStatus() {
 	const box = $("status");
 	const me = typedName();
+	// A peer's name goes into a line you may paste into your own agent: letters, digits, _ and - only.
+	const friend = [...people.keys()].filter((n) => n !== me).map(cleanName).find(Boolean);
 	drawSteps();
+	// Redrawn only when it changes: a relay event shouldn't take the focus or a "Copied" away.
+	const key = [room(), me, joined(), friend, agent].join("|");
+	if (key === shownStatus) return;
+	shownStatus = key;
 	box.textContent = "";
 	box.classList.toggle("hidden", !me || !room());
 	if (!me || !room()) return;
@@ -853,8 +865,6 @@ function drawStatus() {
 	const check = el("span", "check");
 	check.innerHTML = '<svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 	top.append(check, el("h2", "", "You're in"));
-	const friends = [...people.keys()].filter((n) => n !== me);
-	const friend = friends[0];
 	const lead = el("p", "big", `Now just keep working in ${tool}.`);
 	const more = el("p", "", friend ? `When your agent needs ${friend}'s agent, it asks.` : "Waiting for a friend · send them the invite link · trusted people only");
 	box.append(top, lead, more);
@@ -1010,6 +1020,17 @@ document.querySelectorAll(".tools [role=radio]").forEach((b) =>
 		if (matchMedia("(max-width: 860px)").matches) setup.scrollIntoView({ behavior: "smooth", block: "start" }); // stacked: the setup is below the list
 	}),
 );
+// A radio group: arrow keys pick the next or previous tool, Home and End the first and last.
+document.querySelector(".tools").addEventListener("keydown", (e) => {
+	const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+	if (!step && e.key !== "Home" && e.key !== "End") return;
+	e.preventDefault();
+	const radios = [...document.querySelectorAll(".tools [role=radio]")];
+	const i = ORDER.indexOf(agent);
+	const next = e.key === "Home" ? 0 : e.key === "End" ? radios.length - 1 : (i + step + radios.length) % radios.length;
+	radios[next].click();
+	radios[next].focus();
+});
 const dialog = $("convo-dialog");
 $("convo-open").addEventListener("click", () => {
 	dialog.showModal();
