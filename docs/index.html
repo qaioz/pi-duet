@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>duet — pair your coding agent with a friend's</title>
+<title>duet — make any two agents talk</title>
 <script>
-	// Basecoat themes from html.dark: follow the system setting.
+	// Dark follows the system setting.
 	(() => {
 		const mq = matchMedia("(prefers-color-scheme: dark)");
 		const apply = () => document.documentElement.classList.toggle("dark", mq.matches);
@@ -14,271 +14,350 @@
 		mq.addEventListener("change", apply);
 	})();
 </script>
-<link rel="stylesheet" href="basecoat.min.css">
 <style>
-	/* Geist + Barlow Condensed, vendored (fonts/OFL*.txt): the page contacts nothing but itself and the relay. */
+	/* Geist + Instrument Serif, vendored (fonts/OFL*.txt): the page contacts nothing but itself and the relay. */
 	@font-face { font-family: "Geist Sans"; src: url("fonts/Geist-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
 	@font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
-	@font-face { font-family: "Barlow Condensed"; src: url("fonts/BarlowCondensed-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
-	/* Brutalist editorial on warm gray: flat surfaces, no shadows, type does the work. Mint for tags, yellow for tiny marks. */
+	@font-face { font-family: "Instrument Serif"; src: url("fonts/InstrumentSerif-Regular.woff2") format("woff2"); font-style: normal; font-weight: 400; font-display: swap; }
+	@font-face { font-family: "Instrument Serif"; src: url("fonts/InstrumentSerif-Italic.woff2") format("woff2"); font-style: italic; font-weight: 400; font-display: swap; }
+	/* Calm and warm: one card, sage green for actions, lime for small marks. */
 	:root {
-		--canvas: #e5e5e5; --paper: #ffffff; --ink: #000000; --mist: #f3f3f3; --ash: #c6c6c6; --smoke: #979797; --slate: #444444;
-		--graphite: #2f2f2f; --mint: #d1ffca; --volt: #fff100; --inv: #000000; --inv-fg: #ffffff; --inv-muted: #979797;
-		--background: var(--paper); --foreground: var(--ink); --card: var(--paper); --card-foreground: var(--ink);
-		--muted-foreground: var(--slate); --border: var(--ash); --input: var(--ash); --primary: var(--ink); --primary-foreground: var(--paper);
+		--bg: #ecece4; --card: #f8f8f3; --field: #efefe8; --hl: #ffffff; --ink: #1a1c19; --muted: #5f635c; --faint: #696d65;
+		--line: rgba(26, 28, 25, .08); --accent: #3e5f49; --accent-hover: #34513e; --accent-ink: #f8f8f3; --lime: #dce57a;
+		--code-bg: #1e211d; --code-ink: #d7dacf; --live: #4f8a5f; --shadow: rgba(40, 46, 36, .28);
+		--tile-a: #dde6dc; --tile-a-ink: #3e5f49; --tile-b: #e8e2d6; --tile-b-ink: #6b5b43; --tile-c: #eceFcb; --tile-c-ink: #5b6420; --tile-d: #e3e3ea; --tile-d-ink: #4b4b63;
+		color-scheme: light;
 	}
 	.dark {
-		--canvas: #121212; --paper: #1c1c1c; --ink: #f2f2f2; --mist: #262626; --ash: #3a3a3a; --smoke: #8a8a8a; --slate: #b4b4b4;
-		--graphite: #0a0a0a; --inv: #e5e5e5; --inv-fg: #000000; --inv-muted: #444444;
-		--background: var(--paper); --foreground: var(--ink); --card: var(--paper); --card-foreground: var(--ink);
-		--muted-foreground: var(--slate); --border: var(--ash); --input: var(--ash); --primary: var(--ink); --primary-foreground: #000;
+		--bg: #121410; --card: #1a1d18; --field: #22261f; --hl: #2c3129; --ink: #ecede6; --muted: #a8ad9f; --faint: #959a8c;
+		--line: rgba(241, 242, 234, .09); --accent: #9cc7a8; --accent-hover: #b3d6bc; --accent-ink: #0e100d; --lime: #dce57a;
+		--code-bg: #0e100d; --code-ink: #d7dacf; --live: #8fd0a0; --shadow: rgba(0, 0, 0, .55);
+		--tile-a: #2a3a2e; --tile-a-ink: #b9dcc2; --tile-b: #3a3328; --tile-b-ink: #e3cfa9; --tile-c: #34371f; --tile-c-ink: #dfe79a; --tile-d: #2d2d3a; --tile-d-ink: #c9c9e6;
+		color-scheme: dark;
 	}
-	html, body { background: var(--canvas); color: var(--ink); }
-	body { margin: 0; font-family: "Geist Sans", ui-sans-serif, system-ui, sans-serif; font-size: 16px; line-height: 1.4; letter-spacing: -0.01em; }
+	html, body { background: var(--bg); color: var(--ink); }
+	body { margin: 0; min-height: 100vh; font-family: "Geist Sans", ui-sans-serif, system-ui, sans-serif; font-size: 15px; line-height: 1.45; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
 	.mono, code, kbd, pre { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
-	.display { font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-weight: 700; text-transform: uppercase; line-height: .9; letter-spacing: -0.03em; text-wrap: balance; }
-	.wrap { max-width: 1200px; margin: 0 auto; padding-inline: 24px; }
-	.label { font-family: "Geist Mono", monospace; font-size: 12px; letter-spacing: -0.03em; color: var(--slate); text-transform: uppercase; }
-	.grow { flex: 1; }
-	a { color: inherit; }
-
-	/* Floating nav pill */
-	.top { padding-block: 24px; }
-	.pill { display: flex; align-items: center; gap: 4px; background: var(--paper); border-radius: 48px; padding: 8px 8px 8px 24px; }
-	.logo { font-family: "Barlow Condensed", sans-serif; font-weight: 700; font-size: 26px; text-transform: uppercase; letter-spacing: -0.02em; color: inherit; text-decoration: none; line-height: 1; }
-	.pill .btn { border-radius: 48px; font-weight: 500; }
-
-	/* Hero: condensed headline left, the product's own gate card right */
-	.hero { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 40px; align-items: end; padding-block: 40px 16px; }
-	.hero h1 { margin: 0; font-size: clamp(56px, 10.5vw, 130px); }
-	.hero .lede { margin: 24px 0 0; font-size: 20px; line-height: 1.3; max-width: 520px; color: var(--slate); text-wrap: pretty; }
-	.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 24px; }
-	.tag { display: inline-block; background: var(--mint); color: #000; border-radius: 64px; padding: 4px 12px; font-family: "Geist Mono", monospace; font-size: 12px; letter-spacing: -0.03em; }
-	.shot { background: var(--inv); color: var(--inv-fg); border-radius: 64px 64px 24px 24px; padding: 40px 32px 32px; display: flex; flex-direction: column; gap: 16px; }
-	.shot .label { color: var(--inv-muted); }
-	.shot q { font-size: 22px; line-height: 1.25; quotes: "“" "”"; }
-	.shot .keys { display: flex; flex-wrap: wrap; gap: 8px; }
-	.shot .keys span { border: 1.5px solid var(--inv-muted); border-radius: 8px; padding: 6px 10px; font-size: 14px; font-family: "Geist Mono", monospace; }
-	.shot .keys span:first-child { background: var(--inv-fg); color: var(--inv); border-color: var(--inv-fg); }
-
-	/* Steps: flat white cards on the canvas */
-	main.wrap { padding-block: 16px 80px; display: flex; flex-direction: column; gap: 24px; }
-	.cols { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
-	.left { flex: 999 1 600px; min-width: 0; display: flex; flex-direction: column; gap: 24px; }
-	.right { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 24px; }
-	.card { border-radius: 32px; box-shadow: none; padding-block: 32px; gap: 24px; font-size: 15px; }
-	.card > header, .card > section { padding-inline: 32px; }
-	.card > header { gap: 8px; }
-	.card > section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-	.card > header h2 { margin: 0; font-family: "Geist Sans", sans-serif; font-weight: 450; font-size: clamp(26px, 3.4vw, 40px); line-height: 1.1; letter-spacing: -0.02em; text-transform: uppercase; }
-	.right .card > header h2 { font-size: 28px; }
-	.warn h2 { font-size: 15px; font-weight: 600; margin: 0; }
-	.card > header > p { margin: 0; color: var(--slate); font-size: 16px; }
-	.btn { border-radius: 8px; box-shadow: none; }
-	.btn:not([data-variant]) { background: var(--ink); color: var(--paper); }
-	.btn[data-variant="outline"] { background: transparent; border: 1.5px solid var(--slate); color: var(--ink); border-radius: 4px; }
-	.btn[data-variant="outline"]:disabled { border-color: var(--ash); color: var(--smoke); }
-	#start-btn { font-size: 16px; padding: 16px 24px; height: auto; }
-	.row { display: flex; gap: 8px; align-items: stretch; min-width: 0; }
-	.box { flex: 1; min-width: 0; display: flex; align-items: center; background: var(--mist); border-radius: 8px; padding: 10px 14px; font-size: 13.5px; overflow-wrap: anywhere; }
-	.cmd { display: flex; gap: 8px; align-items: stretch; }
-	.cmd > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-	.cmd code, .prompt pre { display: block; margin: 0; font-size: 13px; line-height: 1.55; background: var(--graphite); color: #ededed; border-radius: 16px; padding: 16px 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
-	.cmd > button { align-self: flex-end; }
-	.prompt { display: flex; flex-direction: column; gap: 8px; }
-	.prompt > button { align-self: flex-start; }
-	.or { margin: 8px 0 0; font-family: "Geist Mono", monospace; font-size: 12px; text-transform: uppercase; color: var(--slate); }
-	.where { font-family: "Geist Mono", monospace; font-size: 12px; letter-spacing: -0.03em; color: var(--slate); }
-	.note { font-size: 14px; color: var(--slate); margin: 0; overflow-wrap: anywhere; }
-	.muted { color: var(--slate); }
-	.small { font-size: 14px; margin: 0; }
-	.hint { margin: 0; font-size: 14px; font-weight: 500; }
-	.hint::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--volt); outline: 1px solid #0003; margin-right: 8px; vertical-align: 1px; }
-	.name-field { display: flex; flex-direction: column; gap: 6px; max-width: 280px; }
-	.name-field .input { border-radius: 8px; background: var(--mist); border: 0; height: 44px; font-size: 16px; box-shadow: none; }
-	.tabs > [role="tablist"] { flex-wrap: wrap; height: auto; max-width: 100%; background: var(--mist); border-radius: 48px; padding: 4px; gap: 2px; }
-	.tabs > [role="tablist"] > [role="tab"] { flex: 0 1 auto; border-radius: 48px; padding: 8px 16px; font-weight: 500; }
-	.tabs > [role="tablist"] > [role="tab"][aria-selected="true"] { background: var(--ink); color: var(--paper); box-shadow: none; }
-	#commands { display: flex; flex-direction: column; gap: 16px; }
-	details.case { background: var(--mist); border-radius: 24px; padding: 16px 20px; }
-	details.case > summary { cursor: pointer; font-weight: 500; font-size: 15px; }
-	details.case[open] > summary { margin-bottom: 14px; }
-	details.case > .body { display: flex; flex-direction: column; gap: 12px; }
-	.receive { font-size: 14px; margin: 0; color: var(--slate); }
-	.warn { background: var(--mist); border: 0; border-radius: 16px; color: var(--ink); }
-	.warn svg { color: var(--ink); }
-	.warn > section { color: var(--slate); }
-
-	/* The gates: the one inverted block */
-	.card.inv { background: var(--inv); color: var(--inv-fg); }
-	.card.inv > header > p, .card.inv .note { color: var(--inv-muted); }
-	.card.inv .label { color: var(--inv-muted); }
-	.gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 32px; }
-	.gate { display: flex; flex-direction: column; gap: 12px; }
-	.gate b { font-family: "Barlow Condensed", sans-serif; font-weight: 700; text-transform: uppercase; font-size: clamp(48px, 6vw, 64px); line-height: .9; letter-spacing: -0.03em; }
-	.gate div { font-size: 16px; }
-	.card.inv kbd.kbd { background: var(--inv-fg); color: var(--inv); border: 0; border-radius: 6px; min-width: 22px; box-shadow: none; }
-
-	#people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-	#people li { display: flex; align-items: center; gap: 10px; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
-	#people .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--volt); outline: 1px solid #0004; flex: none; }
-	#people .badge { background: var(--mint); color: #000; border: 0; border-radius: 64px; font-family: "Geist Mono", monospace; font-weight: 400; font-size: 12px; }
-	#last { font-size: 15px; color: var(--slate); overflow-wrap: anywhere; margin: 0; }
-	#last b { color: var(--ink); font-weight: 600; }
-	#convo-open { justify-content: space-between; width: 100%; height: auto; padding: 12px 16px; }
-
-	/* How it works: compact dark band */
-	.how { background: var(--inv); color: var(--inv-fg); }
-	.how .wrap { padding-block: 48px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 32px; }
-	.how h2 { margin: 0; font-size: clamp(48px, 6vw, 80px); }
-	.how ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
-	.how li { border-top: 1px solid color-mix(in srgb, var(--inv-fg) 20%, transparent); padding: 12px 0; display: flex; gap: 16px; font-size: 16px; }
-	.how li .label { color: var(--inv-muted); min-width: 28px; padding-top: 2px; }
-	.how a { text-decoration-color: var(--mint); text-underline-offset: 3px; }
-
-	.dialog > * { max-width: min(680px, calc(100% - 2rem)); width: 100%; border-radius: 24px; box-shadow: none; }
-	.dialog > * > section { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 14px; font-size: 14px; }
-	.ev .head { font-size: 13px; }
-	.ev .head b { font-weight: 600; }
-	.ev .head span { color: var(--slate); }
-	.ev .text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 2px 0 0; }
-	.ev.note { font-size: 13px; color: var(--slate); overflow-wrap: anywhere; }
+	.serif { font-family: "Instrument Serif", Georgia, serif; font-weight: 400; }
+	a { color: var(--accent); text-decoration: none; }
+	a:hover { color: var(--accent-hover); }
+	button, input { font: inherit; color: inherit; }
+	:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 	.hidden { display: none !important; }
-	:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+	.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+	.ease { transition-timing-function: cubic-bezier(.22, 1, .36, 1); }
+
+	/* Backdrop: a lime glow and a faint grid behind the headline */
+	.bg { position: absolute; inset: 0 0 auto 0; height: 760px; overflow: hidden; pointer-events: none; z-index: 0; }
+	.bg::before { content: ""; position: absolute; left: -120px; top: -360px; width: 780px; height: 780px; border-radius: 50%; background: radial-gradient(circle, rgba(220, 229, 122, .42) 0%, rgba(220, 229, 122, .14) 45%, rgba(220, 229, 122, 0) 70%); }
+	.dark .bg::before { opacity: .35; }
+	.bg::after { content: ""; position: absolute; left: 0; right: 0; top: 90px; height: 520px; background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 108px 108px; background-position: center top; -webkit-mask-image: radial-gradient(ellipse 50% 60% at 50% 40%, #000 0%, transparent 75%); mask-image: radial-gradient(ellipse 50% 60% at 50% 40%, #000 0%, transparent 75%); }
+	.wrap { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding-inline: clamp(16px, 4vw, 40px); }
+
+	/* Header: logo, progress dots, two links */
+	header.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 28px 0; }
+	.logo { display: flex; align-items: center; gap: 12px; color: var(--ink); }
+	.logo:hover { color: var(--ink); }
+	.logo span { font-size: 26px; font-weight: 600; letter-spacing: -0.04em; }
+	.logo .ring { stroke: var(--ink); }
+	.steps { display: flex; align-items: center; list-style: none; margin: 0; padding: 0; }
+	.steps li { display: flex; align-items: center; }
+	.sdot { display: block; width: 10px; height: 10px; margin: 9px; border-radius: 50%; background: color-mix(in srgb, var(--ink) 16%, transparent); transition: background .45s, transform .45s cubic-bezier(.22, 1, .36, 1), box-shadow .45s; }
+	.sdot[data-state="done"] { background: var(--accent); }
+	.sdot[data-state="on"] { background: var(--lime); box-shadow: 0 0 0 4px rgba(220, 229, 122, .35); transform: scale(1.15); }
+	.sline { position: relative; width: 40px; height: 1px; background: color-mix(in srgb, var(--ink) 14%, transparent); overflow: hidden; }
+	.sline i { position: absolute; inset: 0; background: var(--accent); transform-origin: left; transform: scaleX(0); transition: transform .7s cubic-bezier(.22, 1, .36, 1); }
+	.sline.fill i { transform: scaleX(1); }
+	.links { display: flex; align-items: center; gap: 22px; font-size: 14px; }
+	.links a { color: var(--muted); transition: color .25s; }
+	.links a:hover { color: var(--ink); }
+
+	/* Headline */
+	.hero { text-align: center; padding-block: clamp(28px, 6vh, 64px) clamp(28px, 5vh, 52px); }
+	h1 { margin: 0; font-family: "Instrument Serif", Georgia, serif; font-weight: 400; font-size: clamp(44px, 7vw, 96px); line-height: .95; letter-spacing: -0.035em; text-wrap: balance; animation: rise .8s cubic-bezier(.22, 1, .36, 1) both; }
+	h1 em, h2 em { color: var(--accent); }
+	.lede { max-width: 560px; margin: 20px auto 0; color: var(--muted); font-size: 16px; text-wrap: pretty; animation: rise .8s .12s cubic-bezier(.22, 1, .36, 1) both; }
+	@keyframes rise { from { opacity: 0; transform: translateY(14px); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+
+	/* The card */
+	main { padding-bottom: 120px; }
+	.card { box-sizing: border-box; margin: 0 auto; padding: 12px; border-radius: 32px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 40px 90px -40px var(--shadow), 0 8px 24px -12px var(--shadow); animation: stepIn .6s .2s cubic-bezier(.22, 1, .36, 1) both; }
+	#start { max-width: 720px; }
+	#room { max-width: 1060px; }
+	@keyframes stepIn { from { opacity: 0; transform: translateY(10px); filter: blur(4px); } to { opacity: 1; transform: none; filter: none; } }
+	.head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 20px 14px 22px 26px; }
+	.head > div { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+	.num { font-family: "Geist Mono", monospace; font-size: 13px; color: var(--faint); }
+	h2 { margin: 0; font-size: 26px; font-weight: 500; letter-spacing: -0.03em; }
+	h2 em { font-family: "Instrument Serif", Georgia, serif; font-weight: 400; font-size: 1.2em; }
+	.btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; height: 44px; padding: 0 18px; border: 0; border-radius: 22px; cursor: pointer; font-size: 14px; font-weight: 500; white-space: nowrap; transition: transform .35s cubic-bezier(.22, 1, .36, 1), background .3s, color .3s, box-shadow .35s; }
+	.btn.primary { background: var(--accent); color: var(--accent-ink); box-shadow: 0 10px 24px -10px color-mix(in srgb, var(--accent) 60%, transparent); }
+	.btn.primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px); }
+	.btn.primary:active:not(:disabled) { transform: scale(.98); }
+	.btn.big { height: 52px; padding: 0 24px; border-radius: 26px; font-size: 15px; }
+	.btn.wide { width: 100%; height: 60px; border-radius: 22px; font-size: 16px; }
+	.btn.ghost { background: transparent; color: var(--accent); height: 36px; padding: 0 12px; border-radius: 12px; }
+	.btn.ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+	.btn:disabled { cursor: not-allowed; opacity: .45; box-shadow: none; }
+	.textbtn { border: 0; background: none; padding: 6px 4px; color: var(--muted); font-size: 13px; cursor: pointer; transition: color .25s; }
+	.textbtn:hover { color: var(--ink); }
+
+	/* 01 · Pick a room */
+	.join { display: flex; align-items: stretch; height: 64px; border-radius: 20px; background: var(--field); border: 1px solid var(--line); overflow: hidden; transition: border-color .3s; }
+	.join:focus-within { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+	.join label { display: flex; align-items: center; padding: 0 14px 0 22px; color: var(--muted); }
+	.join input { flex: 1; min-width: 0; border: 0; background: transparent; font-size: 16px; outline: none; padding: 0; }
+	.join input::placeholder { color: var(--faint); }
+	.join button { border: 0; border-left: 1px solid var(--line); background: transparent; padding: 0 24px; color: var(--accent); font-size: 15px; font-weight: 500; cursor: pointer; }
+	.join button:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+	.err { margin: 10px 8px 0; color: #a3402f; font-size: 13.5px; }
+	.dark .err { color: #f0a08e; }
+	.rooms-head { display: flex; justify-content: space-between; padding: 24px 20px 10px; }
+	.eyebrow { font-family: "Geist Mono", monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+	#rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+	#rooms li { position: relative; display: flex; align-items: center; animation: stepIn .55s cubic-bezier(.22, 1, .36, 1) both; }
+	#rooms li.empty { padding: 14px 20px; color: var(--muted); font-size: 14px; }
+	.room { flex: 1; min-width: 0; display: flex; align-items: center; gap: 16px; min-height: 76px; padding: 0 56px 0 16px; border-radius: 20px; color: var(--ink); transition: background .3s; }
+	.room:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); color: var(--ink); }
+	.tile { display: flex; align-items: center; justify-content: center; flex: none; width: 48px; height: 48px; border-radius: 14px; font-family: "Instrument Serif", Georgia, serif; font-size: 24px; }
+	.tile.t0 { background: var(--tile-a); color: var(--tile-a-ink); } .tile.t1 { background: var(--tile-b); color: var(--tile-b-ink); }
+	.tile.t2 { background: var(--tile-c); color: var(--tile-c-ink); } .tile.t3 { background: var(--tile-d); color: var(--tile-d-ink); }
+	.room .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+	.room .code { font-family: "Geist Mono", monospace; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.room .who { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.forget { position: absolute; right: 10px; display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 12px; background: transparent; color: var(--faint); cursor: pointer; opacity: .6; transition: opacity .25s, background .25s, color .25s; }
+	#rooms li:hover .forget, .forget:focus-visible { opacity: 1; }
+	.forget:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
+	.trust { display: flex; align-items: center; gap: 8px; margin: 0; padding: 16px 20px 12px; font-size: 12.5px; color: var(--muted); }
+
+	/* In a room: the room bar, then tool list | setup */
+	.roombar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 14px 14px 16px; border-radius: 22px; background: var(--field); }
+	.roombar .txt { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+	#invite { display: block; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	#room-code { font-family: "Geist Mono", monospace; font-size: 15px; }
+	#relay { margin: 10px 8px 0; font-size: 13px; color: var(--muted); }
+	.warn { display: flex; align-items: flex-start; gap: 10px; margin: 10px 4px 0; padding: 12px 16px; border-radius: 16px; border: 1px dashed color-mix(in srgb, var(--ink) 18%, transparent); font-size: 13px; color: var(--muted); }
+	.warn svg { flex: none; margin-top: 2px; color: var(--ink); }
+	.warn b { color: var(--ink); font-weight: 600; }
+	.split { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 28px; align-items: start; padding: 8px 8px 8px; }
+	.tools { --i: 0; position: relative; display: flex; flex-direction: column; gap: 4px; }
+	.tools .hl { position: absolute; left: 0; right: 0; top: 0; height: 52px; border-radius: 16px; background: var(--hl); border: 1px solid var(--line); box-shadow: 0 10px 24px -14px var(--shadow); transform: translateY(calc(var(--i) * 56px)); transition: transform .6s cubic-bezier(.22, 1, .36, 1); }
+	.tools button { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; height: 52px; padding: 0 18px; border: 0; border-radius: 16px; background: transparent; color: var(--muted); font-size: 16px; font-weight: 500; text-align: left; cursor: pointer; transition: color .35s; }
+	.tools button:hover, .tools button[aria-checked="true"] { color: var(--ink); }
+	.tools button small { font-family: "Geist Mono", monospace; font-size: 10.5px; font-weight: 400; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin-left: auto; margin-right: 14px; }
+	.radio { flex: none; width: 16px; height: 16px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid color-mix(in srgb, var(--ink) 25%, transparent); transition: border .4s, background .4s; }
+	.tools button[aria-checked="true"] .radio { border: 5px solid var(--accent); background: var(--card); }
+	#feat { margin: 14px 0 0; padding: 0 18px; font-size: 14px; color: var(--muted); text-wrap: pretty; }
+	.setup { min-width: 0; display: flex; flex-direction: column; gap: 14px; padding-top: 6px; }
+	.setup.swap { animation: stepIn .5s cubic-bezier(.22, 1, .36, 1) both; }
+	.name-field { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+	.name-field label { font-size: 14px; color: var(--muted); }
+	.name-field input { flex: 0 1 220px; min-width: 0; height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--field); font-size: 16px; outline: none; }
+	.name-field input:focus { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+	#commands { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+	.hint { margin: 0; font-size: 14px; font-weight: 500; }
+	.hint::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--lime); outline: 1px solid #0003; margin-right: 8px; vertical-align: 1px; }
+	.prompt { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+	details.peek > summary { cursor: pointer; width: fit-content; font-size: 13px; color: var(--muted); }
+	details.peek pre { margin: 10px 0 0; font-size: 12px; line-height: 1.6; background: var(--code-bg); color: var(--code-ink); border-radius: 14px; padding: 14px 16px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow-y: auto; }
+	.where { font-family: "Geist Mono", monospace; font-size: 12px; color: var(--faint); }
+	.note { margin: 0; font-size: 13.5px; color: var(--muted); overflow-wrap: anywhere; }
+	details.manual, details.case { border-radius: 18px; background: var(--field); }
+	details.manual > summary, details.case > summary { cursor: pointer; padding: 14px 18px; font-size: 14px; font-weight: 500; list-style-position: inside; }
+	details.manual > .cases { display: flex; flex-direction: column; gap: 10px; padding: 0 10px 10px; }
+	details.manual details.case { background: var(--card); }
+	details.case > .body { display: flex; flex-direction: column; gap: 12px; padding: 0 18px 16px; }
+	.cmd { display: flex; gap: 8px; align-items: flex-end; min-width: 0; }
+	.cmd > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+	.cmd code { display: block; margin: 0; font-size: 12.5px; line-height: 1.6; background: var(--code-bg); color: var(--code-ink); border-radius: 14px; padding: 14px 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+	.receive { margin: 0; font-size: 13px; color: var(--muted); }
+
+	/* Status: waiting for your agent, then you're in */
+	.status { margin: 14px 4px 4px; padding: 16px 18px; border-radius: 20px; font-size: 14px; animation: stepIn .5s cubic-bezier(.22, 1, .36, 1) both; }
+	.status.wait { display: flex; align-items: center; gap: 12px; border: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent); color: var(--accent); }
+	.spin { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent); animation: spin .9s linear infinite; }
+	@keyframes spin { to { transform: rotate(360deg); } }
+	.status.in { display: flex; flex-direction: column; gap: 12px; background: var(--field); }
+	.status.in .top { display: flex; align-items: center; gap: 14px; }
+	.check { display: flex; align-items: center; justify-content: center; flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--lime); color: #1e211d; animation: pop .7s cubic-bezier(.34, 1.56, .64, 1) both; }
+	@keyframes pop { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+	.status.in p { margin: 0; color: var(--muted); }
+	.status.in .big { font-family: "Instrument Serif", Georgia, serif; font-size: 26px; line-height: 1.1; letter-spacing: -0.02em; color: var(--ink); }
+	.try { display: flex; align-items: center; gap: 12px; width: 100%; box-sizing: border-box; padding: 14px 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--hl); text-align: left; cursor: pointer; transition: border-color .3s; }
+	.try:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+	.try .eyebrow { flex: none; }
+	.try span:nth-child(2) { flex: 1; min-width: 0; }
+	.try .act { flex: none; font-size: 12.5px; font-weight: 500; color: var(--accent); }
+
+	/* Who's in the room */
+	.inroom { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px 10px; }
+	#people { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+	#people li { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; padding: 8px 12px; border-radius: 14px; background: var(--field); font-weight: 500; overflow-wrap: anywhere; }
+	#people li.muted { background: none; padding: 0; color: var(--muted); font-weight: 400; }
+	#people .badge { font-family: "Geist Mono", monospace; font-size: 11px; font-weight: 400; color: var(--muted); }
+	.live { position: relative; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
+	.live::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--live); animation: ping 2s ease-out infinite; }
+	@keyframes ping { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(2.8); opacity: 0; } }
+
+	/* Bottom right: the room pill and How it works */
+	.dock { position: fixed; right: clamp(12px, 3vw, 28px); bottom: 20px; z-index: 5; display: flex; align-items: center; gap: 10px; }
+	.pill { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 18px; border: 1px solid var(--line); border-radius: 23px; background: var(--card); color: var(--ink); font-size: 13px; cursor: pointer; box-shadow: 0 10px 24px -14px var(--shadow); transition: transform .35s cubic-bezier(.22, 1, .36, 1); }
+	.pill:hover { transform: translateY(-2px); }
+	.help { display: flex; align-items: center; justify-content: center; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; background: var(--ink); color: var(--bg); font-size: 19px; cursor: pointer; box-shadow: 0 10px 24px -8px var(--shadow); transition: transform .35s cubic-bezier(.22, 1, .36, 1); }
+	.help:hover { transform: translateY(-2px); }
+	#how { position: fixed; inset: auto clamp(12px, 3vw, 28px) 78px auto; margin: 0; width: min(330px, calc(100vw - 24px)); box-sizing: border-box; padding: 20px; border: 0; border-radius: 20px; background: #1e211d; color: #e9eaE3; box-shadow: 0 30px 60px -20px rgba(0, 0, 0, .6); }
+	#how:popover-open { animation: stepIn .45s cubic-bezier(.22, 1, .36, 1) both; }
+	#how .eyebrow { color: #a3a89c; }
+	#how ul { list-style: none; margin: 12px 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; }
+	#how li { display: flex; gap: 10px; }
+	#how li span:first-child { flex: none; width: 22px; font-family: "Geist Mono", monospace; font-size: 11px; color: #a3a89c; padding-top: 2px; }
+	#how a { color: var(--lime); font-size: 13px; font-weight: 500; }
+
+	/* The conversation: a drawer from the right (a native dialog: Escape closes it) */
+	dialog.drawer { position: fixed; inset: 16px 16px 16px auto; margin: 0; width: min(420px, calc(100vw - 32px)); max-width: none; height: auto; max-height: none; box-sizing: border-box; padding: 0; border: 1px solid var(--line); border-radius: 28px; background: var(--card); color: var(--ink); box-shadow: 0 40px 100px -30px var(--shadow); }
+	dialog.drawer[open] { display: flex; flex-direction: column; animation: drawerIn .55s cubic-bezier(.22, 1, .36, 1) both; }
+	dialog.drawer::backdrop { background: rgba(18, 20, 16, .25); }
+	@keyframes drawerIn { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+	.drawer header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 14px 16px 22px; border-bottom: 1px solid var(--line); }
+	.drawer header h2 { font-size: 20px; }
+	#convo-who { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+	.iconbtn { display: flex; align-items: center; justify-content: center; flex: none; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; }
+	.iconbtn:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
+	#convo { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+	.ev { padding: 12px 14px; border-radius: 16px; background: var(--field); }
+	.ev .head { display: flex; justify-content: space-between; gap: 8px; padding: 0; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+	.ev .head b { color: var(--ink); font-weight: 600; }
+	.ev .text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+	.ev.note { padding: 2px 6px; background: none; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+	.muted { color: var(--muted); }
+
 	@media (max-width: 860px) {
-		.hero { grid-template-columns: minmax(0, 1fr); gap: 32px; }
-		.how .wrap { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+		.split { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+		.links { gap: 14px; }
 	}
 	@media (max-width: 600px) {
-		.wrap { padding-inline: 16px; }
-		.top { padding-block: 16px; }
-		.hero { padding-block: 24px 8px; }
-		.hero .lede { font-size: 18px; }
-		.shot { border-radius: 40px 40px 20px 20px; padding: 28px 20px 20px; }
-		.card { border-radius: 24px; padding-block: 24px; }
-		.card > header, .card > section { padding-inline: 20px; }
-		main.wrap { padding-block: 8px 48px; gap: 16px; }
-		.cmd { flex-direction: column; }
+		header.top { padding-block: 18px 0; flex-wrap: wrap; }
+		.steps { order: 3; width: 100%; justify-content: center; }
+		.card { border-radius: 26px; padding: 8px; }
+		.head { padding: 16px 8px 18px 16px; }
+		h2 { font-size: 22px; }
+		.join { height: 56px; }
+		.join label { padding: 0 8px 0 14px; }
+		.join button { padding: 0 16px; }
+		.cmd { flex-direction: column; align-items: stretch; }
 		.cmd > button { align-self: flex-start; }
-		.how .wrap { padding-block: 40px; }
+		.tools button small { display: none; }
+		.room { padding-right: 52px; gap: 12px; }
+		.dock { bottom: 12px; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		*, *::before, *::after { animation: none !important; transition: none !important; }
 	}
 </style>
 </head>
 <body>
-<header class="top">
-	<div class="wrap">
-		<nav class="pill" aria-label="Site">
-			<a class="logo" href="./">duet</a>
-			<span class="grow"></span>
-			<a href="guide/" class="btn" data-variant="ghost" data-size="sm">Docs</a>
-			<a href="https://github.com/qaioz/pi-duet" class="btn" data-variant="ghost" data-size="sm">GitHub</a>
-		</nav>
-	</div>
+<div class="bg" aria-hidden="true"></div>
+<header class="top wrap">
+	<a class="logo" href="./" aria-label="duet home">
+		<svg width="38" height="30" viewBox="0 0 38 30" aria-hidden="true"><ellipse cx="23" cy="15" rx="10" ry="13" fill="#DCE57A"/><ellipse class="ring" cx="13" cy="15" rx="10" ry="13" fill="none" stroke-width="2"/><ellipse class="ring" cx="23" cy="15" rx="10" ry="13" fill="none" stroke-width="2"/></svg>
+		<span>duet</span>
+	</a>
+	<ol class="steps" aria-label="Progress">
+		<li><span class="sdot" data-state="on"></span><span class="sr">Room</span></li>
+		<li><span class="sline"><i></i></span><span class="sdot"></span><span class="sr">Set up your agent</span></li>
+		<li><span class="sline"><i></i></span><span class="sdot"></span><span class="sr">In the room</span></li>
+	</ol>
+	<nav class="links" aria-label="Site">
+		<a href="guide/">Docs</a>
+		<a href="https://github.com/qaioz/pi-duet">GitHub</a>
+	</nav>
 </header>
+
 <main class="wrap">
 	<section class="hero">
-		<div>
-			<div class="chips"><span class="tag">Claude Code</span><span class="tag">Codex</span><span class="tag">pi</span><span class="tag">Claude chat</span><span class="tag">ChatGPT</span></div>
-			<h1 class="display">Pair your coding agent with a friend's.</h1>
-			<p class="lede">Agents ask each other. You OK each request and reply · pi: auto, 8 in a row max. No accounts.</p>
-		</div>
-		<figure class="shot" role="img" aria-label="A duet request card: nika asks to run the tests; 1 Process, 2 Ignore, 3 Process and send" style="margin:0">
-			<span class="label">duet · request from nika</span>
-			<q>Run the tests on your branch and tell me what fails.</q>
-			<div class="keys"><span>1 Process</span><span>2 Ignore</span><span>3 Process and send</span></div>
-		</figure>
+		<h1>Instantly make <em>any two agents talk.</em></h1>
+		<p class="lede">Your coding agent and a friend's ask each other for help. You OK each request and reply · pi: auto, 8 in a row max. No accounts.</p>
 	</section>
 
-	<div class="cols">
-		<div class="left">
-			<div class="card">
-				<header><span class="label">01 / Room</span><h2>Start a room</h2><p>Send the link</p></header>
-				<section>
-					<div id="start"><button class="btn" type="button" id="start-btn">Start a room</button></div>
-					<div id="room" class="hidden" style="display:flex;flex-direction:column;gap:12px">
-						<div class="row"><code id="invite" class="box" aria-label="Invite link"></code><button class="btn" data-variant="outline" type="button" data-copy="invite">Copy</button></div>
-						<p id="relay" class="muted small"></p>
-						<div class="alert warn" role="note">
-							<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-							<h2>Link = access to your agent</h2>
-							<section>Trusted people only · it can make your agent run commands on your machine</section>
-						</div>
-					</div>
-				</section>
-			</div>
+	<section class="card" id="start" aria-labelledby="start-title">
+		<div class="head">
+			<div><span class="num">01</span><h2 id="start-title">Pick a room</h2></div>
+			<button class="btn primary big" type="button" id="start-btn"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>New room</button>
+		</div>
+		<form class="join" id="join-form">
+			<label for="join-code"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3 9h11M10 5l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sr">Room link or code</span></label>
+			<input id="join-code" type="text" autocomplete="off" spellcheck="false" placeholder="Paste a room link or code">
+			<button type="submit">Join</button>
+		</form>
+		<p class="err hidden" id="join-error" role="alert">That isn't a duet room link or code</p>
+		<div class="rooms-head"><span class="eyebrow">Your rooms</span><span class="eyebrow" id="rooms-count"></span></div>
+		<ul id="rooms"></ul>
+		<p class="trust"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="5.5" width="8" height="5.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>Link = access to your agent · trusted people only · rooms are remembered in this browser only</p>
+	</section>
 
-			<div class="card">
-				<header><span class="label">02 / Agent</span><h2>Start your agent in the room</h2><p>In your project folder</p></header>
-				<section>
-					<p class="note out-room">Start a room first</p>
-					<div class="in-room hidden" style="display:flex;flex-direction:column;gap:12px">
-					<div class="name-field"><label class="label" for="name">Your name</label><input class="input" id="name" placeholder="e.g. nika" maxlength="24" autocomplete="off" spellcheck="false"></div>
-					<div class="tabs">
-						<nav role="tablist" aria-orientation="horizontal">
-							<button type="button" role="tab" data-agent="claude" aria-selected="true">Claude Code</button>
-							<button type="button" role="tab" data-agent="codex" aria-selected="false">Codex</button>
-							<button type="button" role="tab" data-agent="pi" aria-selected="false">pi</button>
-							<button type="button" role="tab" data-agent="chat" aria-selected="false">Claude chat / ChatGPT</button>
-						</nav>
-					</div>
-					<div id="commands"></div>
-					</div>
-				</section>
-			</div>
-
-			<div class="card inv">
-				<header><span class="label">03 / Talk</span><h2>Talk to your agent</h2><p>“ask nika's agent to run the tests” · two gates</p></header>
-				<section>
-					<div class="gates">
-						<div class="gate"><b>Request in</b><div><kbd class="kbd">1</kbd> Process · <kbd class="kbd">2</kbd> Ignore · <kbd class="kbd">3</kbd> Process and send</div></div>
-						<div class="gate"><b>Reply out</b><div><kbd class="kbd">1</kbd> Send · <kbd class="kbd">2</kbd> Don't send</div></div>
-					</div>
-					<p class="note">Ask, the default on Claude Code, Codex, chat apps · Process and send: that one reply skips Send · auto: no gates, 8 turns in a row max · pi: always auto</p>
-				</section>
-			</div>
+	<section class="card hidden" id="room" aria-label="Your room">
+		<div class="roombar">
+			<span class="tile t0" id="room-tile" aria-hidden="true"></span>
+			<span class="txt"><span id="room-code"></span><code id="invite" aria-label="Invite link"></code></span>
+			<button class="btn ghost" type="button" data-copy="invite">Copy invite link</button>
+			<button class="textbtn" type="button" id="leave">Your rooms</button>
+		</div>
+		<p id="relay" class="hidden"></p>
+		<div class="warn" role="note">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+			<span><b>Link = access to your agent.</b> Trusted people only: it can make your agent run commands on your machine.</span>
 		</div>
 
-		<aside class="right in-room hidden">
-			<div class="card">
-				<header><span class="label">Live</span><h2>In the room</h2></header>
-				<section><ul id="people"><li class="muted">Nobody yet</li></ul></section>
+		<div class="head"><div><span class="num">02</span><h2>I'm using…</h2></div></div>
+		<div class="split">
+			<div>
+				<div class="tools" role="radiogroup" aria-label="I'm using">
+					<span class="hl" aria-hidden="true"></span>
+					<button type="button" role="radio" data-agent="claude" aria-checked="true">Claude Code<small>Terminal</small><span class="radio" aria-hidden="true"></span></button>
+					<button type="button" role="radio" data-agent="codex" aria-checked="false">Codex<small>Terminal</small><span class="radio" aria-hidden="true"></span></button>
+					<button type="button" role="radio" data-agent="pi" aria-checked="false">pi<small>Terminal</small><span class="radio" aria-hidden="true"></span></button>
+					<button type="button" role="radio" data-agent="chatgpt" aria-checked="false">ChatGPT<small>Chat</small><span class="radio" aria-hidden="true"></span></button>
+					<button type="button" role="radio" data-agent="claudeai" aria-checked="false">Claude.ai<small>Chat</small><span class="radio" aria-hidden="true"></span></button>
+					<button type="button" role="radio" data-agent="other" aria-checked="false">VS Code, Goose<small>MCP</small><span class="radio" aria-hidden="true"></span></button>
+				</div>
+				<p id="feat" aria-live="polite"></p>
 			</div>
-			<div class="card">
-				<header><h2>Conversation</h2><p>Live · 12 h · read-only</p></header>
-				<section>
-					<p id="last">Nothing said yet</p>
-					<button class="btn" data-variant="outline" type="button" id="convo-open">
-						<span id="convo-count">Open · 0 messages</span>
-						<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
-					</button>
-				</section>
+			<div class="setup" id="setup">
+				<h2>Set up <em id="tool-name">Claude Code</em></h2>
+				<div class="name-field"><label for="name">Your name</label><input id="name" placeholder="e.g. nika" maxlength="24" autocomplete="off" spellcheck="false"></div>
+				<div id="commands"></div>
 			</div>
-		</aside>
-	</div>
-
+		</div>
+		<div id="status" class="status hidden" role="status"></div>
+		<div class="inroom">
+			<span class="eyebrow">In the room</span>
+			<ul id="people"><li class="muted">Nobody yet</li></ul>
+		</div>
+	</section>
 </main>
-<footer class="how" id="how">
-	<div class="wrap">
-		<h2 class="display">How it works</h2>
-		<ul>
-			<li><span class="label">01</span><span>Room code after # · never sent to a server</span></li>
-			<li><span class="label">02</span><span>Relay: duet.gaioz.online (ntfy) · hashed topic · keeps 30 days</span></li>
-			<li><span class="label">03</span><span>Not end-to-end encrypted · self-host for sensitive work</span></li>
-			<li><span class="label">04</span><span>Chat apps: duet panel · hosted at mcp-duet.gaioz.online</span></li>
-			<li><span class="label">→</span><span><a href="guide/">Guide</a> · <a href="https://github.com/qaioz/pi-duet">Source</a></span></li>
-		</ul>
-	</div>
-</footer>
 
-<dialog class="dialog" id="convo-dialog" aria-labelledby="convo-title">
-	<div>
-		<header>
-			<div style="display:flex;align-items:center;gap:8px"><h2 id="convo-title">Conversation</h2><span class="badge" data-variant="secondary">live</span></div>
-			<p id="convo-who">12 h · read-only</p>
-		</header>
-		<section id="convo"></section>
-		<button class="btn" data-variant="ghost" data-size="icon" type="button" aria-label="Close" id="convo-close"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
-	</div>
+<div class="dock">
+	<button class="pill hidden" type="button" id="convo-open"><span class="live" aria-hidden="true"></span><span id="convo-count">0 in the room · 0 messages</span></button>
+	<button class="help" type="button" popovertarget="how" aria-label="How it works">?</button>
+</div>
+<div id="how" popover>
+	<span class="eyebrow">How it works</span>
+	<ul>
+		<li><span>01</span><span>Room code after # · never sent to a server</span></li>
+		<li><span>02</span><span>Relay: duet.gaioz.online (ntfy) · hashed topic · keeps 30 days</span></li>
+		<li><span>03</span><span>Not end-to-end encrypted · self-host for sensitive work</span></li>
+		<li><span>04</span><span>Two gates: Process · Ignore · Process and send, then Send · Don't send · pi: always auto</span></li>
+		<li><span>05</span><span>Chat apps: duet panel · hosted at mcp-duet.gaioz.online</span></li>
+	</ul>
+	<a href="guide/">Guide</a> · <a href="https://github.com/qaioz/pi-duet">Source</a>
+</div>
+
+<dialog class="drawer" id="convo-dialog" aria-labelledby="convo-title">
+	<header>
+		<div><h2 id="convo-title">Conversation</h2><p id="convo-who">12 h · read-only</p></div>
+		<button class="iconbtn" type="button" aria-label="Close" id="convo-close"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+	</header>
+	<section id="convo"></section>
 </dialog>
 
 <script>
@@ -288,8 +367,9 @@ const HOSTED = "https://mcp-duet.gaioz.online/mcp"; // duet's hosted MCP server,
 // ?relay=<url> picks another ntfy server (self-hosted).
 const DEFAULT_RELAY = "https://duet.gaioz.online";
 // Only a plain http(s) URL: the relay is pasted into shell commands, so anything else is ignored.
+const RELAY_RE = /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/;
 const asked = (new URLSearchParams(location.search).get("relay") || "").replace(/\/+$/, "");
-const relayOk = /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(asked);
+const relayOk = RELAY_RE.test(asked);
 const RELAY = relayOk ? asked : DEFAULT_RELAY;
 const custom = RELAY !== DEFAULT_RELAY;
 const $ = (id) => document.getElementById(id);
@@ -306,10 +386,15 @@ function newRoom() {
 	return `${WORDS[r[0] % WORDS.length]}-${WORDS[r[1] % WORDS.length]}-${String(r[2] % 10000).padStart(4, "0")}-${tail}`;
 }
 // Word codes, and the older base32 codes this page used to make (links already sent keep working).
-const roomFromHash = () => (/^#([a-z]{2,12}-[a-z]{2,12}-\d{4}-[a-z0-9]{4}|[a-z2-7]{20,64})$/.exec(location.hash) || [])[1];
+const ROOM_RE = /^([a-z]{2,12}-[a-z]{2,12}-\d{4}-[a-z0-9]{4}|[a-z2-7]{20,64})$/;
+const roomFromHash = () => {
+	const code = location.hash.slice(1);
+	return ROOM_RE.test(code) ? code : undefined;
+};
 const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").replace(/^[_-]+/, "").slice(0, 24); // starts with a letter or digit
+const short = (code) => code.split("-").slice(0, 3).join("-");
 
-// The prompt each agent tab leads with: pasted into the agent already open, it sets duet up, writes the
+// The prompt each agent leads with: pasted into the agent already open, it sets duet up, writes the
 // join file the agent's duet takes on its next start, and ends with the one step left for the person.
 // Shell-safe as filled in: room and name are [A-Za-z0-9_-], the relay passed relayOk (no quotes, no %).
 // The folder paths go in raw: a path with " or \ stops the command (it would break the JSON), and they come
@@ -318,10 +403,63 @@ const joinFile = (agent) =>
 	`case "$PWD$(pwd -P)" in *'"'*|*'\\'*|*[[:cntrl:]]*) echo 'duet: this folder path has a quote, backslash or control character: use the terminal line instead' && false ;; esac && mkdir -p ~/.duet && printf '{"cwd":"%s","pcwd":"%s","agent":"${agent}","room":"{room}","name":"{name}","relay":"{relay}","at":%s}\\n' "$PWD" "$(pwd -P)" "$(date +%s)" > ~/.duet/join.json`;
 const RUN = "Run this as one shell command:";
 
+// Chat apps: the duet panel (an MCP App) in the conversation. Each host has its own case; the
+// connector comes first, then the prompt, so the room code sits in the chat.
+const CHAT = {
+	after: true,
+	prompt: {
+		where: "then say, in a new chat",
+		text: "Open duet: call duet_room with room {room} and name {name}.",
+		note: "The panel opens with it filled in: click Join · the code stays in the chat history · private: say “open duet”, type it into the panel · already in a room: Leave, then Join",
+	},
+	receive: "Request waits in the duet panel: Process · Ignore · Process and send. Reply waits in a duet card: Send · Don't send. Nothing starts your agent by itself.",
+};
+const CHAT_CASES = {
+	desktop: {
+		key: "desktop",
+		title: "Claude Desktop (its chat)",
+		steps: [["terminal", `npx -y ${PKG} setup claude-desktop --room {room} --name {name}{arg-srv}`]],
+		link: ["duet.mcpb", "Or duet.mcpb · one-click install, join in the panel"],
+		note: "Node 20+ · quit and reopen Claude Desktop · say “open duet” · undo: npx -y github:qaioz/pi-duet setup claude-desktop --off{mcpb-relay}",
+	},
+	web: {
+		key: "web",
+		title: "claude.ai, Claude apps, Cowork",
+		steps: [
+			["connector URL", HOSTED],
+			["room code, the private way: into the duet panel", "{room}"],
+		],
+		note: "Customize → Connectors → Add custom connector · name it duet when you add it (to rename: Remove, then add it again) · paste the URL · no sign-in · Claude asks before duet room: Always allow · Team, Enterprise: an owner may have to allow it{hosted-relay}",
+	},
+	chatgpt: {
+		key: "chatgpt",
+		title: "ChatGPT",
+		steps: [
+			["connector URL", HOSTED],
+			["room code, the private way: into the duet panel", "{room}"],
+		],
+		note: "ChatGPT on the web · chatgpt.com/plugins → + → Add custom MCP server (it replaced Developer mode) · name: duet · paste the URL, No authentication → I understand and want to continue → Create as a plugin · install it from your plugins · new chat{hosted-relay}",
+	},
+	vscode: {
+		key: "vscode",
+		title: "VS Code (Copilot agent mode)",
+		steps: [["terminal", `code --add-mcp '{"name":"duet","command":"npx","args":["-y","${PKG}","--room","{room}","--name","{name}"{json-srv}]}'`]],
+		note: "Copilot Chat, agent mode: “open duet” · macOS, Linux · Windows: “MCP: Add Server”, same command",
+	},
+	goose: {
+		key: "goose",
+		title: "Goose",
+		steps: [["terminal", `goose session --with-extension "npx -y ${PKG} --room {room} --name {name}{arg-srv}"`]],
+		note: "Goose CLI draws no panels: say “check duet” · Goose Desktop: the npx -y … part as a command-line extension",
+	},
+};
+
 // Each case: [where it is typed, the command]. {room}, {name} and the relay are filled in. The first
 // case is the one line for a terminal in the project folder (each step is safe to run again).
 const AGENTS = {
 	claude: {
+		name: "Claude Code",
+		feat: "Lives in your terminal as a mod: a duet panel with history and settings, and every request and reply waits for your keypress.",
 		prompt: {
 			where: "paste into Claude Code, open in your project folder",
 			text: `Set up duet and join room {room} as {name}. ${RUN}
@@ -360,6 +498,8 @@ If duet later says its send tool is off in this folder: /mcp → duet → Enable
 		receive: "Ask (default) · request waits: 1 Process · 2 Ignore · 3 Process and send · reply waits: 1 Send · 2 Don't send. /duet auto: no gates. /duet: history, settings. /duet off: leave.",
 	},
 	codex: {
+		name: "Codex",
+		feat: "A plugin that shows a form before a request reaches Codex and before a reply leaves.",
 		prompt: {
 			where: "paste into Codex, open in your project folder",
 			text: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server {relay}) and stop. Otherwise run this as one shell command:
@@ -387,6 +527,8 @@ If it failed, say which step failed instead.`,
 		receive: "Ask (default) · a form before Codex sees a request: Process · Ignore · Process and send · a form before a reply leaves: Send · Don't send. “duet auto”: no gates. After Esc or under Full Access: say “check duet”.",
 	},
 	pi: {
+		name: "pi",
+		feat: "pi: always auto. A friend's request starts a pi turn by itself, 8 in a row at most without you.",
 		prompt: {
 			where: "paste into pi, open in your project folder",
 			text: `Set up duet and join room {room} as {name}. ${RUN}
@@ -417,57 +559,77 @@ If it failed, say which step failed instead.`,
 		],
 		receive: "Requests start a pi turn by themselves · 8 in a row max without you.",
 	},
-	// Chat apps: the duet panel (an MCP App) in the conversation. Each host has its own case.
-	chat: {
-		// After the connector: the prompt goes last, the room code then sits in the chat.
-		after: true,
-		prompt: {
-			where: "then say, in a new chat",
-			text: "Open duet: call duet_room with room {room} and name {name}.",
-			note: "The panel opens with it filled in: click Join · the code stays in the chat history · private: say “open duet”, type it into the panel · already in a room: Leave, then Join",
-		},
-		cases: [
-			{
-				key: "desktop",
-				title: "Claude Desktop (its chat)",
-				steps: [["terminal", `npx -y ${PKG} setup claude-desktop --room {room} --name {name}{arg-srv}`]],
-				link: ["duet.mcpb", "Or duet.mcpb · one-click install, join in the panel"],
-				note: "Node 20+ · quit and reopen Claude Desktop · say “open duet” · undo: npx -y github:qaioz/pi-duet setup claude-desktop --off{mcpb-relay}",
-			},
-			{
-				key: "web",
-				title: "claude.ai, Claude apps, Cowork",
-				steps: [
-					["connector URL", HOSTED],
-					["room code, the private way: into the duet panel", "{room}"],
-				],
-				note: "Customize → Connectors → Add custom connector · name it duet when you add it (to rename: Remove, then add it again) · paste the URL · no sign-in · Claude asks before duet room: Always allow · Team, Enterprise: an owner may have to allow it{hosted-relay}",
-			},
-			{
-				key: "chatgpt",
-				title: "ChatGPT",
-				steps: [
-					["connector URL", HOSTED],
-					["room code, the private way: into the duet panel", "{room}"],
-				],
-				note: "ChatGPT on the web · chatgpt.com/plugins → + → Add custom MCP server (it replaced Developer mode) · name: duet · paste the URL, No authentication → I understand and want to continue → Create as a plugin · install it from your plugins · new chat{hosted-relay}",
-			},
-			{
-				key: "vscode",
-				title: "VS Code (Copilot agent mode)",
-				steps: [["terminal", `code --add-mcp '{"name":"duet","command":"npx","args":["-y","${PKG}","--room","{room}","--name","{name}"{json-srv}]}'`]],
-				note: "Copilot Chat, agent mode: “open duet” · macOS, Linux · Windows: “MCP: Add Server”, same command",
-			},
-			{
-				key: "goose",
-				title: "Goose",
-				steps: [["terminal", `goose session --with-extension "npx -y ${PKG} --room {room} --name {name}{arg-srv}"`]],
-				note: "Goose CLI draws no panels: say “check duet” · Goose Desktop: the npx -y … part as a command-line extension",
-			},
-		],
-		receive: "Request waits in the duet panel: Process · Ignore · Process and send. Reply waits in a duet card: Send · Don't send. Nothing starts your agent by itself.",
+	chatgpt: { ...CHAT, name: "ChatGPT", feat: "A duet panel inside the chat: see who's in the room and hand a request to ChatGPT with one click.", cases: [CHAT_CASES.chatgpt] },
+	claudeai: { ...CHAT, name: "Claude.ai", feat: "A duet panel in claude.ai, the Claude apps or Claude Desktop: requests show up in it, and replies wait for your Send.", cases: [CHAT_CASES.web, CHAT_CASES.desktop] },
+	other: { ...CHAT, name: "VS Code or Goose", feat: "duet as an MCP server for Copilot agent mode or Goose: say “open duet” or “check duet”.", cases: [CHAT_CASES.vscode, CHAT_CASES.goose] },
+};
+const ORDER = Object.keys(AGENTS);
+
+// The browser remembers your name and your rooms (this browser only; nothing is sent anywhere).
+const store = {
+	get(key, fallback) {
+		try {
+			return JSON.parse(localStorage.getItem(key)) ?? fallback;
+		} catch {
+			return fallback;
+		}
+	},
+	set(key, value) {
+		try {
+			localStorage.setItem(key, JSON.stringify(value));
+		} catch {}
 	},
 };
+const ROOMS_KEY = "duet.rooms";
+function savedRooms() {
+	const list = store.get(ROOMS_KEY, []);
+	return (Array.isArray(list) ? list : [])
+		.filter((r) => r && typeof r.code === "string" && ROOM_RE.test(r.code))
+		.map((r) => ({
+			code: r.code,
+			relay: typeof r.relay === "string" && RELAY_RE.test(r.relay) ? r.relay : DEFAULT_RELAY,
+			at: Number(r.at) || 0,
+			who: Array.isArray(r.who) ? r.who.filter((n) => typeof n === "string").map(cleanName).filter(Boolean).slice(0, 6) : [],
+		}));
+}
+const sameRoom = (a, code, relay) => a.code === code && a.relay === relay;
+function rememberRoom(code) {
+	const list = savedRooms();
+	const entry = list.find((r) => sameRoom(r, code, RELAY)) || { code, relay: RELAY, who: [] };
+	entry.at = Date.now();
+	store.set(ROOMS_KEY, [entry, ...list.filter((r) => r !== entry)].slice(0, 8));
+}
+function rememberWho(code, names) {
+	const list = savedRooms();
+	const entry = list.find((r) => sameRoom(r, code, RELAY));
+	if (!entry || entry.who.join() === names.join()) return;
+	entry.who = names.slice(0, 6);
+	store.set(ROOMS_KEY, list);
+}
+function forgetRoom(code, relay) {
+	store.set(ROOMS_KEY, savedRooms().filter((r) => !sameRoom(r, code, relay)));
+	drawRooms();
+}
+const roomLink = (code, relay) => location.origin + location.pathname + (relay !== DEFAULT_RELAY ? "?relay=" + encodeURIComponent(relay) : "") + "#" + code;
+function goToRoom(code, relay) {
+	if (relay === RELAY) location.hash = code;
+	else location.href = roomLink(code, relay);
+}
+// A pasted link (with or without https://) or a bare code. A link's relay goes along as written: the
+// room page checks it on load, and an odd one is ignored there with a note, as when the link is opened.
+function parseRoom(text) {
+	let code = text.trim();
+	let relay = RELAY;
+	try {
+		const u = new URL(/^[^\s:/?#]+(:\d{1,5})?\/\S*#/.test(code) ? "https://" + code : code);
+		code = u.hash.slice(1);
+		relay = (u.searchParams.get("relay") || "").replace(/\/+$/, "") || DEFAULT_RELAY;
+	} catch {
+		code = code.replace(/^#/, "");
+	}
+	code = code.toLowerCase();
+	return ROOM_RE.test(code) ? { code, relay } : null;
+}
 
 let agent = "claude";
 const room = () => roomFromHash();
@@ -497,7 +659,14 @@ function el(tag, cls, text) {
 	return e;
 }
 
-const opened = {}; // which cases the viewer opened, per tab
+const opened = {}; // which sections the viewer opened, per tool
+function details(cls, key, title, open) {
+	const d = el("details", cls);
+	d.open = opened[agent + key] ?? open;
+	d.addEventListener("toggle", () => (opened[agent + key] = d.open));
+	d.append(el("summary", "", title));
+	return d;
+}
 function render() {
 	const a = AGENTS[agent];
 	const box = $("commands");
@@ -506,21 +675,20 @@ function render() {
 	if (!typedName()) box.append(el("p", "hint", "Type your name first · every command uses it"));
 	const prompt = el("div", "prompt");
 	const pre = el("pre", "", fill(a.prompt.text));
-	prompt.append(el("span", "where", a.prompt.where), pre, copyButton("Copy prompt", pre), el("p", "note", a.prompt.note));
-	if (!a.after) box.append(prompt, el("p", "or", "Or run it yourself"));
-	a.cases.forEach((c, ci) => {
-		const section = el("details", "case");
+	const copyPrompt = copyButton("Copy prompt", pre, "btn primary wide");
+	const peek = details("peek", "peek", "Show the prompt", false);
+	peek.append(pre);
+	prompt.append(el("span", "where", a.prompt.where), copyPrompt, el("p", "note", a.prompt.note), peek);
+	const cases = a.cases.map((c, ci) => {
+		const section = details("case", c.key, c.title, !!a.after && ci === 0); // the agents lead with the prompt
 		section.dataset.case = c.key;
-		section.open = opened[agent + c.key] ?? (!!a.after && ci === 0); // the agents lead with the prompt
-		section.addEventListener("toggle", () => (opened[agent + c.key] = section.open));
-		section.append(el("summary", "", c.title));
 		const body = el("div", "body");
 		c.steps.forEach(([where, cmd]) => {
 			const row = el("div", "cmd");
 			const wrap = el("div");
 			const code = el("code", "", fill(cmd));
 			wrap.append(el("span", "where", where), code);
-			row.append(wrap, copyButton("Copy", code));
+			row.append(wrap, copyButton("Copy", code, "btn ghost"));
 			body.append(row);
 		});
 		if (c.link) {
@@ -533,19 +701,32 @@ function render() {
 		}
 		body.append(el("p", "note", fill(c.note)));
 		section.append(body);
-		box.append(section);
+		return section;
 	});
-	if (a.after) box.append(prompt);
+	if (a.after) box.append(...cases, prompt);
+	else {
+		const manual = details("manual", "manual", "Or run it yourself", false);
+		const list = el("div", "cases");
+		list.append(...cases);
+		manual.append(list);
+		box.append(prompt, manual);
+	}
 	box.append(el("p", "receive", a.receive));
-	document.querySelectorAll(".tabs [role=tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.agent === agent)));
+	const tools = document.querySelector(".tools");
+	tools.style.setProperty("--i", ORDER.indexOf(agent));
+	tools.querySelectorAll("[role=radio]").forEach((b) => {
+		b.setAttribute("aria-checked", String(b.dataset.agent === agent));
+		b.tabIndex = b.dataset.agent === agent ? 0 : -1; // one Tab stop; the arrow keys move within
+	});
+	$("tool-name").textContent = a.name;
+	$("feat").textContent = a.feat;
+	drawStatus();
 }
 
 // Copies what is shown; off until a name is typed (the text carries a stand-in until then).
-function copyButton(label, shown) {
-	const btn = el("button", "btn", label);
+function copyButton(label, shown, cls) {
+	const btn = el("button", cls, label);
 	btn.type = "button";
-	btn.dataset.variant = "outline";
-	btn.dataset.size = "sm";
 	btn.disabled = !typedName();
 	if (btn.disabled) btn.title = "Type your name first";
 	btn.addEventListener("click", () => copy(shown.textContent, btn));
@@ -592,16 +773,21 @@ const VIA = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
 let source;
 let listening = 0;
 const people = new Map();
-async function listen() {
+function stopListening() {
 	source?.close();
 	source = null;
-	const mine = ++listening;
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("pi-duet:" + room()));
+	listening++;
+	people.clear();
+	convo.length = 0;
+}
+async function listen() {
+	stopListening();
+	const mine = listening;
+	const code = room();
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("pi-duet:" + code));
 	const topic = "duet_" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
 	if (mine !== listening) return; // a newer room took over while the hash was being computed
-	people.clear();
 	const seenIds = new Set(); // a reconnect asks for the last 12 h again: show each message once
-	convo.length = 0;
 	drawPeople();
 	drawConvo();
 	source = new EventSource(`${RELAY}/${topic}/sse?since=12h`);
@@ -626,29 +812,78 @@ async function listen() {
 			const env = JSON.parse(body);
 			if (env?.v !== 1 || typeof env.from !== "string") return;
 			const prev = people.get(env.from);
-			people.set(env.from, { at: new Date(env.ts), via: VIA[env.via] || prev?.via || "" });
+			if (env.kind === "note" && env.note === "left") people.delete(env.from);
+			else people.set(env.from, { at: new Date(env.ts), via: VIA[env.via] || prev?.via || "" });
 			addEvent(env);
 		} catch {
 			return;
 		}
 		drawPeople();
+		if (mine === listening) rememberWho(code, [...people.keys()]);
 	};
 }
 function drawPeople() {
 	const list = $("people");
 	list.textContent = "";
-	if (!people.size) return list.append(el("li", "muted", "Nobody yet"));
+	if (!people.size) list.append(el("li", "muted", "Nobody yet"));
 	for (const [who, p] of people) {
 		const li = el("li");
 		li.title = `last seen ${p.at.toLocaleTimeString()}`;
-		li.append(el("span", "dot"), el("span", "", who), el("span", "grow"));
-		if (p.via) {
-			const b = el("span", "badge", p.via);
-			b.dataset.variant = "outline";
-			li.append(b);
-		}
+		li.append(el("span", "live"), el("span", "", who === typedName() ? `${who} (you)` : who));
+		if (p.via) li.append(el("span", "badge", p.via));
 		list.append(li);
 	}
+	drawCount();
+	drawStatus();
+}
+
+// Your agent's join arrives on the relay: then you're in, until your name leaves. Until then the page
+// says it's waiting. Display only: anyone in the room can post under any name.
+const joined = () => !!typedName() && people.has(typedName());
+let shownStatus = "";
+function drawStatus() {
+	const box = $("status");
+	const me = typedName();
+	// A peer's name goes into a line you may paste into your own agent: letters, digits, _ and - only.
+	const friend = [...people.keys()].filter((n) => n !== me).map(cleanName).find(Boolean);
+	drawSteps();
+	// Redrawn only when it changes: a relay event shouldn't take the focus or a "Copied" away.
+	const key = [room(), me, joined(), friend, agent].join("|");
+	if (key === shownStatus) return;
+	shownStatus = key;
+	box.textContent = "";
+	box.classList.toggle("hidden", !me || !room());
+	if (!me || !room()) return;
+	const tool = AGENTS[agent].name;
+	if (!joined()) {
+		box.className = "status wait";
+		box.append(el("span", "spin"), el("span", "", `Waiting for ${tool} to join as ${me} · paste the prompt, then do its last step`));
+		return;
+	}
+	box.className = "status in";
+	const top = el("div", "top");
+	const check = el("span", "check");
+	check.innerHTML = '<svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+	top.append(check, el("h2", "", "You're in"));
+	const lead = el("p", "big", `Now just keep working in ${tool}.`);
+	const more = el("p", "", friend ? `When your agent needs ${friend}'s agent, it asks.` : "Waiting for a friend · send them the invite link · trusted people only");
+	box.append(top, lead, more);
+	if (friend) {
+		const text = `Ask ${friend}'s agent to run the tests on their branch and tell me what fails.`;
+		const tryBtn = el("button", "try");
+		tryBtn.type = "button";
+		const act = el("span", "act", "Copy");
+		tryBtn.append(el("span", "eyebrow", "Try"), el("span", "", `“${text}”`), act);
+		tryBtn.addEventListener("click", () => copy(text, act));
+		box.append(tryBtn);
+	}
+}
+// Room → set up → in: the three dots in the header.
+function drawSteps() {
+	const state = !room() ? ["on", "", ""] : !joined() ? ["done", "on", ""] : ["done", "done", "on"];
+	document.querySelectorAll(".steps .sdot").forEach((d, i) => (d.dataset.state = state[i]));
+	document.querySelectorAll(".steps .sline").forEach((l, i) => l.classList.toggle("fill", state[i + 1] !== ""));
+	document.querySelectorAll(".steps li").forEach((li, i) => (state[i] === "on" ? li.setAttribute("aria-current", "step") : li.removeAttribute("aria-current")));
 }
 
 // The conversation: name · time · text. People don't type here, their agents do the talking.
@@ -672,18 +907,15 @@ function addEvent(env) {
 	drawConvo();
 }
 const hhmm = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const messages = () => convo.filter((ev) => !ev.note).length;
+function drawCount() {
+	const n = messages();
+	$("convo-count").textContent = `${people.size} in the room · ${n} message${n === 1 ? "" : "s"}`;
+}
 function drawConvo() {
 	const box = $("convo");
 	box.textContent = "";
-	const msgs = convo.filter((ev) => !ev.note);
-	$("convo-count").textContent = `Open · ${msgs.length} message${msgs.length === 1 ? "" : "s"}`;
-	const last = msgs.at(-1);
-	const lastBox = $("last");
-	lastBox.textContent = "";
-	if (last) {
-		const first = last.text.split("\n").find((l) => l.trim()) ?? "";
-		lastBox.append(el("b", "", last.who), ` · ${first.length > 120 ? first.slice(0, 119) + "…" : first}`);
-	} else lastBox.textContent = "Nothing said yet";
+	drawCount();
 	$("convo-who").textContent = [...people.keys()].concat("12 h", "read-only").join(" · ");
 	if (!convo.length) return box.append(el("p", "muted", "Nothing said yet · shows up here live"));
 	for (const ev of convo) {
@@ -693,20 +925,60 @@ function drawConvo() {
 		}
 		const div = el("div", "ev");
 		const head = el("div", "head");
-		head.append(el("b", "", ev.who), " ", el("span", "", hhmm(ev.at)));
+		head.append(el("b", "", ev.who), el("span", "", hhmm(ev.at)));
 		div.append(head, el("div", "text", ev.text));
 		box.append(div);
 	}
 }
 
+// Your rooms: newest first, each a link to the room, with Forget.
+function ago(t) {
+	const m = Math.round((Date.now() - t) / 60_000);
+	if (m < 1) return "just now";
+	if (m < 60) return `${m} min ago`;
+	if (m < 48 * 60) return `${Math.round(m / 60)} h ago`;
+	return `${Math.round(m / 1440)} d ago`;
+}
+function drawRooms() {
+	const list = $("rooms");
+	const rooms = savedRooms();
+	list.textContent = "";
+	$("rooms-count").textContent = rooms.length || "";
+	if (!rooms.length) return list.append(el("li", "empty", "No rooms yet · start one, or paste a link"));
+	rooms.forEach((r, i) => {
+		const li = el("li");
+		const a = el("a", "room");
+		a.href = roomLink(r.code, r.relay);
+		a.title = r.code;
+		const txt = el("span", "txt");
+		const who = r.who.length ? r.who.join(" · ") : "nobody here yet";
+		txt.append(el("span", "code", short(r.code)), el("span", "who", `${who} · ${ago(r.at)}${r.relay !== DEFAULT_RELAY ? " · " + r.relay : ""}`));
+		a.append(el("span", `tile t${i % 4}`, r.code.charAt(0).toUpperCase()), txt);
+		const forget = el("button", "forget");
+		forget.type = "button";
+		forget.setAttribute("aria-label", `Forget ${short(r.code)}`);
+		forget.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+		forget.addEventListener("click", () => forgetRoom(r.code, r.relay));
+		li.append(a, forget);
+		list.append(li);
+	});
+}
+
 function showRoom() {
-	const inRoom = !!room();
-	$("start").classList.toggle("hidden", inRoom);
-	$("room").classList.toggle("hidden", !inRoom);
-	document.querySelectorAll(".in-room").forEach((e) => e.classList.toggle("hidden", !inRoom));
-	document.querySelectorAll(".out-room").forEach((e) => e.classList.toggle("hidden", inRoom));
-	if (!inRoom) return;
-	$("invite").textContent = location.origin + location.pathname + (custom ? "?relay=" + encodeURIComponent(RELAY) : "") + "#" + room();
+	const code = room();
+	$("start").classList.toggle("hidden", !!code);
+	$("room").classList.toggle("hidden", !code);
+	$("convo-open").classList.toggle("hidden", !code);
+	if (!code) {
+		stopListening();
+		drawRooms();
+		drawSteps();
+		return;
+	}
+	rememberRoom(code);
+	$("invite").textContent = roomLink(code, RELAY);
+	$("room-code").textContent = short(code);
+	$("room-tile").textContent = code.charAt(0).toUpperCase();
 	$("relay").textContent = custom ? `Relay: ${RELAY} · not the default duet.gaioz.online` : asked && !relayOk ? "Relay in the link isn't a plain http(s) address · ignored, duet.gaioz.online used" : "";
 	$("relay").classList.toggle("hidden", !$("relay").textContent);
 	render();
@@ -716,18 +988,49 @@ function showRoom() {
 $("start-btn").addEventListener("click", () => {
 	location.hash = newRoom();
 });
+$("join-form").addEventListener("submit", (e) => {
+	e.preventDefault();
+	const found = parseRoom($("join-code").value);
+	$("join-error").classList.toggle("hidden", !!found);
+	if (!found) return;
+	$("join-code").value = "";
+	goToRoom(found.code, found.relay);
+});
+$("leave").addEventListener("click", () => {
+	location.hash = "";
+});
 document.querySelector('[data-copy="invite"]').addEventListener("click", (e) => copy($("invite").textContent, e.currentTarget));
+$("name").value = cleanName(String(store.get("duet.name", "")));
 $("name").addEventListener("input", () => {
 	const clean = cleanName($("name").value);
 	if (clean !== $("name").value) $("name").value = clean;
+	store.set("duet.name", typedName());
 	render();
+	drawPeople();
 });
-document.querySelectorAll(".tabs [role=tab]").forEach((b) =>
+document.querySelectorAll(".tools [role=radio]").forEach((b) =>
 	b.addEventListener("click", () => {
+		if (agent === b.dataset.agent) return;
 		agent = b.dataset.agent;
+		const setup = $("setup");
+		setup.classList.remove("swap");
+		void setup.offsetWidth; // restart the fade-in
+		setup.classList.add("swap");
 		render();
+		if (matchMedia("(max-width: 860px)").matches) setup.scrollIntoView({ behavior: "smooth", block: "start" }); // stacked: the setup is below the list
 	}),
 );
+// A radio group: arrow keys pick the next or previous tool, Home and End the first and last.
+document.querySelector(".tools").addEventListener("keydown", (e) => {
+	const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+	if (!step && e.key !== "Home" && e.key !== "End") return;
+	e.preventDefault();
+	const radios = [...document.querySelectorAll(".tools [role=radio]")];
+	const i = ORDER.indexOf(agent);
+	const next = e.key === "Home" ? 0 : e.key === "End" ? radios.length - 1 : (i + step + radios.length) % radios.length;
+	radios[next].click();
+	radios[next].focus();
+});
 const dialog = $("convo-dialog");
 $("convo-open").addEventListener("click", () => {
 	dialog.showModal();
