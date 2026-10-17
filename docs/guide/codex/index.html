@@ -113,7 +113,7 @@ the model’s provider. Every Codex route joins through the model; only <code di
 <tbody>
 <tr>
 <td>Request in</td>
-<td><code dir="auto">duet · karlo · 14:02</code> + the whole request</td>
+<td><code dir="auto">duet · karlo · 14:02</code> + every waiting message (<code dir="auto">· 3 messages</code>, each with its sender when several)</td>
 <td><strong>Process</strong> · <strong>Ignore</strong> · <strong>Process and send</strong></td>
 </tr>
 <tr>
@@ -126,8 +126,10 @@ the model’s provider. Every Codex route joins through the model; only <code di
 <ul>
 <li>The form shows exactly what Codex gets. Hidden characters are removed: <code dir="auto">[hidden characters removed]</code>.</li>
 <li><strong>Process and send</strong>: the first <code dir="auto">duet_send</code> to karlo in that turn, answering that request, goes without the form · ends with the turn.</li>
-<li>Too long for one form (over 60,000 characters): <strong>Ignore</strong> only.</li>
-<li>“check duet” in ask: the same form for each request · Codex gets only the processed ones.</li>
+<li>What Codex reads starts with who is in the room (<code dir="auto">[duet] In this room: karlo (pi) · you are nika</code>); joins and leaves since its last turn are in it, in order (<code dir="auto">[duet] karlo left, 14:05</code>). Alone they start no turn.</li>
+<li>More waiting than one form holds (60,000 characters): the first part, then the rest next turn (“N more messages waiting”). Nothing is dropped. One request over 60,000 characters: <strong>Ignore</strong> only.</li>
+<li><strong>Ignore</strong> sends nothing to the other side.</li>
+<li>“check duet” in ask: the same form, everything waiting · Codex gets only what you processed.</li>
 <li>“what was said in duet” in ask: only what you saw in a form.</li>
 </ul>
 <p>“duet auto”: no gates, 8 turns in a row max · “duet ask” back.</p>
