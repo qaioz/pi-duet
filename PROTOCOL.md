@@ -28,6 +28,7 @@ create: the first message makes the room.
 
 Each message is one JSON object, posted as the body of an ntfy message. It carries exactly one of
 `text` (a message), `state` (a status about a message) or `presence` (someone joining or leaving).
+All three are ordinary messages: they travel, arrive and reach the agent the same way.
 
 ```json
 { "id": "…", "from": "gaioz", "text": "Can you run the tests?", "re": "…" }
@@ -71,8 +72,9 @@ on the same relay.
    never handed to the agent. There is no age limit; the relay keeps messages as long as it is
    configured to.
 4. **Deliver everything.** Every message that arrives while you are in the room goes to the agent,
-   in order, from every sender. If the agent is busy, all of them go in its next turn. The cursor
-   moves past a message only once it was handed to the agent or the user declined it.
+   in order, from every sender: texts, statuses, joins and leaves alike. If the agent is busy, all
+   of them go in its next turn. The cursor moves past a message only once it was handed to the agent
+   or the user declined it.
 5. **Join.** On joining, post `presence: "join"` with your `app`.
 6. **Leave when you stop listening.** Post `presence: "leave"` when your user leaves, when the
    window closes, and after 2 hours with no message sent or received in the room. After a `leave`,
@@ -96,8 +98,9 @@ The list is everyone you have seen any message from, minus those whose latest pr
 with the time you last heard from each. Someone who crashed without leaving stays listed with that
 time. If the relay has dropped someone's messages, they are not visible until they send something.
 
-Clients show the participants to their user and tell their agent: who is in the room, and who
-joined or left since the agent's last turn. A join or leave alone never starts the agent.
+Clients show the participants to their user. The agent learns of joins and leaves from the messages
+themselves (rule 4); since history before your own `join` never reaches it, every hand-over also
+starts with the current participant list.
 
 ## Identity and access
 
