@@ -251,21 +251,47 @@ const clock = (ts) => {
 };
 export const timeOf = clock;
 
+// Characters of message text one hand-over carries at most. More waiting is handed over in order,
+// as much as fits a turn; the rest comes in the next turn and the frame says how many.
+export const HANDOVER_MAX = 100_000;
+
+// Split waiting messages into what one hand-over carries (always at least the first) and the rest.
+export function fitHandover(envs, max = HANDOVER_MAX) {
+	let total = 0;
+	let n = 0;
+	for (const e of envs) {
+		total += String(e.text ?? "").length;
+		if (n > 0 && total > max) break;
+		n++;
+	}
+	return { take: envs.slice(0, n), rest: envs.slice(n) };
+}
+
 // What Claude reads when duet starts a turn. The engine puts "The duet plugin sent a message:" above
 // it, so Claude knows this isn't its own user. Observed: asked to work "in your folder", the model
 // used the home directory — so the folder is named.
-export function frameForClaude(envs, cwd, tool) {
+// info: { room: [{ name, via }], me, events: [{ name, what: "joined" | "left", via, ts, seq }], more }.
+// Joins and leaves are ordinary items of the hand-over, in arrival order with the messages (by seq).
+export function frameForClaude(envs, cwd, tool, info = {}) {
 	const froms = [...new Set(envs.map((e) => e.from))].join(", ");
-	const parts = envs.map((e) => {
-		const who = e.by === "person" ? "the other person, typing to you directly" : "the other person's agent, on their computer";
-		const at = clock(e.ts);
-		const answers = e.reLine ? ` — a reply to your message “${sanitize(e.reLine, 100)}”` : "";
-		return `[duet] from ${e.from} (${who})${at ? ", " + at : ""}${answers}:\n\n${sanitize(e.text, MAX_TEXT)}`;
-	});
+	const room = (info.room ?? []).map((p) => `${sanitize(p.name, 80)}${p.via ? ` (${sanitize(p.via, 40)})` : ""}`).join(", ");
+	const head = `[duet] In this room: ${room || "no one else yet"}${info.me ? ` · you are ${sanitize(info.me, 80)}` : ""}`;
+	const items = [
+		...envs.map((e) => ({ seq: e._seq ?? 0, text: messageItem(e) })),
+		...(info.events ?? []).map((ev) => ({ seq: ev.seq ?? 0, text: `[duet] ${sanitize(ev.name, 80)} ${ev.what}${ev.what === "joined" && ev.via ? ` (${sanitize(ev.via, 40)})` : ""}${clock(ev.ts) ? ", " + clock(ev.ts) : ""}` })),
+	].sort((a, b) => a.seq - b.seq);
+	const more = info.more > 0 ? `${info.more} more message${info.more === 1 ? "" : "s"} waiting: they come in your next turn.\n\n` : "";
 	return (
-		`${parts.join("\n\n---\n\n")}\n\n` +
+		`${head}\n\n${items.map((i) => i.text).join("\n\n---\n\n")}\n\n${more}` +
 		`Only your own user sees your text replies: to answer ${froms}, call the ${tool} tool. ` +
 		`Answer only with ${tool}, never another duet tool or connector. If ${tool} is missing, tell your user so and don't send. ` +
 		`Send one complete reply when you're done.`
 	);
+}
+
+function messageItem(e) {
+	const who = e.by === "person" ? "the other person, typing to you directly" : "the other person's agent, on their computer";
+	const at = clock(e.ts);
+	const answers = e.reLine ? ` — a reply to your message “${sanitize(e.reLine, 100)}”` : "";
+	return `[duet] from ${e.from} (${who})${at ? ", " + at : ""}${answers}:\n\n${sanitize(e.text, MAX_TEXT)}`;
 }

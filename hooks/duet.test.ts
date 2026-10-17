@@ -124,7 +124,7 @@ function world(on: any, opts: { interactive?: boolean; fetchStatus?: number; fee
 	// with duetTurn(), which fires turn.start and then lets the submission resolve.
 	on("prompt.submit", async ($: any, e: any) => {
 		did.submits.push(e.text);
-		if (e.text.startsWith("[duet] from ")) await new Promise<void>((r) => did.gates.push(r));
+		if (e.text.startsWith("[duet] ")) await new Promise<void>((r) => did.gates.push(r));
 		// The user's prompt, as in Claude Code: its turn starts before the submission resolves.
 		if (did.userTurn && e.origin?.kind === "composer") await did.userTurn(e.text);
 		return { text: e.text };
@@ -171,7 +171,7 @@ async function settle(clock: any, rounds = 10) {
 
 // Start the turn duet asked for: turn.start first, then the submission resolves (as in Claude Code).
 async function duetTurn($: any, did: any, clock: any, turnId: string) {
-	const text = did.submits.filter((t: string) => t.startsWith("[duet] from ")).at(-1);
+	const text = did.submits.filter((t: string) => t.startsWith("[duet] ")).at(-1);
 	await $.turn.start({ turnId, text: "(Claude Code's own wording around) " + text });
 	did.gates.shift()?.();
 	await settle(clock, 2);
@@ -192,7 +192,7 @@ const PANE = { plugin: "duet", component: "Pane", requestId: "duet", viewport: {
 const MODE = { plugin: "duet", component: "SessionMode", surface: "terminal", props: { modes: [] } };
 const done = (turnId: string) => ({ turnId, answer: "ok", durationMs: 1, isAborted: false, usage: null }) as any;
 const startup = (mode: string) => ({ hook_event_name: "SessionStart", source: "startup", permission_mode: mode, session_id: "s", transcript_path: "/t", cwd: CWD }) as any;
-const duetSubmits = (did: any) => did.submits.filter((t: string) => t.startsWith("[duet] from "));
+const duetSubmits = (did: any) => did.submits.filter((t: string) => t.startsWith("[duet] "));
 const msgPosts = (did: any) => did.posts.filter((p: any) => p.body?.kind === "msg");
 
 async function join($: any, clock: any, args: string) {
@@ -582,7 +582,7 @@ test("a burst from one sender is one card and one toast, and goes to Claude in o
 	await settle(clock);
 	expect(did.toasts.filter((t) => /karlo: new request/.test(t)).length).toBe(1);
 	const band = await $.ui.mount(BAND as any);
-	expect(await band.find({ type: "Text", text: "+2" })).toBeDefined();
+	expect(await band.find({ type: "Text", text: "3 messages" })).toBeDefined();
 	await band.unmount();
 	await press($, clock, "take");
 	expect(duetSubmits(did).length).toBe(1);
@@ -1237,13 +1237,11 @@ test("a reply names the message it answers on the card and for Claude; a peer ca
 	const band = await $.ui.mount(BAND as any);
 	expect(await band.find({ type: "Text", text: "↳ re “Which Node version do you use?”" })).toBeDefined();
 	await band.unmount();
-	await press($, clock, "take");
+	await press($, clock, "take"); // one press: both messages, from both senders, in one turn
+	expect(duetSubmits(did).length).toBe(1);
 	expect(duetSubmits(did)[0]).toMatch(/a reply to your message “Which Node version do you use\?”/);
-	await duetTurn($, did, clock, "r1");
-	await $.turn.complete(done("r1"));
-	await settle(clock);
-	await press($, clock, "take");
-	expect(duetSubmits(did)[1]).not.toMatch(/pre-approved/);
+	expect(duetSubmits(did)[0]).toMatch(/from dato[\s\S]*hello/);
+	expect(duetSubmits(did)[0]).not.toMatch(/pre-approved/);
 	did.feeding = false;
 });
 
@@ -1837,4 +1835,146 @@ test("send tool off: an unreadable ~/.claude.json gives the generic line", async
 	await join($, clock, "test-room-102 gaioz");
 	await until(clock, () => did.logs.includes(OFF_GENERIC));
 	expect(await bandText($)).toContain(OFF_GENERIC);
+});
+
+// ---------- Release 12: everything is delivered, the room is named, joins and leaves are said ----------
+
+const claudeJoin = (from: string) => ({ ...joinOf(from), via: "claude-code" });
+
+test("R12 case 1: three messages from one peer while idle → one press, one turn, all three in order, nothing dropped", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-r12a gaioz");
+	for (const t of ["one", "two", "three"]) did.push(msg(t));
+	await settle(clock);
+	await press($, clock, "take");
+	expect(duetSubmits(did).length).toBe(1);
+	expect(duetSubmits(did)[0]).toMatch(/from karlo[\s\S]*\n\none\n[\s\S]*from karlo[\s\S]*\n\ntwo\n[\s\S]*from karlo[\s\S]*\n\nthree\n/);
+	expect(duetSubmits(did)[0]).not.toMatch(/more message/);
+	expect(did.toasts.join("\n")).not.toMatch(/dropped/);
+	did.feeding = false;
+});
+
+test("R12 cases 2 + 4: messages from two peers → one card, one press, one turn; it starts with the room line naming both peers and their apps", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-r12b gaioz");
+	did.push(joinOf("karlo")); // pi
+	did.push(claudeJoin("nika"));
+	await settle(clock);
+	did.push(msg("from karlo first"));
+	did.push(msg("from nika second", "nika"));
+	did.push(msg("karlo again third"));
+	await settle(clock);
+	const band = await $.ui.mount(BAND as any);
+	expect(await band.find({ type: "Text", text: "karlo, nika" })).toBeDefined();
+	expect(await band.find({ type: "Text", text: "3 messages" })).toBeDefined();
+	expect(await band.find({ type: "Text", text: /^nika · \d\d:\d\d$/ })).toBeDefined(); // each message says who sent it
+	await band.unmount();
+	await press($, clock, "take");
+	expect(duetSubmits(did).length).toBe(1);
+	const t = duetSubmits(did)[0];
+	expect(t.startsWith("[duet] In this room: karlo (pi), nika (Claude Code) · you are gaioz\n")).toBe(true);
+	expect(t).toMatch(/from karlo[\s\S]*first[\s\S]*from nika[\s\S]*second[\s\S]*from karlo[\s\S]*third/);
+	expect(t).toMatch(/to answer karlo, nika, call the mcp__duet__send tool/);
+	expect(t).not.toMatch(/joined/); // the joins answered ours: they are the room line's, not items
+	const band2 = await $.ui.mount(BAND as any);
+	expect(await band2.find({ key: "take" })).toBeUndefined(); // nothing left waiting
+	await band2.unmount();
+	did.feeding = false;
+});
+
+test("R12 case 3 (auto): messages arriving while Claude is busy all go in its next turn, in order", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("default"));
+	await join($, clock, "test-room-r12c gaioz");
+	await $.command.run({ command: "duet", args: "auto", origin: USER } as any);
+	await settle(clock);
+	await $.prompt.submit({ text: "long job", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.start({ turnId: "user1", text: "long job" } as any);
+	for (let i = 1; i <= 7; i++) did.push(msg("busy " + i, i % 2 ? "karlo" : "nika"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(0);
+	await $.turn.complete(done("user1"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(1);
+	expect(duetSubmits(did)[0]).toMatch(/busy 1[\s\S]*busy 2[\s\S]*busy 3[\s\S]*busy 4[\s\S]*busy 5[\s\S]*busy 6[\s\S]*busy 7/);
+	did.feeding = false;
+});
+
+test("R12 case 3 (ask): one press while Claude is busy takes everything waiting into the next turn", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-r12d gaioz");
+	await $.prompt.submit({ text: "long job", origin: { kind: "composer" }, wait: false } as any);
+	await $.turn.start({ turnId: "user1", text: "long job" } as any);
+	for (let i = 1; i <= 4; i++) did.push(msg("while busy " + i));
+	await settle(clock);
+	await press($, clock, "take");
+	expect(duetSubmits(did).length).toBe(0);
+	await $.turn.complete(done("user1"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(1);
+	expect(duetSubmits(did)[0]).toMatch(/while busy 1[\s\S]*while busy 2[\s\S]*while busy 3[\s\S]*while busy 4/);
+	did.feeding = false;
+});
+
+test("R12 case 5: a leave or a join alone never starts a turn; the next hand-over shows them inline, in arrival order, once", { timeoutMs: 15_000 }, async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("default"));
+	await join($, clock, "test-room-r12e gaioz");
+	await $.command.run({ command: "duet", args: "auto", origin: USER } as any);
+	did.push(joinOf("karlo"));
+	did.push(claudeJoin("nika"));
+	await settle(clock);
+	await new Promise((r) => setTimeout(r, 5200)); // the mod's 5 s window in which a join answers ours runs on real time
+	did.push({ v: 1, id: "n-left", fromId: "peer-nika", from: "nika", kind: "note", note: "left", ts: new Date().toISOString() });
+	did.push(joinOf("dato"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(0); // a join or leave alone never starts a turn
+	did.push(msg("still there?"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(1);
+	const t = duetSubmits(did)[0];
+	expect(t.split("\n")[0]).toBe("[duet] In this room: karlo (pi), dato (pi) · you are gaioz");
+	expect(t).toMatch(/\n\[duet\] nika left, \d\d:\d\d\n\n---\n\n\[duet\] dato joined \(pi\), \d\d:\d\d\n\n---\n\n\[duet\] from karlo[\s\S]*still there\?/);
+	await duetTurn($, did, clock, "a1");
+	await $.turn.complete(done("a1"));
+	did.push(msg("and now?"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(2);
+	expect(duetSubmits(did)[1]).not.toMatch(/left|joined/); // shown once
+	did.feeding = false;
+});
+
+test("R12 case 6: 60 messages waiting → none dropped; one press hands them over in order across consecutive turns, each saying how many more wait", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-r12f gaioz");
+	for (let i = 1; i <= 60; i++) did.push(msg(`message ${String(i).padStart(2, "0")} ` + "x".repeat(2000)));
+	await settle(clock);
+	expect(did.toasts.join("\n")).not.toMatch(/dropped/);
+	const band = await $.ui.mount(BAND as any);
+	expect(await band.find({ type: "Text", text: "60 messages" })).toBeDefined();
+	await band.unmount();
+	await press($, clock, "take");
+	const seen: string[] = [];
+	for (let turn = 1; duetSubmits(did).length === turn; turn++) {
+		const t = duetSubmits(did)[turn - 1];
+		seen.push(...[...t.matchAll(/message (\d\d) x/g)].map((m) => m[1]));
+		const more = /(\d+) more messages? waiting: they come in your next turn/.exec(t);
+		if (more) expect(Number(more[1])).toBe(60 - seen.length);
+		else expect(seen.length).toBe(60);
+		await duetTurn($, did, clock, "t" + turn);
+		await $.turn.complete(done("t" + turn)); // no second press: the rest flows into the next turn
+		await settle(clock);
+	}
+	expect(duetSubmits(did).length).toBe(2); // 60 × 2 KB over a 100,000-character hand-over
+	expect(seen).toEqual(Array.from({ length: 60 }, (_, i) => String(i + 1).padStart(2, "0")));
+	const band2 = await $.ui.mount(BAND as any);
+	expect(await band2.find({ key: "take" })).toBeUndefined();
+	await band2.unmount();
+	did.feeding = false;
 });
