@@ -56,8 +56,8 @@ async function pick(page, agent) {
 }
 
 // The "I'm using…" list, in order; the last three are chat apps (connector first, then the prompt).
-const TOOLS = ["claude", "codex", "pi", "chatgpt", "claudeai", "other"];
-const CHATS = ["chatgpt", "claudeai", "other"];
+const TOOLS = ["claude", "codex", "pi", "chatgpt", "claudeai"];
+const CHATS = ["chatgpt", "claudeai"];
 
 // Every command and prompt for every tool, as shown.
 async function allCommands(page) {
@@ -188,7 +188,7 @@ try {
 		}
 	}
 	const withRoom = Object.values(commands).flatMap((a) => Object.values(a).flat()).filter((c) => c.cmd.includes(room)).length;
-	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 12, `name field cleaned to "${typed}"; ${total} commands for ${TOOLS.length} tools, ${withRoom} carry the room, unfilled: ${JSON.stringify(unfilled)}`);
+	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 10, `name field cleaned to "${typed}"; ${total} commands for ${TOOLS.length} tools, ${withRoom} carry the room, unfilled: ${JSON.stringify(unfilled)}`);
 	check("copy buttons copy exactly what is shown", copyMismatch.length === 0 && total > 0, `${total} copy buttons checked; mismatches: ${JSON.stringify(copyMismatch)}`);
 	// With a name: the prompts are filled and copy exactly; the commands sit under "Or run it yourself".
 	const after = await prompts(friend);
@@ -315,7 +315,7 @@ exit 0
 	const tabOrder = await friend.$$eval(".tools button", (bs) => bs.map((b) => b.dataset.agent).join());
 	const fresh = (agent) => commands[agent].fresh.map((c) => c.cmd);
 	check(
-		"I'm using: Claude Code, Codex, pi, ChatGPT, Claude.ai, VS Code/Goose; each agent's commands open with one line to paste in a terminal",
+		"I'm using: Claude Code, Codex, pi, ChatGPT, Claude.ai (VS Code, Cursor, Goose, Grok, Gemini CLI: a dim coming-soon line); each agent's commands open with one line to paste in a terminal",
 		tabOrder === TOOLS.join() &&
 			fresh("claude").length === 1 && // each line also updates an older install: install alone keeps the old version (seen 2026-10-04)
 			fresh("claude")[0] === `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user && { claude plugin enable duet@pi-duet --scope user 2>/dev/null; ${SERVER === "https://duet.gaioz.online" ? "" : `DUET_SERVER=${SERVER} `}DUET_ROOM=${room} DUET_NAME=nika claude; }` &&
@@ -333,7 +333,7 @@ exit 0
 	);
 	// Chat apps: a line per host, the hosted connector URL, the room typed into the panel, and the plain
 	// truth: a message needs a click and nothing is guarded.
-	const chat = { ...commands.claudeai, ...commands.chatgpt, ...commands.other };
+	const chat = { ...commands.claudeai, ...commands.chatgpt };
 	const chatKeys = CHATS.map((k) => Object.keys(commands[k]).join()).join("|");
 	const chatTexts = [];
 	for (const k of CHATS) {
@@ -347,17 +347,11 @@ exit 0
 	const mcpbHref = await friend.$eval('#commands a[href="duet.mcpb"]', (a) => a.getAttribute("href")).catch(() => null);
 	const mcpb = mcpbHref && existsSync(resolve(import.meta.dirname, "../docs", mcpbHref)) ? mcpbHref : null; // and the file is there to download
 	const notesFilled = !/\{[a-z_-]+\}/.test(chatText);
-	let vscodeJson = null;
-	try {
-		vscodeJson = JSON.parse(chat.vscode[0].cmd.match(/^code --add-mcp '(.*)'$/)[1]);
-	} catch {}
 	check(
-		"chat apps: ChatGPT; Claude.ai (claude.ai, Claude Desktop); VS Code, Goose; both gates in the panel",
-		chatKeys === "chatgpt|web,desktop|vscode,goose" &&
+		"chat apps: ChatGPT; Claude.ai (claude.ai, Claude Desktop); both gates in the panel",
+		chatKeys === "chatgpt|web,desktop" &&
 			chat.desktop[0].cmd === `npx -y github:qaioz/pi-duet setup claude-desktop --room ${room} --name nika --server ${SERVER}` && mcpb === "duet.mcpb" &&
 			chat.web[0].cmd === "https://mcp-duet.gaioz.online/mcp" && chat.web[1].cmd === room && chat.chatgpt[0].cmd === "https://mcp-duet.gaioz.online/mcp" &&
-			vscodeJson?.name === "duet" && vscodeJson.args.join(" ") === `-y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}` &&
-			chat.goose[0].cmd === `goose session --with-extension "npx -y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}"` &&
 			notesFilled && eachChat &&
 			(SERVER === "https://duet.gaioz.online" || (/hosted server uses duet\.gaioz\.online/.test(chatText) && /duet\.mcpb uses duet\.gaioz\.online/.test(chatText))) && !/guard|fence/i.test(chatText) && /Customize → Connectors → Add custom connector/.test(chatText) && !/Security and login/.test(chatText) &&
 			/Add custom MCP server/.test(chatText) && /Create as a plugin/.test(chatText) && /stays in the chat history/.test(chatText),
@@ -396,7 +390,7 @@ exit 0
 	const kept = await allCommands(evil);
 	check(
 		"crafted ?relay= can't inject into the commands",
-		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 4 && kept.includes('"--server","https://ntfy.example.com"') && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 3 && kept.includes(`claude.sh | sh -s -- ${room} YOUR_NAME https://ntfy.example.com`) && kept.includes("DUET_SERVER=https://ntfy.example.com DUET_ROOM=") && kept.includes("claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_SERVER=https://ntfy.example.com DUET_ROOM=") &&
+		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 3 && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 3 && kept.includes(`claude.sh | sh -s -- ${room} YOUR_NAME https://ntfy.example.com`) && kept.includes("DUET_SERVER=https://ntfy.example.com DUET_ROOM=") && kept.includes("claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_SERVER=https://ntfy.example.com DUET_ROOM=") &&
 			kept.split('"relay":"https://ntfy.example.com"').length === 4 && kept.includes(`name YOUR_NAME, server https://ntfy.example.com) and stop`),
 		`${attempts.length} hostile relays ignored with a note (failures: ${JSON.stringify(leaks)}); a plain https relay is carried into the commands`,
 	);
