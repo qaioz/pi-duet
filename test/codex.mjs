@@ -873,9 +873,10 @@ async function joinFileTests() {
 	// A join and a leave alone start nothing.
 	const karloId = "peer-" + randomUUID();
 	const karlo = (f) => publish(SERVER, topicFor(r13), envelope({ fromId: karloId, from: "karlo", ...f }));
+	const seenBefore = nika.got.length; // tamo's own join on connecting is before this
 	await karlo({ kind: "join", via: "pi" });
 	await sleep(1500);
-	const answered = nika.got.find((x) => x.kind === "join" && x.from === "tamo");
+	const answered = nika.got.slice(seenBefore).filter((x) => x.kind === "join" && x.from === "tamo").length === 1;
 	const pushesAfterJoin = fc13.queued().length;
 	await karlo({ kind: "note", note: "left" });
 	await sleep(1500);
@@ -918,6 +919,26 @@ async function joinFileTests() {
 		"R13 Codex: what doesn't fit one form comes next turn, and the hand-over says how many more wait",
 		reason2.includes("R13-BIG1") && reason2.includes("R13-BIG2") && !reason2.includes("R13-BIG3") && reason2.includes("2 more messages waiting: they come in your next turn.") && reason3.includes("R13-BIG3") && reason3.includes("R13-BIG4") && !reason3.includes("more message"),
 		`first: ${["BIG1", "BIG2", "BIG3", "BIG4"].filter((b) => reason2.includes("R13-" + b))} ${reason2.match(/\d+ more messages? waiting/)?.[0]}; next: ${["BIG1", "BIG2", "BIG3", "BIG4"].filter((b) => reason3.includes("R13-" + b))}`,
+	);
+	await t.hook({ event: "Stop", thread: "thr-1", turn: "u13-2" });
+	// Pushes are sized in bytes, not only characters: three 15,000-character Georgian messages (3 bytes
+	// a character) go in pushes that each fit one program argument (review: E2BIG, retried forever).
+	const pushesBefore = fc13.queued().length;
+	for (let i = 1; i <= 3; i++) await nika.send(`R13-KA${i} ` + "ქ".repeat(15_000));
+	const kaPushed = await until(() => fc13.queued().slice(pushesBefore).filter((q) => /R13-KA/.test(q[4])).length >= 2 && (fc13.queued().slice(pushesBefore).map((q) => q[4]).join("").match(/R13-KA\d/g) ?? []).length === 3, 15_000, "Georgian pushes").catch(() => false);
+	const kaArgs = fc13.queued().slice(pushesBefore).map((q) => Buffer.byteLength(q[4]));
+	const kaStatus = (await t.call("duet_status")).text;
+	// One message too big for an argument on its own (50,000 × 3 bytes): no push, no retry loop; it
+	// waits for the turn's end, and duet_status says so.
+	const pushesBig = fc13.queued().length;
+	await nika.send("R13-HUGE " + "ქ".repeat(50_000));
+	await sleep(2500);
+	const hugeStatus = (await t.call("duet_status")).text;
+	const hugePushes = fc13.queued().length - pushesBig;
+	check(
+		"R13 Codex: pushes fit one program argument in bytes (multibyte text is split, not retried forever); one message too big for an argument waits for the turn's end",
+		kaPushed && kaArgs.every((b) => b <= 120_000) && !/failed/.test(kaStatus) && hugePushes === 0 && /too long to start a Codex turn/.test(hugeStatus) && /messages waiting: 1/.test(hugeStatus),
+		`Georgian pushes: ${kaArgs.length} (${kaArgs.join(", ")} bytes), status after: ${JSON.stringify(kaStatus.match(/push[^;]*|messages waiting: \d+/g))}; huge: ${hugePushes} pushes, ${JSON.stringify(hugeStatus.match(/a message from[^;]*|messages waiting: \d+/g))}`,
 	);
 	nika.stop();
 	await t.stop();

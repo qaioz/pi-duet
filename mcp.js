@@ -71,6 +71,7 @@ if (name !== undefined && !isName(name)) {
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
 // Unattended back-and-forth allowed before the agent must check with its user.
 const MAX_AUTO = Math.max(1, Number(process.env.DUET_MAX_AUTO) || 8);
+const PUSH_BYTES_MAX = 120_000; // one `codex queue --message` argument (Linux refuses one over 131072 bytes)
 const CODEX = process.env.DUET_CODEX_BIN || "codex";
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]; // newest first
 const WINDOWS = (process.env.DUET_TEST_PLATFORM || process.platform) === "win32"; // overridable for tests
@@ -300,14 +301,14 @@ function onEnvelope(env) {
 	const isNew = !peers.has(env.from) || gone.has(env.from);
 	peers.set(env.from, new Date());
 	gone.delete(env.from);
-	if (VIA[env.via]) peerVia.set(env.from, env.via); // a peer's own label: only the known ones
+	if (Object.hasOwn(VIA, String(env.via))) peerVia.set(env.from, env.via); // a peer's own label: only the known ones
 	if (env.kind === "join") {
 		remember({ who: env.from, text: "joined", note: true });
 		if (env.place && env.place === placeFor(folder || process.cwd(), topicFor(room))) warnings.add(`${env.from} is in this room from this same folder: two agents may edit the same files`);
 		// A join answering ours (within seconds of it) isn't news: those peers are the room line's. A
 		// later one is an item of the next hand-over, and gets one join back so the newcomer knows we're here.
 		if (isNew && sinceJoin(env) && Date.now() - joinedAt > 5000) {
-			events.push({ name: env.from, what: "joined", via: VIA[env.via] ?? "", ts: env.ts, seq: ++arrival });
+			addEvent({ name: env.from, what: "joined", via: Object.hasOwn(VIA, String(env.via)) ? VIA[env.via] : "", ts: env.ts, seq: ++arrival });
 			publish(server, topicFor(room), envelope({ fromId, from: name, kind: "join", via: isCodex() ? "codex" : drawsPanels(clientCaps, host) ? "chat" : undefined })).catch(() => {});
 		}
 		return;
@@ -327,7 +328,13 @@ function onNote(env) {
 	if (!isForMe(env, fromId, name) || gone.has(env.from)) return;
 	gone.add(env.from);
 	remember({ who: env.from, text: "left", note: true });
-	if (sinceJoin(env)) events.push({ name: env.from, what: "left", ts: env.ts, seq: ++arrival });
+	if (sinceJoin(env)) addEvent({ name: env.from, what: "left", ts: env.ts, seq: ++arrival });
+}
+// Hosts with a panel never hand events over (the panel shows the room): keep the latest only.
+const EVENTS_MAX = 200;
+function addEvent(ev) {
+	events.push(ev);
+	if (events.length > EVENTS_MAX) events.shift();
 }
 // The events a hand-over carries, taken out; given back if the hand-over didn't reach the model.
 const takeEvents = () => events.splice(0);
@@ -375,14 +382,24 @@ function pushToCodex() {
 		pushNote = "no Codex window open in this folder, so messages wait for duet_inbox";
 		return;
 	}
-	// Everything waiting, as much as one gate-1 form shows (that also keeps the argument under OS
-	// limits); the rest follows in the next push, and the hand-over says how many. Out of the inbox
-	// while on its way, so duet_inbox can't show it too; back in front if the push fails.
-	const batch = (pushing = inbox.splice(0, fitsForm()));
-	const evs = takeEvents();
+	// Everything waiting, as much as one gate-1 form shows and one program argument holds (Linux:
+	// 128 KiB, and Georgian or emoji take 3-4 bytes a character); the rest follows in the next push,
+	// and the hand-over says how many. Out of the inbox while on its way, so duet_inbox can't show it
+	// too; back in front if the push fails.
 	const requestId = randomUUID().replace(/-/g, "").slice(0, 16);
+	let n = fitsForm();
+	while (n > 1 && Buffer.byteLength(render(inbox.slice(0, n), requestId, { evs: events, more: inbox.length - n })) > PUSH_BYTES_MAX) n--;
+	if (Buffer.byteLength(render(inbox.slice(0, n), requestId, { evs: events, more: inbox.length - n })) > PUSH_BYTES_MAX) {
+		// One message too big for an argument: it waits for the turn's end (the Stop hook) or "check
+		// duet", which don't go through a command line. Never retried in a loop.
+		pushNote = `a message from ${inbox[0].from} is too long to start a Codex turn with · it comes when your next turn ends, or say "check duet"`;
+		return;
+	}
+	const batch = (pushing = inbox.splice(0, n));
+	const evs = takeEvents();
 	const text = render(batch, requestId, { evs, more: inbox.length });
-	queued.set(requestId, { items: batch, evs, at: Date.now() });
+	const entry = { items: batch, evs, at: Date.now() };
+	queued.set(requestId, entry);
 	if (queued.size > 50) queued.delete(queued.keys().next().value);
 	const finish = (err, stderr) => {
 		pushing = undefined;
@@ -391,8 +408,10 @@ function pushToCodex() {
 			// known, so if it does run, it still gets the form.
 			inbox.unshift(...batch);
 			giveBackEvents(evs);
+			entry.evs = []; // given back once: if the push did land, its form mustn't give them back again
 			pushPausedUntil = Date.now() + PUSH_PAUSE_MS;
-			pushNote = `push to Codex failed (${String(stderr || err.message).trim().slice(0, 200)}); paused until ${new Date(pushPausedUntil).toLocaleTimeString()}, duet_inbox has the messages`;
+			// stderr or the error's code: never err.message, which holds the command line (the peer's text).
+			pushNote = `push to Codex failed (${String(stderr || err.code || err.name || "error").trim().slice(0, 200)}); paused until ${new Date(pushPausedUntil).toLocaleTimeString()}, duet_inbox has the messages`;
 			setTimeout(pushToCodex, PUSH_PAUSE_MS + 100).unref(); // try again once the pause is over
 			return;
 		}
