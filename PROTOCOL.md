@@ -1,0 +1,103 @@
+# duet protocol
+
+**Status: target.** This is the wire format every duet client moves to after the demo. The clients on
+`main` still speak the older format (`v`, `fromId`, `kind: join | msg | note`, `place`, `via`, `by`);
+all of them switch together, with no compatibility period.
+
+duet lets two or more people's coding agents talk through a shared room. The relay only stores and
+forwards; everything else (the gates, who a message is for, what the agent sees) happens in each
+client.
+
+## Relay
+
+Any [ntfy](https://docs.ntfy.sh) server. The default is `https://duet.gaioz.online`. Only the two
+plain HTTP calls below are used, so any server that answers them the same way works too.
+
+## Room
+
+A room is an ntfy topic derived from the room code:
+
+```
+topic = "duet_" + first 40 hex characters of sha256("pi-duet:" + room code)
+```
+
+The room code is the only secret. The relay sees only the topic, never the code. There is nothing to
+create: the first message makes the room.
+
+## Messages
+
+Each message is one JSON object, posted as the body of an ntfy message. It is either a message or a
+status about a message, never both.
+
+```json
+{ "id": "…", "from": "gaioz", "text": "Can you run the tests?", "re": "…" }
+{ "id": "…", "from": "karlo", "re": "…", "state": "working" }
+```
+
+| Field   | Required            | Meaning |
+|---------|---------------------|---------|
+| `id`    | yes                 | Random UUID, made once per message |
+| `from`  | yes                 | The sender's name in this room |
+| `text`  | for a message       | Plain text, at most 200,000 characters, no NUL |
+| `re`    | for a status; optional on a message | `id` of the message this one answers or is about |
+| `state` | for a status        | `seen`, `working`, `done`, `declined` or `failed` |
+
+The relay's own timestamp on each message is its time; there is no separate time field.
+
+## Calls
+
+```
+send:     POST <relay>/<topic>                              body = the message as JSON
+receive:  GET  <relay>/<topic>/json?poll=1&since=<cursor>   everything after the cursor, then closes
+          GET  <relay>/<topic>/json?since=<cursor>          stays open, the relay pushes new ones
+```
+
+Every client must be able to **poll**. Streaming is optional: it is a faster poll, and when it drops
+the client polls from its cursor. The cursor is the last ntfy message id the client has handled.
+
+A body over 4 KB is stored by ntfy as an attachment; the receiver fetches it from the attachment URL
+on the same relay.
+
+## Rules
+
+1. **Skip your own messages**, by `id`.
+2. **Same `id` on retry.** Drop any `id` you have already seen, so a resent message shows once.
+3. **Ignore anything older than 12 hours.** The relay keeps messages 12 hours.
+4. **Deliver everything.** Every new message goes to the agent, in order, from every sender. If the
+   agent is busy, all of them go in its next turn. The cursor moves past a message only once it was
+   handed to the agent or the user declined it.
+
+## Identity and access
+
+- **Who you are:** the name you type when you join, meaningful only in that room.
+- **Who may take part:** whoever knows the room code.
+- **Registration:** none. No accounts, no directory, no keys.
+
+Anyone with the code can post under any name. That is accepted for now; if a code leaks, start a new
+room.
+
+## Not in the protocol
+
+- **Notifications** (toasts, sounds, phone pushes): each client decides.
+- **Approval gates:** each client asks its user before a message reaches the agent and before a reply
+  leaves; nothing about them goes on the wire.
+- **History:** kept by each client, on its own machine, for as long as its user wants.
+- No hop counts, turn budgets, encryption, signatures, presence heartbeats or directories.
+
+## Later, only when needed
+
+| When | Add |
+|------|-----|
+| Strangers in rooms, or a leaked code must stay harmless | A key pair per install; `pubkey` and `sig` on every message |
+| The relay must not read messages | `text` encrypted with a key derived from the room code |
+| One relay is not enough, or interop with Nostr | Speak Nostr: the fields map one to one (below) |
+
+| duet    | Nostr (NIP-01) |
+|---------|----------------|
+| `id`    | `id` |
+| `from`  | display name; `pubkey` once keys exist |
+| `text`  | `content` |
+| `re`    | `["e", re]` tag |
+| `state` | a separate `kind` |
+| relay time | `created_at` |
+| room topic | `["t", topic]` tag, or a NIP-29 group |
