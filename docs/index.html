@@ -161,6 +161,7 @@
 	.linkp { position: relative; display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; padding: 6px 10px; border-radius: 9px; background: #ebebe3; font: 10.5px "Geist Mono", monospace; color: #3e5f49; }
 	.term { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 12px 14px; font: clamp(9px, 1vw, 12px)/1.85 "Geist Mono", monospace; }
 	.ln { opacity: 0; transform: translateY(5px); animation: lnIn .45s cubic-bezier(.22, 1, .36, 1) forwards; animation-delay: var(--d); }
+	.ln.shown { opacity: 1; transform: none; animation: none; }
 	@keyframes lnIn { to { opacity: 1; transform: none; } }
 	.c-ask { color: #f1f2ea; } .c-dim { color: #7f8478; } .c-ok { color: #dce57a; } .c-in { color: #9cc7a8; } .c-out { color: #e9eae3; }
 	.c-appr { display: block; width: fit-content; margin: 2px 0; padding: 1px 8px; border-radius: 6px; background: rgba(220, 229, 122, .12); color: #dce57a; }
@@ -371,12 +372,14 @@
 		.paste { flex-wrap: wrap; }
 		.dock { bottom: 12px; }
 		.pick { font-size: 22px; height: 46px; }
-		.vid { border-radius: 16px; }
+		.vid { border-radius: 16px; aspect-ratio: 4 / 3; }
 		.chap .lb { font-size: 11px; }
 		.member .state { display: none; }
 	}
 	@media (prefers-reduced-motion: reduce) {
 		*, *::before, *::after { animation: none !important; transition: none !important; }
+		.ln, .mroom, .bub, .sw .b, .cur, .cap.on { opacity: 1 !important; transform: none !important; }
+		.sw .a { display: none; }
 	}
 </style>
 </head>
@@ -499,7 +502,7 @@
 			<div id="status" class="hidden" role="status"></div>
 			<div class="roombar">
 				<span class="tile t0" id="room-tile" aria-hidden="true"></span>
-				<span class="txt"><span class="code" id="room-code"></span><span class="sub">Link = access to your agent · trusted people only</span><code id="invite" class="sr" aria-label="Invite link"></code></span>
+				<span class="txt"><span class="code" id="room-code"></span><span class="sub" id="room-sub">Link = access to your agent · trusted people only</span><code id="invite" class="sr" aria-label="Invite link"></code></span>
 				<button class="btn ghost" type="button" data-copy="invite">Copy invite link</button>
 			</div>
 		</div>
@@ -572,6 +575,8 @@ const roomFromHash = () => {
 };
 const cleanName = (s) => s.replace(/[^A-Za-z0-9_-]/g, "").replace(/^[_-]+/, "").slice(0, 24); // starts with a letter or digit
 const short = (code) => code.split("-").slice(0, 3).join("-");
+// A peer's name as drawn: no control or bidi characters, capped (the relay accepts any string).
+const showName = (s) => String(s).replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "").slice(0, 32);
 
 // The prompt each agent leads with: pasted into the agent already open, it sets duet up, writes the
 // join file the agent's duet takes on its next start, and ends with the one step left for the person.
@@ -901,7 +906,8 @@ function render() {
 	});
 	const manual = details("manual", "manual", a.after ? "Add the connector first (once)" : "Run it yourself", !!a.after, "textbtn");
 	const list = el("div", "cases");
-	list.append(...cases, el("p", "note", a.prompt.note), el("p", "receive", a.receive));
+	list.append(...cases);
+	peek.append(el("p", "note", a.prompt.note), el("p", "receive", a.receive));
 	manual.append(list);
 	if (a.after) box.append(manual, prompt);
 	else {
@@ -1036,7 +1042,7 @@ function drawPeople() {
 	const me = typedName();
 	const tool = AGENTS[agent].name;
 	const mine = el("li", "member");
-	mine.append(tileEl("Y", "t0"), member(me ? `You · ${tool}` : `You · ${tool}`, el("span", "mono sub", room() ? short(room()) : "")), state("connected"));
+	mine.append(tileEl("Y", "t0"), member(`You · ${tool}`, el("span", "mono sub", room() ? short(room()) : "")), state("connected"));
 	list.append(mine);
 	let i = 0;
 	for (const [who, p] of people) {
@@ -1045,7 +1051,7 @@ function drawPeople() {
 		li.title = `last seen ${p.at.toLocaleTimeString()}`;
 		const sub = el("span", "sub", "their agent is in the room");
 		if (p.via) sub.append(" · ", el("span", "badge", p.via));
-		li.append(tileEl(who.charAt(0).toUpperCase(), `t${(++i % 3) + 1}`), member(who, sub), state("connected"));
+		li.append(tileEl(showName(who).charAt(0).toUpperCase(), `t${(++i % 3) + 1}`), member(showName(who), sub), state("connected"));
 		list.append(li);
 	}
 	if (i === 0) {
@@ -1057,6 +1063,8 @@ function drawPeople() {
 		li.append(tileEl("+", "plus"), member("Waiting for a friend", el("span", "sub", "Send them the link · trusted people only")), btn);
 		list.append(li);
 	}
+	const here = [...people.keys()].map(showName).filter(Boolean);
+	$("room-sub").textContent = here.length ? `In the room: ${here.join(", ")} · link = access to your agent · trusted people only` : "Link = access to your agent · trusted people only";
 	drawCount();
 	drawStatus();
 }
@@ -1082,7 +1090,7 @@ function drawStatus() {
 	// A peer's name goes into a line you may paste into your own agent: letters, digits, _ and - only.
 	const friend = [...people.keys()].filter((n) => n !== me).map(cleanName).find(Boolean);
 	const inRoom = joined() || (skipped && !!me);
-	if (joined() && step === 3) step = 4;
+	if (joined() && step !== 4) step = 4;
 	if (!inRoom && step === 4) step = 3;
 	drawSteps();
 	// Redrawn only when it changes: a relay event shouldn't take the focus or a "Copied" away.
@@ -1152,8 +1160,8 @@ const NOTES = {
 };
 function addEvent(env) {
 	const at = new Date(env.ts);
-	if (env.kind === "join") convo.push({ at, note: `${env.from} joined` });
-	else if (env.kind === "note" && NOTES[env.note]) convo.push({ at, note: `${env.from} ${NOTES[env.note]}` });
+	if (env.kind === "join") convo.push({ at, note: `${showName(env.from)} joined` });
+	else if (env.kind === "note" && NOTES[env.note]) convo.push({ at, note: `${showName(env.from)} ${NOTES[env.note]}` });
 	else if (env.kind === "msg" && typeof env.text === "string") {
 		convo.push({ at, who: env.from, text: env.text.length > 4000 ? env.text.slice(0, 4000) + ` … (${env.text.length - 4000} more characters)` : env.text });
 	} else return;
@@ -1170,7 +1178,7 @@ function drawConvo() {
 	const box = $("convo");
 	box.textContent = "";
 	drawCount();
-	$("convo-who").textContent = [...people.keys()].concat("12 h", "read-only").join(" · ");
+	$("convo-who").textContent = [...people.keys()].map(showName).concat("12 h", "read-only").join(" · ");
 	if (!convo.length) return box.append(el("p", "muted", "Nothing said yet · shows up here live"));
 	for (const ev of convo) {
 		if (ev.note) {
@@ -1179,7 +1187,7 @@ function drawConvo() {
 		}
 		const div = el("div", "ev");
 		const head = el("div", "head");
-		head.append(el("b", "", ev.who), el("span", "", hhmm(ev.at)));
+		head.append(el("b", "", showName(ev.who)), el("span", "", hhmm(ev.at)));
 		div.append(head, el("div", "text", ev.text));
 		box.append(div);
 	}
@@ -1230,6 +1238,7 @@ function showRoom() {
 	document.querySelector(".steps").classList.toggle("hidden", landing);
 	$("start-room").classList.toggle("hidden", !landing);
 	$("how-link").classList.toggle("hidden", !landing);
+	document.querySelector(".dock .help").classList.toggle("hidden", landing);
 	demo.run(landing);
 	if (!code) {
 		shownRoom = "";
@@ -1338,7 +1347,7 @@ const demo = (() => {
 	let raf = 0;
 	const chat = (t) => t.kind === "Chat";
 	const opts = (y) => `<div class="mopts"><div class="mhl2" style="--y: ${y}px"></div>${TOOLS.map((t) => `<span class="mopt">${esc(t.name)}</span>`).join("")}</div>`;
-	const lines = (arr, sc) => arr.filter((x) => sc >= x[0]).map((x) => `<span class="ln c-${x[1]}" style="--d: ${x[0] === sc ? x[3] : 0}s">${esc(x[2])}</span>`).join("");
+	const lines = (arr, sc) => arr.filter((x) => sc >= x[0]).map((x) => `<span class="ln c-${x[1]}${x[0] < sc ? " shown" : ""}" style="--d: ${x[0] === sc ? x[3] : 0}s">${esc(x[2])}</span>`).join("");
 	function draw() {
 		const sc = st.scene;
 		const A = TOOLS[st.a], B = TOOLS[st.b];
@@ -1410,6 +1419,8 @@ const demo = (() => {
 			[6, "out", "→ reply sent to you", 4.2],
 		];
 		let L = "";
+		const termA = lines(linesA, sc);
+		const termB = lines(linesB, sc);
 		if (sc === 0 || sc === 1) {
 			L = `<div class="win light"><div class="wbar"><span class="wtag">You</span><span class="url">${esc(location.host + location.pathname)}</span></div><div class="wbody">` +
 				(sc === 0
@@ -1417,7 +1428,7 @@ const demo = (() => {
 					: `<div class="mcard"><div class="mrow"><span class="mt">I'm using…</span><span class="mn">amber-otter-4821</span></div>${opts(st.a * 22)}<span class="mbtn wide"><span class="sw" style="--t: 2.2s"><span class="a">Copy prompt</span><span class="b">Copied ✓</span></span><span class="rip" style="--r: 2.15s"></span>${CURSOR(1.2)}</span></div>`) +
 				`</div></div>`;
 		} else if (sc >= 2) {
-			L = `<div class="win dark ${chat(A) ? "chat-k" : "term-k"}"><div class="wbar"><span class="wtag">You</span><span class="wtitle">${esc(A.name)}</span></div><div class="term">${lines(linesA, sc)}</div></div>`;
+			L = `<div class="win dark ${chat(A) ? "chat-k" : "term-k"}"><div class="wbar"><span class="wtag">You</span><span class="wtitle">${esc(A.name)}</span></div><div class="term">${termA}</div></div>`;
 		}
 		let R = "";
 		if (sc === 3) {
@@ -1425,20 +1436,21 @@ const demo = (() => {
 		} else if (sc === 4) {
 			R = `<div class="win light"><div class="wbar"><span class="wtag">nika</span><span class="url">${esc(location.host + location.pathname)}#amber-otter-4821</span></div><div class="wbody"><div class="mcard"><div class="mrow"><span class="mt">Joined <span class="mono" style="font-weight: 400">amber-otter-4821</span></span><span class="mn">you're here</span></div><div class="mn">I'm using…</div>${opts(st.b * 22)}<span class="mbtn wide"><span class="sw" style="--t: 2.3s"><span class="a">Copy prompt</span><span class="b">Copied ✓</span></span><span class="rip" style="--r: 2.25s"></span>${CURSOR(1.3)}</span></div></div></div>`;
 		} else if (sc >= 5) {
-			R = `<div class="win dark ${chat(B) ? "chat-k" : "term-k"}"><div class="wbar"><span class="wtag">nika</span><span class="wtitle">${esc(B.name)}</span></div><div class="term">${lines(linesB, sc)}</div></div>`;
+			R = `<div class="win dark ${chat(B) ? "chat-k" : "term-k"}"><div class="wbar"><span class="wtag">nika</span><span class="wtitle">${esc(B.name)}</span></div><div class="term">${termB}</div></div>`;
 		}
-		// Only rebuild a pane whose scene changed: a rebuild restarts its CSS animations.
+		// A pane is rebuilt only when its window changes; while the same window stays, only its lines
+		// are replaced (a rebuild would restart the window's own animation).
+		const paneL = $("paneL"), paneR = $("paneR");
 		const keyL = `${sc >= 2 ? "app" : sc}|${st.a}|${st.b}`;
-		if ($("paneL").dataset.key !== keyL || sc >= 2) {
-			if ($("paneL").dataset.key !== keyL || $("paneL").dataset.scene !== String(sc)) $("paneL").innerHTML = L;
-			$("paneL").dataset.key = keyL;
-			$("paneL").dataset.scene = String(sc);
-		}
-		if ($("paneR").dataset.scene !== String(sc) || $("paneR").dataset.key !== `${st.a}|${st.b}`) {
-			$("paneR").innerHTML = R;
-			$("paneR").dataset.scene = String(sc);
-			$("paneR").dataset.key = `${st.a}|${st.b}`;
-		}
+		if (paneL.dataset.key !== keyL) {
+			paneL.innerHTML = L;
+			paneL.dataset.key = keyL;
+		} else if (sc >= 2) paneL.querySelector(".term").innerHTML = termA;
+		const keyR = `${sc >= 5 ? "app" : sc}|${st.a}|${st.b}`;
+		if (paneR.dataset.key !== keyR) {
+			paneR.innerHTML = R;
+			paneR.dataset.key = keyR;
+		} else if (sc >= 5) paneR.querySelector(".term").innerHTML = termB;
 		$("vid").classList.toggle("split", sc >= 3);
 		$("vid").setAttribute("aria-label", `Animated demo: you set up ${A.name}, your friend joins with ${B.name}, and the two agents exchange a request and a reply`);
 		$("track").classList.toggle("hidden", sc !== 6);
@@ -1506,7 +1518,8 @@ const demo = (() => {
 			st.since = now;
 			draw();
 		} else if (now - st.since >= D[st.scene]) {
-			st.scene = st.scene + 1 >= D.length ? 0 : st.scene + 1;
+			if (st.scene + 1 >= D.length) return start(0);
+			st.scene++;
 			st.since = now;
 			draw();
 		}
@@ -1517,7 +1530,7 @@ const demo = (() => {
 		st.scene = -1;
 		st.next = sc;
 		delete $("paneL").dataset.key;
-		delete $("paneR").dataset.scene;
+		delete $("paneR").dataset.key;
 		draw();
 		if (st.running) raf = requestAnimationFrame(tick);
 	}
