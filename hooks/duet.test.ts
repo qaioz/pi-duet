@@ -2020,3 +2020,40 @@ test("R12: the gate-1 card says when the band can't draw every word (over 100,00
 	await band.unmount();
 	did.feeding = false;
 });
+
+test("R12 (review): the rest of a split hand-over doesn't count toward auto's 8 in a row, and the status line counts it as waiting", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("default"));
+	await join($, clock, "test-room-r12i gaioz");
+	await $.command.run({ command: "duet", args: "auto", origin: USER } as any);
+	await settle(clock);
+	for (let i = 1; i <= 7; i++) {
+		did.push(msg("request " + i));
+		await settle(clock);
+		await duetTurn($, did, clock, "a" + i);
+		await $.turn.complete(done("a" + i));
+		await settle(clock);
+	}
+	expect(duetSubmits(did).length).toBe(7);
+	await $.turn.start({ turnId: "busy", text: "something" } as any);
+	for (let i = 1; i <= 60; i++) did.push(msg(`big ${String(i).padStart(2, "0")} ` + "x".repeat(2000)));
+	for (let i = 0; i < 40; i++) {
+		await settle(clock, 2);
+		const band = await $.ui.mount(BAND as any);
+		const all = await band.find({ type: "Text", text: /60 waiting · auto/ });
+		await band.unmount();
+		if (all) break;
+	}
+	await $.turn.complete(done("busy"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(8); // the 8th in a row: 1–49 + "11 more"
+	expect(String(((await statusLine($, did)) as any).text)).toMatch(/11 waiting/);
+	await duetTurn($, did, clock, "a8");
+	await $.turn.complete(done("a8"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(9); // the rest comes by itself: no pause with messages the UI can't show
+	expect(duetSubmits(did)[8]).toMatch(/big 50 x[\s\S]*big 60 x/);
+	expect(did.toasts.join("\n")).not.toMatch(/8 in a row/);
+	did.feeding = false;
+});

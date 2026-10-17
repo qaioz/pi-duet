@@ -442,7 +442,7 @@ function onEnvelope($, r, env) {
 
 async function deliver($) {
 	if (!autoActive() || !(queue.length || carry.length) || busyWithPeer()) return;
-	if (autoTurns >= MAX_AUTO) {
+	if (autoTurns >= MAX_AUTO && queue.length) {
 		paused = true;
 		pausedForTool = false;
 		$.ui.toast(`duet: ${MAX_AUTO} in a row · rest wait for you`);
@@ -458,8 +458,9 @@ async function deliver($) {
 		return;
 	}
 	if (!autoActive() || !(queue.length || carry.length) || busyWithPeer()) return;
-	autoTurns++;
-	await startPeerTurn($, [...carry.splice(0), ...queue.splice(0)]);
+	// The rest of a split hand-over is the same request continued: it never counts toward MAX_AUTO.
+	if (queue.length) autoTurns++;
+	await startPeerTurn($, queue.splice(0));
 }
 
 // Messages already taken (a press, or auto) that didn't fit the last hand-over: Claude's next turn.
@@ -485,8 +486,8 @@ async function runsUnasked($) {
 
 // Hand over everything, in order, as much as fits one turn; the rest is carried to the next turn.
 async function startPeerTurn($, envs, preSend = false) {
-	const { take, rest } = fitHandover(envs);
-	carry = [...rest, ...carry];
+	const { take, rest } = fitHandover([...carry.splice(0), ...envs]); // carried first: they are older
+	carry = rest;
 	carryPreSend = preSend;
 	pendingPeer = { envs: take, roomKey: room?.key ?? "", submitted: false, preSend };
 	await saveTurn($);
@@ -1484,7 +1485,7 @@ function modeLabel() {
 	if (!room) return "";
 	const ps = peerList() || "no one yet";
 	// Both gates: requests (gate 1) and replies (gate 2) waiting for the user.
-	const n = queue.length + outbox.length;
+	const n = queue.length + carry.length + outbox.length;
 	const waiting = n ? ` · ${n} waiting` : "";
 	return `duet · ${ps} · ${room.mode}${paused ? " · paused" : ""}${waiting}${connected ? "" : " · offline"}`;
 }
