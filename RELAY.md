@@ -1,4 +1,4 @@
-# Relay binding: ntfy
+# Relay binding: the default relay (ntfy)
 
 How an [ntfy](https://docs.ntfy.sh) server provides the relay calls in [PROTOCOL.md](PROTOCOL.md).
 The default relay, `https://duet.gaioz.online`, is a stock ntfy with the settings below. Any ntfy

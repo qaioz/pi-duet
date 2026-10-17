@@ -10,7 +10,7 @@ client.
 
 The protocol says what a relay must do and what clients send through it. It does not name a relay
 implementation: how a concrete relay provides the calls below is a *binding*, kept in its own file.
-The default relay is `https://duet.gaioz.online`; its binding is [RELAY-ntfy.md](RELAY-ntfy.md).
+The default relay is `https://duet.gaioz.online`; its binding is [RELAY.md](RELAY.md).
 
 ## Relay
 
