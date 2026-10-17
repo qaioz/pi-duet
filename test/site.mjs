@@ -382,7 +382,7 @@ exit 0
 		const note = await evil.textContent("#relay");
 		// The commands always name a relay: a hostile one must give way to the default, untouched.
 		const shell = all.replaceAll("$(pwd -P)", "").replaceAll("$(date +%s)", "").replaceAll("$(mktemp -d)", "").replaceAll(`$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')`, "").replaceAll(`$(claude plugin test "$d" 2>&1)`, ""); // the prompts' own
-		const why = [/PWNED|\$\(|`|"q|'q|u:p@|javascript|\$&/.test(shell) && "shell", !all.includes("--server https://duet.gaioz.online") && "no --server", !all.includes('"relay":"https://duet.gaioz.online"') && "no relay json", !all.includes("server https://duet.gaioz.online) and stop") && "no codex server", !/ignored/.test(note) && `note "${note}"`].filter(Boolean);
+		const why = [/PWNED|\$\(|`|"q|'q|u:p@|javascript|\$&/.test(shell) && "shell", !all.includes("--server https://duet.gaioz.online") && "no --server", !all.includes('"relay":"https://duet.gaioz.online"') && "no relay json", !all.includes("server https://duet.gaioz.online), reply with only what it returns") && "no codex server", !/ignored/.test(note) && `note "${note}"`].filter(Boolean);
 		if (why.length) leaks.push(`${relay}: ${why.join(", ")}`);
 	}
 	await evil.goto(`${site}?relay=${encodeURIComponent("https://ntfy.example.com/")}#${room}`);
@@ -391,7 +391,7 @@ exit 0
 	check(
 		"crafted ?relay= can't inject into the commands",
 		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 3 && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 3 && kept.includes(`claude.sh | sh -s -- ${room} YOUR_NAME https://ntfy.example.com`) && kept.includes("DUET_SERVER=https://ntfy.example.com DUET_ROOM=") && kept.includes("claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_SERVER=https://ntfy.example.com DUET_ROOM=") &&
-			kept.split('"relay":"https://ntfy.example.com"').length === 4 && kept.includes(`name YOUR_NAME, server https://ntfy.example.com) and stop`),
+			kept.split('"relay":"https://ntfy.example.com"').length === 4 && kept.includes(`name YOUR_NAME, server https://ntfy.example.com), reply with only what it returns`),
 		`${attempts.length} hostile relays ignored with a note (failures: ${JSON.stringify(leaks)}); a plain https relay is carried into the commands`,
 	);
 	await evilCtx.close();
