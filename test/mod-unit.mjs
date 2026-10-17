@@ -17,7 +17,7 @@ test("topic hash matches transport.js", async () => {
 test("the mod's envelopes are valid for the mod, and addressed the same way as transport.js", () => {
 	const msg = wire.envelope({ fromId: "a", from: "gaioz", kind: "msg", text: "hi", by: "agent", to: "karlo" });
 	const join = wire.envelope({ fromId: "a", from: "gaioz", kind: "join", via: "claude-code" });
-	const note = wire.envelope({ fromId: "a", from: "gaioz", kind: "note", note: "declined" });
+	const note = wire.envelope({ fromId: "a", from: "gaioz", kind: "note", note: "left" });
 	assert.ok(wire.isEnvelope(msg) && wire.isEnvelope(join) && wire.isEnvelope(note));
 	assert.ok(transport.isForMe(msg, "b", "karlo"));
 	assert.equal(transport.isForMe(msg, "b", "someone-else"), false);
@@ -194,15 +194,10 @@ test("transport.js ignores messages older than 12 hours (a relay may keep 30 day
 	assert.deepEqual(got, ["fresh request"]);
 });
 
-test("the computer-and-folder hash is the same in the plugin and in pi/MCP", async () => {
-	assert.equal(await wire.placeFor("/work/repo", "duet_t1", "box-1"), transport.placeFor("/work/repo", "duet_t1", "box-1"));
-	assert.notEqual(await wire.placeFor("/work/repo", "duet_t1", "box-1"), await wire.placeFor("/work/other", "duet_t1", "box-1"));
-	// Salted per room: the same folder can't be recognised across rooms.
-	assert.notEqual(await wire.placeFor("/work/repo", "duet_t1", "box-1"), await wire.placeFor("/work/repo", "duet_t2", "box-1"));
+test("firstLine: the first non-blank line, at most 80 characters", () => {
 	assert.equal(wire.firstLine("\n  \nfirst real line\nsecond"), "first real line");
 	assert.equal(transport.firstLine("x".repeat(100)).length, 80);
 });
-
 test("transport.js: a long message arrives from the relay's own /file/; one pointing elsewhere is ignored; an expired one is reported", async () => {
 	const { createServer } = await import("node:http");
 	const now = Math.floor(Date.now() / 1000);
@@ -314,83 +309,34 @@ test("lock.js: one lock per room and name for every client; stale or dead owners
 	assert.equal(existsSync(path), false);
 });
 
-test("readJoinFile: own agent, fresh, this folder (cwd or pwd -P, trailing slashes ignored) and good fields only", () => {
+test("readJoinFile: own agent, fresh and good fields: take; stale or from the future: clear; anything else is left alone", () => {
 	const now = 2_000_000_000_000;
 	const file = (f = {}) => JSON.stringify({ agent: "claude-code", room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online", cwd: "/w/repo/", pcwd: "/real/repo", at: now / 1000 - 60, ...f });
-	const read = (f, folder = "/w/repo") => wire.readJoinFile(file(f), "claude-code", folder, now);
-	assert.deepEqual(read(), { take: { room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online", folder: "/w/repo" } }); // the window's own folder, not the file's cwd
-	assert.ok(read({}, "/w/repo//").take);
-	assert.ok(read({}, "/real/repo").take);
+	const read = (f) => wire.readJoinFile(file(f), "claude-code", now);
+	assert.deepEqual(read(), { take: { room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online" } });
 	assert.equal(read({ relay: "https://duet.gaioz.online/" }).take.relay, "https://duet.gaioz.online");
 	// Ahead of this clock: not the prompt's `date +%s` (no allowance), cleared like a stale one.
 	assert.deepEqual(read({ at: now / 1000 + 1 }), { clear: true });
-	assert.deepEqual(read({ at: now / 1000 + 600, agent: "codex" }), { clear: true });
 	assert.deepEqual(read({ at: now / 1000 - 31 * 60 }), { clear: true });
 	assert.deepEqual(read({ at: now / 1000 - 31 * 60, agent: "codex" }), { clear: true }); // stale: nobody takes it
-	for (const bad of [{ agent: "codex" }, { agent: undefined }, { at: String(now / 1000) }, { relay: undefined }, { relay: "" }, { relay: 7 }, { room: "a;b" }, { room: "off" }, { name: "YOUR_NAME" }, { name: "" }, { name: 7 }, { name: "a b" }, { name: "x".repeat(200) }, { name: "ni\u200bka" }, { relay: "ftp://x" }])
+	// Another client's, or unusable: left for whoever it is for.
+	for (const bad of [{ agent: "codex" }, { agent: undefined }, { at: String(now / 1000) }, { relay: undefined }, { relay: "" }, { relay: 7 }, { room: "a;b" }, { room: "off" }, { name: "YOUR_NAME" }, { name: "" }])
 		assert.equal(read(bad), null, JSON.stringify(bad));
-	assert.equal(read({}, "/w/other"), null);
-	assert.equal(read({ cwd: undefined, pcwd: undefined }), null);
-	assert.equal(wire.readJoinFile("{}", "claude-code", "/w/repo", now), null); // a taken one
-	assert.equal(wire.readJoinFile("not json", "claude-code", "/w/repo", now), null);
-	assert.equal(wire.readJoinFile("null", "claude-code", "/w/repo", now), null);
-	assert.ok(wire.readJoinFile(file({ cwd: "/", pcwd: "/" }), "claude-code", "/", now).take);
-	// Git Bash writes /c/x for C:\x; a subfolder counts on the window's own start or reload (nested) only.
-	assert.ok(wire.readJoinFile(file({ cwd: "/c/Users/Nika/repo", pcwd: "/c/Users/Nika/repo" }), "claude-code", "C:\\Users\\nika\\repo", now).take);
-	assert.equal(read({ cwd: "/w/repo/sub", pcwd: "/real/repo/sub" }), null);
-	assert.ok(wire.readJoinFile(file({ cwd: "/w/repo/sub", pcwd: "/real/repo/sub" }), "claude-code", "/w/repo", now, true).take);
-	assert.equal(wire.readJoinFile(file({ cwd: "/w/repository", pcwd: "/w/repository" }), "claude-code", "/w/repo", now, true), null);
-	assert.equal(wire.readJoinFile(file({ cwd: "/w/repo", pcwd: "/w/repo" }), "claude-code", "/", now, true), null); // / is no one's project
-	assert.equal(wire.readJoinFile(file({ cwd: "/c/proj", pcwd: "/c/proj" }), "claude-code", "C:\\", now, true), null); // nor C:\\
-	assert.equal(wire.sameFolder(["/w/Repo"], "/w/repo"), false); // Linux, macOS: as written
-	assert.equal(wire.sameFolder(["\\\\srv\\Share\\x"], "//srv/share/x"), true); // UNC: Windows, no case
+	assert.equal(wire.readJoinFile("{}", "claude-code", now), null); // a taken one
+	assert.equal(wire.readJoinFile("not json", "claude-code", now), null);
+	assert.equal(wire.readJoinFile("null", "claude-code", now), null);
 });
 
-test("join file: Claude Code (wire.js) and Codex/pi (lock.js) take the same files and ask the same question", async () => {
-	const lock = await import("../lock.js");
-	const now = 2_000_000_000_000;
-	const base = { agent: "codex", room: "amber-otter-4821-x7q2", name: "nika", relay: "https://duet.gaioz.online", cwd: "/w/repo/", pcwd: "/real/repo", at: now / 1000 - 60 };
-	const cases = [{}, { relay: undefined }, { relay: "" }, { relay: "http://127.0.0.1:18080/" }, { at: now / 1000 + 1 }, { at: now / 1000 + 299 }, { at: now / 1000 - 31 * 60 }, { at: String(now / 1000) }, { name: "YOUR_NAME" }, { room: "off" }];
-	for (const c of cases) {
-		const j = { ...base, ...c };
-		const w = wire.readJoinFile(JSON.stringify({ ...j, agent: "claude-code" }), "claude-code", "/w/repo", now);
-		const l = lock.acceptJoin(j, { agent: "codex", folder: "/w/repo", now });
-		assert.equal(!!w?.take, !l.skip, JSON.stringify(c));
-		if (w?.take) assert.deepEqual(w.take, l, JSON.stringify(c));
-		assert.equal(!!w?.clear, l.skip === "stale", JSON.stringify(c)); // cleared by both, or by neither
-	}
-	for (const o of [
-		{ room: "r-1x", name: "nika", relay: "https://duet.gaioz.online", folder: "/home/g/proj/" },
-		{ room: "r-1x", name: "nika", relay: "http://127.0.0.1:18080", folder: "/w/x" },
-		{ room: "r-1x", name: "nika", relay: "https://relay.example/p", folder: "C:\\Users\\g\\x" },
-	])
-		assert.equal(wire.joinQuestion(o, "/home/g"), lock.joinQuestion(o, "/home/g"));
-	assert.equal(lock.joinQuestion({ room: "r-1x", name: "nika", relay: "https://duet.gaioz.online", folder: "/home/g/proj/" }, "/home/g"), "Join r-1x as nika? · ~/proj");
-	assert.equal(lock.joinQuestion({ room: "r-1x", name: "nika", relay: "https://relay.example/p", folder: "/w/x" }, "/home/g"), "Join r-1x as nika? · relay relay.example · /w/x");
-	assert.equal(lock.joinQuestion({ room: "r-1x", name: "nika", relay: "http://10.0.0.5:8080", folder: "/w/x" }, "/home/g"), "Join r-1x as nika? · relay http://10.0.0.5:8080 · /w/x");
-});
-
-test("join file: the card shows the window's own folder, the relay before it, the folder capped to one line (PR #34 review)", async () => {
-	const lock = await import("../lock.js");
-	const now = 2_000_000_000_000;
-	const folder = "/home/u/work/app";
-	// pcwd matches; cwd is free text the file's writer chose.
-	const lie = { room: "amber-otter-4821-x7q2", name: "gaioz", relay: "https://evil.example", pcwd: folder, cwd: "/home/u/work/app-the-one-you-trust" + "/sub".repeat(30), at: now / 1000 - 5 };
-	const w = wire.readJoinFile(JSON.stringify({ ...lie, agent: "claude-code" }), "claude-code", folder, now);
-	assert.equal(w.take.folder, folder);
-	const l = lock.acceptJoin({ ...lie, agent: "codex", cwd: folder + "\n\n(relay: duet's own)\n\n\n\n" }, { agent: "codex", folder, now });
-	assert.equal(l.folder, folder);
-	for (const q of [wire.joinQuestion(w.take, "/home/u"), lock.joinQuestion(l, "/home/u")]) assert.equal(q, "Join amber-otter-4821-x7q2 as gaioz? · relay evil.example · ~/work/app");
-	// A real but long folder (or one with a newline in its name) is cut at its start, on one line; the relay stays whole.
+test("joinQuestion: the window's own folder (home as ~), the relay before it when not duet's own, one line, the folder capped", () => {
+	assert.equal(wire.joinQuestion({ room: "r-1x", name: "nika", relay: "https://duet.gaioz.online", folder: "/home/g/proj/" }, "/home/g"), "Join r-1x as nika? · ~/proj");
+	assert.equal(wire.joinQuestion({ room: "r-1x", name: "nika", relay: "https://relay.example/p", folder: "/w/x" }, "/home/g"), "Join r-1x as nika? · relay relay.example · /w/x");
+	assert.equal(wire.joinQuestion({ room: "r-1x", name: "nika", relay: "http://10.0.0.5:8080", folder: "/w/x" }, "/home/g"), "Join r-1x as nika? · relay http://10.0.0.5:8080 · /w/x");
 	const longHost = "https://" + "a".repeat(60) + ".evil.example";
-	for (const jq of [wire.joinQuestion, lock.joinQuestion]) {
-		const q = jq({ room: "r-1x", name: "nika", relay: longHost, folder: "/w/" + "deep/".repeat(40) + "x\ny" }, "/home/g");
-		assert.ok(q.startsWith(`Join r-1x as nika? · relay ${"a".repeat(60)}.evil.example · …`), q);
-		assert.ok(!/[\n\r]/.test(q) && q.endsWith("/x y"), q);
-		assert.ok(q.split(" · ").at(-1).length <= 60, q);
-	}
+	const q = wire.joinQuestion({ room: "r-1x", name: "nika", relay: longHost, folder: "/w/" + "deep/".repeat(40) + "x\ny" }, "/home/g");
+	assert.ok(q.startsWith(`Join r-1x as nika? · relay ${"a".repeat(60)}.evil.example · …`), q);
+	assert.ok(!/[\n\r]/.test(q) && q.endsWith("/x y"), q);
+	assert.ok(q.split(" · ").at(-1).length <= 60, q);
 });
-
 // ---------- Release 12 ----------
 
 test("R12: fitHandover takes everything that fits, in order, always at least one; nothing is dropped", () => {

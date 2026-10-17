@@ -17,13 +17,11 @@ description: Relay, topic, room code.
 | Claude Code | `hooks/duet.js`, a [mod](https://code.claude.com/docs/en/plugins/mods/overview) · receives with `curl` against the relay stream, sends with Claude Code's `fetch` |
 | Chat apps on the web | `hosted.js` at `mcp-duet.gaioz.online` · the panel is `panel.js` |
 
-Shared: `transport.js` (wire format), `lock.js` (one window per name per room per computer).
+Shared: `transport.js` (wire format), `lock.js` (one window per name per room per computer: Codex and pi).
 `hooks/wire.js` is the plugin's copy of the wire format, tested against `transport.js`.
 
 ## Several windows
 
-One window per computer per room per name.
-
-- Claude Code: `/duet <room>` in a second window asks to move the room there.
-- Across clients: one lock, `~/.duet/<hash>.lock` · the second says who has it · use another name.
+- Claude Code: a name is a label. Two windows in one room under one name both answer; use another name.
+- Codex and pi: one lock, `~/.duet/<hash>.lock` · the second says who has it · use another name.
 - A new Codex session in the same folder takes the room from the older one.
