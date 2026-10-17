@@ -80,10 +80,16 @@ const INLINE_BYTES_MAX = 8_000;
 // How many of the first waiting messages one hand-over of at most `max` bytes holds, as rendered
 // (with the room line and these events). 0 when even the first doesn't fit.
 // A message that can't reach Codex whole by any path (over one program argument): Ignore only.
-const tooBigForCodex = (e) => isCodex() && Buffer.byteLength(render([e], "0".repeat(16), {})) > PUSH_BYTES_MAX;
+// Headroom for the "N more messages waiting" line, so a message under this always pushes alone.
+const MORE_LINE_MAX = 100;
+// Whether a push can reach this session at all (not on Windows, a thread known, a window open here).
+const canPush = () => !WINDOWS && !!codexThread && !(pushPausedUntil && Date.now() < pushPausedUntil) && codexWindowOpen();
+const tooBigForCodex = (e) => isCodex() && Buffer.byteLength(render([e], "0".repeat(16), {})) > PUSH_BYTES_MAX - MORE_LINE_MAX;
+// Counting up: the cost stays with what fits, not with how many wait (the inbox is never capped).
 function fitBytes(n, max, evs = events) {
-	while (n > 0 && Buffer.byteLength(render(inbox.slice(0, n), "0".repeat(16), { evs, more: inbox.length - n })) > max) n--;
-	return n;
+	let k = 0;
+	while (k < n && Buffer.byteLength(render(inbox.slice(0, k + 1), "0".repeat(16), { evs, more: inbox.length - k - 1 })) <= max) k++;
+	return k;
 }
 const CODEX = process.env.DUET_CODEX_BIN || "codex";
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]; // newest first
@@ -400,15 +406,22 @@ function pushToCodex() {
 	// and the hand-over says how many. Out of the inbox while on its way, so duet_inbox can't show it
 	// too; back in front if the push fails.
 	const requestId = randomUUID().replace(/-/g, "").slice(0, 16);
-	const n = fitBytes(fitsForm(), PUSH_BYTES_MAX);
+	// The joins and leaves go along when they fit; else they wait for the next hand-over (never a
+	// message held back for them).
+	let withEvents = true;
+	let n = fitBytes(fitsForm(), PUSH_BYTES_MAX);
+	if (!n && events.length) [n, withEvents] = [fitBytes(fitsForm(), PUSH_BYTES_MAX, []), false];
 	if (!n) {
 		// One message too big for an argument: it waits for the turn's end (the Stop hook) or "check
 		// duet", which don't go through a command line. Never retried in a loop.
-		pushNote = `a message from ${inbox[0].from} is too long for Codex to get whole · when your turn ends (or on "check duet") duet shows it, Ignore only`;
+		pushNote =
+			mode === "auto"
+				? `a message from ${inbox[0].from} is too long for Codex to get whole · it goes in at your turn's end, cut short by Codex`
+				: `a message from ${inbox[0].from} is too long for Codex to get whole · when your turn ends (or on "check duet") duet shows it, Ignore only`;
 		return;
 	}
 	const batch = (pushing = inbox.splice(0, n));
-	const evs = takeEvents();
+	const evs = withEvents ? takeEvents() : [];
 	const text = render(batch, requestId, { evs, more: inbox.length });
 	const entry = { items: batch, evs, at: Date.now() };
 	queued.set(requestId, entry);
@@ -735,7 +748,7 @@ async function askToTake(items, fromText) {
 		const why = hidden
 			? "hidden characters · can't run it as shown"
 			: huge
-				? `too long for Codex to get whole · ${Buffer.byteLength(shown)} bytes, max ${PUSH_BYTES_MAX}`
+				? `too long for Codex to get whole · ${Math.round(Buffer.byteLength(shown) / 1000)} KB · Codex takes up to about ${(PUSH_BYTES_MAX - 1000) / 1000} KB`
 				: `too long for this form · ${shown.length} chars, max ${FORM_MAX}`;
 		const r = await elicit(`${head}\n\n${why} · Ignore only\n\n${shown.slice(0, 2000)}${shown.length > 2000 ? "…" : ""}`, ["Ignore"]);
 		return r?.result?.action === "accept" && r.result.content?.answer === "Ignore" ? "ignore" : noAnswer(r);
@@ -900,7 +913,7 @@ async function onHook(a = {}) {
 		// As much as Codex shows the model whole from a hook; one too big for that goes as its own
 		// prompt (the push below, once this turn has ended).
 		// One that can't reach Codex whole by any path is shown alone, Ignore only.
-		const fit = inRoom() && inbox.length && !codexHold() ? (tooBigForCodex(inbox[0]) ? 1 : fitBytes(fitsForm(), INLINE_BYTES_MAX)) : 0;
+		const fit = inRoom() && inbox.length && !codexHold() ? (tooBigForCodex(inbox[0]) ? 1 : fitBytes(fitsForm(), INLINE_BYTES_MAX) || (canPush() ? 0 : 1)) : 0;
 		if (fit) {
 			// Out of the inbox while the user decides (and the turn counts as running), so nothing pushes
 			// them again meanwhile; back in front if the user can't be asked.
@@ -1310,7 +1323,7 @@ async function callTool(tool, a, ctx) {
 				// The other side's requests are now in this turn: duet's own room tools (join, leave, mode) stay the user's.
 				markPeerTurn(ctx.turnId);
 				// Codex shows the model about 10 KB of a tool result: the rest comes as its own prompt.
-				const n = isCodex() ? fitBytes(inbox.length, INLINE_BYTES_MAX) : inbox.length;
+				const n = isCodex() ? fitBytes(inbox.length, INLINE_BYTES_MAX) || (canPush() && !tooBigForCodex(inbox[0]) ? 0 : 1) : inbox.length;
 				if (!n) return `${inbox.length} waiting · too long for a tool result · it comes as its own prompt when this turn ends`;
 				const text = render(inbox.slice(0, n), undefined, { evs: takeEvents(), more: inbox.length - n }); // before taking: nothing leaves the inbox unless shown
 				seenAtGate(inbox.slice(0, n));
@@ -1333,7 +1346,7 @@ async function callTool(tool, a, ctx) {
 				// comes as its own prompt when this turn ends.
 				let n = fitsForm();
 				if (isCodex()) while (n > 0 && Buffer.byteLength(render([...got, ...inbox.slice(0, n)], undefined, { evs: events })) > INLINE_BYTES_MAX) n--;
-				if (!n && tooBigForCodex(inbox[0])) n = 1; // can't reach Codex at all: its form offers Ignore only
+				if (!n && !got.length && (tooBigForCodex(inbox[0]) || !canPush())) n = 1; // can't reach Codex at all: its form offers Ignore only
 				if (!n) {
 					why = "long";
 					break;

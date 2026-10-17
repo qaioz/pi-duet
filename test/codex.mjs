@@ -972,6 +972,34 @@ async function joinFileTests() {
 	);
 	nika.stop();
 	await t.stop();
+
+	// No Codex window to push to (Windows, an IDE, none found here): a message too big for the hook
+	// still comes at the turn's end (one form, handed over inline; Codex may cut it), and what follows
+	// it is not stuck (review 2: it stalled forever).
+	const rnw = freshRoom();
+	const nw = startServer("nowin", rnw, { cwd: join(ROOT, "proj-nw"), env: { DUET_CODEX_BIN: fakeCodex("nw").bin, DUET_ASSUME_WINDOW: "0" } });
+	await nw.init();
+	const lena = peer(rnw, "lena");
+	await until(async () => (await nw.call("duet_status")).text.includes("· connected"), 15_000, "connected");
+	await nw.hook({ event: "SessionStart", thread: "thr-nw", folder: join(ROOT, "proj-nw") });
+	await nw.hook({ event: "UserPromptSubmit", thread: "thr-nw", turn: "nw-1", prompt: "work" });
+	await lena.send("NW-BIG " + "z".repeat(20_000));
+	await lena.send("NW-SMALL after the big one");
+	await until(async () => (await nw.call("duet_status")).text.includes("messages waiting: 2"), 10_000, "2 waiting").catch(() => {});
+	const nwS1 = nw.hook({ event: "Stop", thread: "thr-nw", turn: "nw-1" });
+	const nwF1 = await nw.answer("Process");
+	const nwR1 = json((await nwS1).text)?.reason ?? "";
+	const nwS2 = nw.hook({ event: "Stop", thread: "thr-nw", turn: "nw-1" });
+	const nwF2 = await nw.answer("Process");
+	const nwR2 = json((await nwS2).text)?.reason ?? "";
+	const nwLeft = (await nw.call("duet_status")).text;
+	check(
+		"R13 Codex, no window to push to: a message too big for the hook still comes at the turn's end (one form), and the next one follows",
+		nwF1.params.message.includes("NW-BIG") && nwR1.includes("NW-BIG") && nwR1.includes("1 more message waiting") && nwF2.params.message.includes("NW-SMALL") && nwR2.includes("NW-SMALL") && /messages waiting: 0/.test(nwLeft),
+		`form 1: ${JSON.stringify(nwF1.params.message.split("\n")[0])} (big: ${nwR1.includes("NW-BIG")}, ${nwR1.match(/\d+ more messages? waiting/)?.[0]}); form 2 small: ${nwR2.includes("NW-SMALL")}; then ${nwLeft.match(/messages waiting: \d+/)?.[0]}`,
+	);
+	lena.stop();
+	await nw.stop();
 }
 
 try {
