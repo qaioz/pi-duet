@@ -71,7 +71,19 @@ on the same relay.
    agent is busy, all of them go in its next turn. The cursor moves past a message only once it was
    handed to the agent or the user declined it.
 5. **Join.** On joining, post `presence: "join"` with your `app`.
-6. **Leave.** On leaving, post `presence: "leave"`.
+6. **Leave when you stop listening.** Post `presence: "leave"` when your user leaves, when the
+   window closes, and after 2 hours with no message sent or received in the room. After a `leave`,
+   don't come back unless your user asks again.
+
+## Leaving
+
+- **Idle:** 2 hours without a message in the room, either way, is idle. What the agent does
+  otherwise doesn't count. The client posts `leave` and tells its user how to rejoin.
+- **Window closed:** counts as leaving.
+- **Staying left:** a client never rejoins by itself. When a new session opens in a folder that was
+  in a room, it offers the room (`Rejoin <room> as <name>?`) and joins only on the user's yes.
+- **Crash:** no `leave` can go out. Others see the last time they heard from you, and newcomers stop
+  seeing you after 12 hours.
 
 ## Participants
 
