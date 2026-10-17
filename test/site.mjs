@@ -45,11 +45,15 @@ if (!site) {
 const relayQuery = SERVER === "https://duet.gaioz.online" ? "" : `?relay=${encodeURIComponent(SERVER)}`;
 const start = site + relayQuery;
 
-// Every command and prompt on every agent tab, as shown.
+// The "I'm using…" list, in order; the last three are chat apps (connector first, then the prompt).
+const TOOLS = ["claude", "codex", "pi", "chatgpt", "claudeai", "other"];
+const CHATS = ["chatgpt", "claudeai", "other"];
+
+// Every command and prompt for every tool, as shown.
 async function allCommands(page) {
 	const out = [];
-	for (const agent of ["pi", "claude", "codex", "chat"]) {
-		await page.click(`.tabs button[data-agent="${agent}"]`);
+	for (const agent of TOOLS) {
+		await page.click(`.tools button[data-agent="${agent}"]`);
 		await page.$$eval("details.case", (ds) => ds.forEach((d) => (d.open = true)));
 		out.push(...(await page.$$eval(".cmd code, .prompt pre", (cs) => cs.map((c) => c.textContent))));
 	}
@@ -67,18 +71,18 @@ If it printed "duet: mods are off here", reply only: Claude Code's mods are off 
 If duet later says its send tool is off in this folder: /mcp → duet → Enable.`,
 			codex: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server ${relay}) and stop. Otherwise run this as one shell command:\n\n${JOIN("codex", relay)} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet\n\nThen reply with only: Start a new Codex session in this folder, say "join duet", then choose Join (first time: trust duet's hooks).\nIf it failed, say which step failed instead.`,
 			pi: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("pi", relay)} && pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet\n\nThen reply with only: Type /reload, then confirm to join.\nIf it failed, say which step failed instead.`,
-			chat: "Open duet: call duet_room with room {room} and name {name}.",
+			...Object.fromEntries(CHATS.map((k) => [k, "Open duet: call duet_room with room {room} and name {name}."])),
 		}).map(([k, v]) => [k, v.replaceAll("{room}", r).replaceAll("{name}", n)]),
 	);
-// Each tab's prompt as shown, whether its Copy is on, and whether it comes before the commands.
+// Each tool's prompt as written, whether its Copy is on, and whether it comes before the commands.
 async function prompts(page) {
 	const out = {};
-	for (const agent of ["claude", "codex", "pi", "chat"]) {
-		await page.click(`.tabs button[data-agent="${agent}"]`);
+	for (const agent of TOOLS) {
+		await page.click(`.tools button[data-agent="${agent}"]`);
 		out[agent] = await page.$eval("#commands", (box) => {
 			const p = box.querySelector(".prompt");
-			const kids = [...box.children];
-			return { text: p.querySelector("pre").textContent, disabled: p.querySelector("button").disabled, label: p.querySelector("button").textContent, first: kids.indexOf(p) < kids.indexOf(box.querySelector(".case")) };
+			const first = !!(p.compareDocumentPosition(box.querySelector(".case")) & Node.DOCUMENT_POSITION_FOLLOWING);
+			return { text: p.querySelector("pre").textContent, disabled: p.querySelector("button").disabled, label: p.querySelector("button").textContent, first };
 		});
 	}
 	return out;
@@ -125,9 +129,9 @@ try {
 		disabled: [...document.querySelectorAll("#commands .cmd button, #commands .prompt button")].every((b) => b.disabled),
 		hint: document.querySelector("#commands .hint")?.textContent ?? "",
 	}));
-	await friend.click('.tabs button[data-agent="claude"]');
+	await friend.click('.tools button[data-agent="claude"]');
 	const claudeTab = await friend.$eval("#commands", (c) => c.textContent);
-	await friend.click('.tabs button[data-agent="pi"]');
+	await friend.click('.tools button[data-agent="pi"]');
 	check(
 		"no name yet: copying is off; the Claude tab installs the plugin, no listen step",
 		gate.count > 0 && gate.disabled && gate.hint.includes("Type your name") && !/listen on duet/i.test(claudeTab) &&
@@ -140,10 +144,10 @@ try {
 	const wantBefore = PROMPTS(room, "YOUR_NAME", SERVER);
 	check(
 		"Copy prompt: the spec's text on each tab, off before a name; agents first, chat after the connector",
-		Object.entries(before).every(([k, p]) => p.text === wantBefore[k] && p.disabled && p.label === "Copy prompt" && p.first === (k !== "chat")) && (await friend.textContent("#commands")).includes("Or run it yourself") === false,
+		Object.entries(before).every(([k, p]) => p.text === wantBefore[k] && p.disabled && p.label === "Copy prompt" && p.first === !CHATS.includes(k)) && (await friend.textContent("#commands")).includes("Or run it yourself") === false,
 		JSON.stringify(Object.fromEntries(Object.entries(before).map(([k, p]) => [k, { same: p.text === wantBefore[k], disabled: p.disabled, first: p.first }]))),
 	);
-	await friend.click('.tabs button[data-agent="claude"]');
+	await friend.click('.tools button[data-agent="claude"]');
 	const orHeading = await friend.textContent("#commands");
 
 	// Name entry fills every command, on every tab; copy buttons copy exactly what is shown.
@@ -153,8 +157,8 @@ try {
 	const unfilled = [];
 	const copyMismatch = [];
 	let total = 0;
-	for (const agent of ["pi", "claude", "codex", "chat"]) {
-		await friend.click(`.tabs button[data-agent="${agent}"]`);
+	for (const agent of TOOLS) {
+		await friend.click(`.tools button[data-agent="${agent}"]`);
 		commands[agent] = {};
 		for (const kase of await friend.$$eval(".case", (cs) => cs.map((c) => c.dataset.case))) {
 			const rows = await friend.$$(`.case[data-case="${kase}"] .cmd`);
@@ -174,26 +178,25 @@ try {
 		}
 	}
 	const withRoom = Object.values(commands).flatMap((a) => Object.values(a).flat()).filter((c) => c.cmd.includes(room)).length;
-	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 12, `name field cleaned to "${typed}"; ${total} commands on 4 tabs, ${withRoom} carry the room, unfilled: ${JSON.stringify(unfilled)}`);
+	check("name entry fills every command", typed === "nika" && unfilled.length === 0 && withRoom === 12, `name field cleaned to "${typed}"; ${total} commands for ${TOOLS.length} tools, ${withRoom} carry the room, unfilled: ${JSON.stringify(unfilled)}`);
 	check("copy buttons copy exactly what is shown", copyMismatch.length === 0 && total > 0, `${total} copy buttons checked; mismatches: ${JSON.stringify(copyMismatch)}`);
 	// With a name: the prompts are filled and copy exactly; the commands sit under "Or run it yourself".
 	const after = await prompts(friend);
 	const want = PROMPTS(room, "nika", SERVER);
 	const promptCopy = [];
 	for (const agent of Object.keys(after)) {
-		await friend.click(`.tabs button[data-agent="${agent}"]`);
+		await friend.click(`.tools button[data-agent="${agent}"]`);
 		await friend.click("#commands .prompt button");
 		promptCopy.push((await friend.evaluate(() => navigator.clipboard.readText())) === want[agent]);
 	}
-	// Named: on the Claude Code tab the prompt comes first, then "Or run it yourself", then the commands.
+	// Named: for Claude Code the prompt comes first, then "Or run it yourself", which holds the commands.
 	await friend.click('[data-agent="claude"]');
 	const orNamed = await friend.evaluate(() => {
 		const box = document.getElementById("commands");
 		const kids = [...box.children];
 		const p = kids.findIndex((e) => e.classList.contains("prompt"));
-		const or = kids.findIndex((e) => e.textContent.trim() === "Or run it yourself");
-		const c = kids.findIndex((e) => e.classList.contains("case"));
-		return p >= 0 && or > p && c > or;
+		const or = kids.findIndex((e) => e.matches("details.manual") && e.querySelector("summary").textContent.trim() === "Or run it yourself");
+		return p >= 0 && or > p && kids[or].querySelectorAll(".case").length === 3 && !kids[or].open;
 	});
 	check(
 		"with a name: each prompt filled exactly, Copy prompt on and copies it; commands under \"Or run it yourself\"",
@@ -299,12 +302,12 @@ exit 0
 				: cmdOk(r, { out: "", enabled: false, code: 1, tested: false })),
 		JSON.stringify(runs).slice(0, 900),
 	);
-	// Tabs: Claude Code, Codex, pi, then chat apps; each agent tab starts with one line for a terminal.
-	const tabOrder = await friend.$$eval(".tabs button", (bs) => bs.map((b) => b.dataset.agent).join());
+	// Tools: Claude Code, Codex, pi, then the chat apps; each agent's commands start with one line for a terminal.
+	const tabOrder = await friend.$$eval(".tools button", (bs) => bs.map((b) => b.dataset.agent).join());
 	const fresh = (agent) => commands[agent].fresh.map((c) => c.cmd);
 	check(
-		"tabs: Claude Code, Codex, pi, Claude chat / ChatGPT; each agent opens with one line to paste in a terminal",
-		tabOrder === "claude,codex,pi,chat" &&
+		"I'm using: Claude Code, Codex, pi, ChatGPT, Claude.ai, VS Code/Goose; each agent's commands open with one line to paste in a terminal",
+		tabOrder === TOOLS.join() &&
 			fresh("claude").length === 1 && // each line also updates an older install: install alone keeps the old version (seen 2026-10-04)
 			fresh("claude")[0] === `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user && { claude plugin enable duet@pi-duet --scope user 2>/dev/null; ${SERVER === "https://duet.gaioz.online" ? "" : `DUET_SERVER=${SERVER} `}DUET_ROOM=${room} DUET_NAME=nika claude; }` &&
 			commands.claude.check?.[0]?.cmd === `curl -fsSL https://qaioz.github.io/pi-duet/claude.sh | sh -s -- ${room} nika ${SERVER}` &&
@@ -321,9 +324,14 @@ exit 0
 	);
 	// Chat apps: a line per host, the hosted connector URL, the room typed into the panel, and the plain
 	// truth: a message needs a click and nothing is guarded.
-	const chat = commands.chat;
-	await friend.click('.tabs button[data-agent="chat"]');
-	const chatText = await friend.$eval("#commands", (c) => c.textContent);
+	const chat = { ...commands.claudeai, ...commands.chatgpt, ...commands.other };
+	const chatKeys = CHATS.map((k) => Object.keys(commands[k]).join()).join("|");
+	let chatText = "";
+	for (const k of CHATS) {
+		await friend.click(`.tools button[data-agent="${k}"]`);
+		chatText += await friend.$eval("#commands", (c) => c.textContent);
+	}
+	await friend.click('.tools button[data-agent="claudeai"]');
 	const mcpbHref = await friend.$eval('#commands a[href="duet.mcpb"]', (a) => a.getAttribute("href")).catch(() => null);
 	const mcpb = mcpbHref && existsSync(resolve(import.meta.dirname, "../docs", mcpbHref)) ? mcpbHref : null; // and the file is there to download
 	const notesFilled = !/\{[a-z_-]+\}/.test(chatText);
@@ -332,8 +340,8 @@ exit 0
 		vscodeJson = JSON.parse(chat.vscode[0].cmd.match(/^code --add-mcp '(.*)'$/)[1]);
 	} catch {}
 	check(
-		"Claude chat / ChatGPT tab: Claude Desktop, claude.ai, ChatGPT, VS Code, Goose; both gates in the panel",
-		Object.keys(chat).join() === "desktop,web,chatgpt,vscode,goose" &&
+		"chat apps: ChatGPT; Claude.ai (claude.ai, Claude Desktop); VS Code, Goose; both gates in the panel",
+		chatKeys === "chatgpt|web,desktop|vscode,goose" &&
 			chat.desktop[0].cmd === `npx -y github:qaioz/pi-duet setup claude-desktop --room ${room} --name nika --server ${SERVER}` && mcpb === "duet.mcpb" &&
 			chat.web[0].cmd === "https://mcp-duet.gaioz.online/mcp" && chat.web[1].cmd === room && chat.chatgpt[0].cmd === "https://mcp-duet.gaioz.online/mcp" &&
 			vscodeJson?.name === "duet" && vscodeJson.args.join(" ") === `-y github:qaioz/pi-duet --room ${room} --name nika --server ${SERVER}` &&
@@ -390,7 +398,7 @@ exit 0
 		await def.goto(`${site}${q}#${room}`);
 		await def.waitForSelector("#room:not(.hidden)");
 		await def.fill("#name", "nika");
-		await def.click('.tabs button[data-agent="claude"]');
+		await def.click('.tools button[data-agent="claude"]');
 		const line = await def.$eval('.case[data-case="fresh"] .cmd code', (c) => c.textContent);
 		const note = (await def.textContent("#relay")).trim();
 		const noteHidden = await def.$eval("#relay", (e) => e.classList.contains("hidden"));
@@ -408,6 +416,7 @@ exit 0
 	check("index.html: no fencing, guard or countdown wording; the gates claim leaves pi out", !/fenc|guard|countdown|setTimeout/i.test(pageSrc) && !/OK every request/.test(pageSrc) && /pi: always auto/.test(pageSrc) && /pi: auto, 8 in a row max/.test(pageSrc), (pageSrc.match(/.{0,30}(fenc|guard|countdown|setTimeout).{0,30}/gi) || []).join(" | ") || "none");
 
 	// Live "who's in the room": a join on the relay shows up on both pages.
+	const statusBefore = await friend.textContent("#status");
 	await publish(SERVER, topicFor(room), envelope({ fromId: "site-test", from: "nika", kind: "join", via: "claude-code" }));
 	await page.waitForFunction(() => document.getElementById("people").textContent.includes("nika"), null, { timeout: 15_000 });
 	const peopleText = (await page.textContent("#people")).replace(/\s+/g, " ").trim();
@@ -435,18 +444,64 @@ exit 0
 		`text: ${JSON.stringify(convo.text.slice(0, 160))}; img elements ${convo.imgs}; inputs ${convo.inputs}; script ran ${convo.pwned}`,
 	);
 
-	// The conversation is one collapsed row (last message + "Open · N messages") that opens a modal.
-	const row = await page.evaluate(() => ({ last: document.getElementById("last").textContent, count: document.getElementById("convo-count").textContent, open: document.getElementById("convo-dialog").open }));
+	// The conversation is a pill ("N in the room · N messages") that opens a drawer.
+	const row = await page.evaluate(() => ({ count: document.getElementById("convo-count").textContent, open: document.getElementById("convo-dialog").open }));
 	await page.click("#convo-open");
 	const modalOpen = await page.evaluate(() => document.getElementById("convo-dialog").open);
 	const modalVisible = await page.isVisible("#convo-dialog .ev");
 	await page.keyboard.press("Escape");
 	const modalClosed = await page.evaluate(() => !document.getElementById("convo-dialog").open);
 	check(
-		"conversation: one collapsed row, opens a modal, Escape closes it",
-		row.last.startsWith("gaioz") && row.count === "Open · 3 messages" && !row.open && modalOpen && modalVisible && modalClosed,
-		`row "${row.last.slice(0, 40)}…" / "${row.count}"; modal opened ${modalOpen} (messages visible ${modalVisible}); closed by Escape ${modalClosed}`,
+		"conversation: a pill with who's in and the count, opens a drawer, Escape closes it",
+		row.count === "2 in the room · 3 messages" && !row.open && modalOpen && modalVisible && modalClosed,
+		`pill "${row.count}"; drawer opened ${modalOpen} (messages visible ${modalVisible}); closed by Escape ${modalClosed}`,
 	);
+
+	// Your agent's join is what puts you in: the friend typed "nika", and nika joined above.
+	const status = await friend.evaluate(() => ({ text: document.getElementById("status").textContent, steps: [...document.querySelectorAll(".steps .sdot")].map((d) => d.dataset.state).join() }));
+	const ownerStatus = await page.evaluate(() => document.getElementById("status").classList.contains("hidden"));
+	check(
+		"status: waiting until your own name joins on the relay, then You're in (no name typed: no status)",
+		statusBefore.includes("Waiting for") && statusBefore.includes("as nika") && status.text.includes("You're in") && status.text.includes("gaioz") && status.steps === "done,done,on" && ownerStatus,
+		`before the join: "${statusBefore.slice(0, 70)}"; after: "${status.text.replace(/\s+/g, " ").slice(0, 120)}"; dots ${status.steps}; no-name page status hidden ${ownerStatus}`,
+	);
+
+	// Your rooms: the browser remembers the room (with who was in it), opens it from the list, forgets it.
+	await page.goto(start);
+	await page.waitForSelector("#start:not(.hidden)");
+	const remembered = await page.$$eval("#rooms li", (lis) => lis.map((li) => ({ text: li.textContent, href: li.querySelector("a")?.href || "" })));
+	const mine = remembered.find((r) => r.href.endsWith("#" + room));
+	await page.click(`#rooms a[href$="#${room}"]`);
+	await page.waitForSelector("#room:not(.hidden)");
+	const reopened = new URL(page.url()).hash.slice(1) === room;
+	await page.goto(start);
+	await page.waitForSelector("#start:not(.hidden)");
+	await page.click(`#rooms li:has(a[href$="#${room}"]) .forget`);
+	const forgotten = !(await page.$(`#rooms a[href$="#${room}"]`));
+	check(
+		"your rooms: remembered with who was in it, opens from the list, Forget removes it",
+		!!mine && mine.text.includes("nika") && mine.text.includes("gaioz") && reopened && forgotten,
+		`${remembered.length} rooms listed; this one: ${JSON.stringify(mine?.text.replace(room.split("-").slice(0, 3).join("-"), "<room>"))}; reopened ${reopened}; forgotten ${forgotten}`,
+	);
+
+	// Paste a link or a code to join; anything else says so.
+	const pasteCtx = await browser.newContext();
+	const paste = await pasteCtx.newPage();
+	await paste.goto(start);
+	await paste.fill("#join-code", "not a room");
+	await paste.click("#join-form button");
+	const pasteErr = await paste.isVisible("#join-error");
+	await paste.fill("#join-code", invite);
+	await paste.click("#join-form button");
+	await paste.waitForSelector("#room:not(.hidden)");
+	const byLink = new URL(paste.url()).hash.slice(1) === room && (await paste.textContent("#invite")) === invite;
+	await paste.goto(start);
+	await paste.fill("#join-code", room2.toUpperCase());
+	await paste.press("#join-code", "Enter");
+	await paste.waitForSelector("#room:not(.hidden)");
+	const byCode = new URL(paste.url()).hash.slice(1) === room2;
+	await pasteCtx.close();
+	check("paste a room link or code to join; anything else shows an error", pasteErr && byLink && byCode, `error shown ${pasteErr}; by link ${byLink}; by code ${byCode}`);
 
 	// Links already sent with the older base32 codes still open their room.
 	const old = "abcdefghijklmnopqrstuvwxyz";
@@ -472,7 +527,7 @@ exit 0
 			await p.fill("#name", "karlo");
 			await p.waitForFunction(() => document.getElementById("people").textContent.includes("nika"), null, { timeout: 15_000 }).catch(() => {});
 			await p.evaluate(() => document.fonts.ready);
-			const m = await p.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, dark: document.documentElement.classList.contains("dark"), font: document.fonts.check('15px "Geist Sans"') && [...document.fonts].some((f) => f.family.includes("Geist Sans") && f.status === "loaded") }));
+			const m = await p.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, dark: document.documentElement.classList.contains("dark"), font: document.fonts.check('15px "Geist Sans"') && [...document.fonts].some((f) => f.family.includes("Geist Sans") && f.status === "loaded") && [...document.fonts].some((f) => f.family.includes("Instrument Serif") && f.status === "loaded") }));
 			sizes.push(`${scheme} ${width}: scrollWidth ${m.sw}/${m.cw}${m.dark ? ", dark" : ""}${m.font ? ", Geist loaded" : ""}`);
 			if (m.sw > m.cw || m.dark !== (scheme === "dark") || !m.font) sizes.push("FAIL");
 			if (process.env.SITE_SHOTS) {

@@ -7,11 +7,11 @@
 Their agent does the work on their machine. The answer lands in your session.
 Claude Code, Codex, [pi](https://github.com/badlogic/pi-mono), Claude chat, ChatGPT, in any mix. No accounts.
 
-![The duet website: start a room, send the link, start your agent](docs/readme/website.png)
+![The duet website: pick a room, pick your agent, copy one prompt](docs/readme/website.png)
 
 ## Start
 
-1. **Open [qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, press **Start a room**, send the link to your friend.
+1. **Open [qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, press **New room** (or pick one of your rooms), send the link to your friend.
 2. **Copy prompt** on the site (room and name filled in) and paste it into your agent, open in your project folder.
    It sets duet up and joins; you do the one step it names:
 
