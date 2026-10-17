@@ -247,6 +247,8 @@
 	.tools button small { font-family: "Geist Mono", monospace; font-size: 10.5px; font-weight: 400; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin-left: auto; margin-right: 14px; }
 	.radio { flex: none; width: 16px; height: 16px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid color-mix(in srgb, var(--ink) 25%, transparent); transition: border .4s, background .4s; }
 	.tools button[aria-checked="true"] .radio { border: 5px solid var(--accent); background: var(--card); }
+	.tools .soon { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; height: 56px; margin: 0; padding: 0 18px; color: var(--faint); font-size: 15px; font-weight: 500; opacity: .6; }
+	.tools .soon small { font-family: "Geist Mono", monospace; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; margin-right: 30px; }
 	#feat { margin: 14px 0 0; padding: 0 18px; font-size: 14px; line-height: 1.55; color: var(--muted); text-wrap: pretty; }
 	.frame { position: relative; width: 100%; aspect-ratio: 16 / 10; border-radius: 20px; background: #161915; overflow: hidden; box-shadow: 0 30px 60px -30px rgba(22, 25, 21, .55); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; color: #f1f2ea; }
 	.frame .kind { position: absolute; top: 18px; left: 22px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #a3a89c; }
@@ -471,12 +473,12 @@
 				<div>
 					<div class="tools" role="radiogroup" aria-label="I'm using">
 						<span class="hl" aria-hidden="true"></span>
-						<button type="button" role="radio" data-agent="claude" aria-checked="true">Claude Code<small>Terminal</small><span class="radio" aria-hidden="true"></span></button>
-						<button type="button" role="radio" data-agent="codex" aria-checked="false">Codex<small>Terminal</small><span class="radio" aria-hidden="true"></span></button>
-						<button type="button" role="radio" data-agent="pi" aria-checked="false">pi<small>Terminal</small><span class="radio" aria-hidden="true"></span></button>
-						<button type="button" role="radio" data-agent="chatgpt" aria-checked="false">ChatGPT<small>Chat</small><span class="radio" aria-hidden="true"></span></button>
-						<button type="button" role="radio" data-agent="claudeai" aria-checked="false">Claude.ai<small>Chat</small><span class="radio" aria-hidden="true"></span></button>
-						<button type="button" role="radio" data-agent="other" aria-checked="false">VS Code, Goose<small>MCP</small><span class="radio" aria-hidden="true"></span></button>
+						<button type="button" role="radio" data-agent="claude" aria-checked="true">Claude Code<small>Mod</small><span class="radio" aria-hidden="true"></span></button>
+						<button type="button" role="radio" data-agent="codex" aria-checked="false">Codex<small>Plugin</small><span class="radio" aria-hidden="true"></span></button>
+						<button type="button" role="radio" data-agent="pi" aria-checked="false">pi<small>Extension</small><span class="radio" aria-hidden="true"></span></button>
+						<button type="button" role="radio" data-agent="chatgpt" aria-checked="false">ChatGPT<small>MCP</small><span class="radio" aria-hidden="true"></span></button>
+						<button type="button" role="radio" data-agent="claudeai" aria-checked="false">Claude.ai<small>MCP</small><span class="radio" aria-hidden="true"></span></button>
+						<p class="soon" aria-label="Coming soon">VS Code · Cursor · Goose · Grok · Gemini CLI<small>Soon</small></p>
 					</div>
 					<p id="feat" aria-live="polite"></p>
 				</div>
@@ -753,7 +755,6 @@ If it failed, say which step failed instead.`,
 	},
 	chatgpt: { ...CHAT, name: "ChatGPT", feat: "The duet panel in the chat: same tools, same permissions, hosted.", cap: "The duet panel in the chat: room members, a request card with Process, then a “Send this reply?” card.", cases: [CHAT_CASES.chatgpt] },
 	claudeai: { ...CHAT, name: "Claude.ai", feat: "The duet panel in claude.ai, the Claude apps or Claude Desktop: same tools, same permissions, hosted.", cap: "The duet panel in the chat: room members, a request card with Process, then a “Send this reply?” card.", cases: [CHAT_CASES.web, CHAT_CASES.desktop] },
-	other: { ...CHAT, name: "VS Code or Goose", kind: "MCP", feat: "duet as an MCP server for Copilot agent mode or Goose: say “open duet” or “check duet”.", cap: "duet as an MCP server: say “open duet” for the panel, or “check duet” for the waiting requests.", cases: [CHAT_CASES.vscode, CHAT_CASES.goose] },
 };
 const ORDER = Object.keys(AGENTS);
 
