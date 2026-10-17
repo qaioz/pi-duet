@@ -390,3 +390,43 @@ test("join file: the card shows the window's own folder, the relay before it, th
 		assert.ok(q.split(" · ").at(-1).length <= 60, q);
 	}
 });
+
+// ---------- Release 12 ----------
+
+test("R12: fitHandover takes everything that fits, in order, always at least one; nothing is dropped", () => {
+	const envs = Array.from({ length: 60 }, (_, i) => wire.envelope({ fromId: "a", from: "karlo", kind: "msg", text: `m${i} ` + "x".repeat(2000) }));
+	const a = wire.fitHandover(envs);
+	assert.ok(a.take.length > 0 && a.take.length < 60);
+	assert.equal(a.take.length + a.rest.length, 60);
+	assert.deepEqual([...a.take, ...a.rest].map((e) => e.text), envs.map((e) => e.text));
+	const b = wire.fitHandover(a.rest);
+	assert.equal(b.take.length, a.rest.length);
+	const huge = wire.fitHandover([{ text: "x".repeat(wire.HANDOVER_MAX + 1) }, { text: "y" }]);
+	assert.deepEqual([huge.take.length, huge.rest.length], [1, 1]);
+});
+
+test("R12: the frame starts with the room line (peers and apps); joins and leaves are items in arrival order with the messages; then how many more wait", () => {
+	const envs = [
+		{ ...wire.envelope({ fromId: "a", from: "karlo", kind: "msg", text: "first" }), _seq: 1 },
+		{ ...wire.envelope({ fromId: "b", from: "nika", kind: "msg", text: "second" }), _seq: 4 },
+	];
+	const ts = new Date().toISOString();
+	const t = wire.frameForClaude(envs, "/w", "mcp__duet__send", {
+		room: [{ name: "karlo", via: "pi" }, { name: "nika", via: "Claude Code" }],
+		me: "gaioz",
+		events: [{ name: "dato", what: "joined", via: "pi", ts, seq: 2 }, { name: "dato", what: "left", ts, seq: 3 }],
+		more: 3,
+	});
+	assert.ok(t.startsWith("[duet] In this room: karlo (pi), nika (Claude Code) · you are gaioz\n\n"));
+	assert.match(t, /from karlo[\s\S]*first\n\n---\n\n\[duet\] dato joined \(pi\), \d\d:\d\d\n\n---\n\n\[duet\] dato left, \d\d:\d\d\n\n---\n\n\[duet\] from nika[\s\S]*second/);
+	assert.match(t, /\n3 more messages waiting: they come in your next turn\.\n/);
+	assert.match(t, /to answer karlo, nika, call the mcp__duet__send tool/);
+	const alone = wire.frameForClaude([envs[0]], "/w", "T", { room: [{ name: "karlo", via: "pi" }] });
+	assert.doesNotMatch(alone, /joined|left|more message/);
+	assert.match(wire.frameForClaude([envs[0]], "/w", "T", { room: [], more: 1 }), /no one else yet[\s\S]*1 more message waiting/);
+});
+
+test("R12: no batch, no cap, no per-sender grouping left in the mod", () => {
+	const mod = readFileSync(new URL("../hooks/duet.js", import.meta.url), "utf8");
+	assert.doesNotMatch(mod, /BATCH_MAX|QUEUE_MAX|firstGroup|oldest dropped/);
+});

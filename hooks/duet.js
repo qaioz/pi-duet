@@ -28,7 +28,7 @@
 // Every function that touches `$` is declared at the top level of this file: Claude Code's
 // validator refuses `$` passed to an imported function. wire.js is pure.
 import {
-	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, frameForClaude, isEnvelope, isForMe, placeFor,
+	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, fitHandover, frameForClaude, isEnvelope, isForMe, placeFor,
 	isName, isPlaceholderName, isRelayUrl, isRoomCode, joinQuestion, newRoomCode, randomId, readJoinFile, sanitize, stripHidden, HIDDEN_MARK, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
@@ -42,9 +42,8 @@ const HISTORY_MAX = 200; // per room, kept in $.store across restarts
 const HISTORY_TEXT_MAX = 1500; // characters of one history entry saved to $.store (memory keeps it whole)
 const HISTORY_BYTES_MAX = 512 * 1024; // one room's saved history, as JSON in UTF-8: 5 rooms stay well under $.store's 4 MiB
 const HISTORY_ROOMS = 5; // rooms whose history is kept; older ones are dropped
-const QUEUE_MAX = 50;
-const BATCH_MAX = 5; // messages handed to Claude in one turn
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
+const BAND_CHARS = 100_000; // Claude Code draws a band's text up to this many characters
 const TOAST_GAP_MS = 15_000; // one "new request" toast per sender per burst
 // Permission modes in which a tool call still asks the user unless a rule allows it. Only used for
 // the one confirm when the user turns auto on in a session that runs commands unasked.
@@ -79,7 +78,11 @@ let heldCursor = null; // the newest resume point, saved once nothing received i
 const seen = new Set();
 const peers = new Map(); // name -> { via, at, left }
 
-let queue = []; // messages waiting for the user (ask) or for Claude to be free (auto)
+let queue = []; // messages waiting for the user (ask) or for Claude to be free (auto); never capped
+let carry = []; // messages taken (a press, or auto) that didn't fit the last hand-over: Claude's next turn
+let carryPreSend = false; // the press that took them was "Process and send"
+let events = []; // [{ name, what: "joined" | "left", via, ts, seq }] since Claude's last duet turn: items of the next hand-over
+let arrival = 0; // arrival order of messages and events, for the hand-over
 const lastToast = new Map(); // sender -> time of the last "new request" toast
 let pendingPeer = null; // { envs, text, roomKey, submitted, preSend }: taken, waiting for Claude to be idle
 let expected = []; // [{ text, froms, roomKey, envs, at, preSend }]: submitted frames whose turn hasn't started yet
@@ -199,7 +202,7 @@ function sendNote($, note, to) {
 
 // The resume point to keep: just before the oldest message not yet handled, or the newest seen.
 function resumePoint() {
-	const open = pendingPeer?.envs?.[0] ?? expected[0]?.envs?.[0] ?? queue[0];
+	const open = pendingPeer?.envs?.[0] ?? expected[0]?.envs?.[0] ?? carry[0] ?? queue[0];
 	if (open) return open._prev ?? null;
 	return heldCursor;
 }
@@ -214,7 +217,7 @@ async function saveCursor($) {
 
 // The turn in progress, kept across a module reload (which resets module variables).
 async function saveTurn($) {
-	await $.store.set("turn:" + sessionId, { pendingPeer, expected, peerTurn, runningTurn, at: Date.now() });
+	await $.store.set("turn:" + sessionId, { pendingPeer, expected, peerTurn, runningTurn, carry, carryPreSend, events, arrival, at: Date.now() });
 }
 
 // ---------- receiving ----------
@@ -398,6 +401,8 @@ function onEnvelope($, r, env) {
 			const via = viaLabel(env.via);
 			remember($, { text: `${env.from} joined${via ? " · " + via : ""}`, note: true });
 			// Answer once, so a newcomer learns who is here; not a join that answers ours (sent twice otherwise).
+			// A join answering ours isn't a change either: those peers are the room line's.
+			if (Date.now() - joinedAt > 5000) events.push({ name: env.from, what: "joined", via, ts: env.ts, seq: ++arrival });
 			if (Date.now() - joinedAt > 5000) void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code", place: r.place })).catch(() => {});
 		}
 		redraw($);
@@ -412,7 +417,10 @@ function onEnvelope($, r, env) {
 			left: `${env.from} left`,
 			moved: `${env.from} moved to another window`,
 		}[env.note];
-		if (env.note === "left") peers.set(env.from, { ...peers.get(env.from), left: true });
+		if (env.note === "left") {
+			peers.set(env.from, { ...peers.get(env.from), left: true });
+			events.push({ name: env.from, what: "left", ts: env.ts, seq: ++arrival });
+		}
 		remember($, { text, note: true });
 		redraw($);
 		return;
@@ -420,11 +428,8 @@ function onEnvelope($, r, env) {
 	// A reply to one of ours: say which one (the card and what Claude reads).
 	env.reLine = env.re && sent.has(env.re) ? sent.get(env.re) : undefined; // ours only: a peer can't set it
 	remember($, { who: env.from, text: env.text });
-	if (queue.length >= QUEUE_MAX) {
-		queue.shift();
-		$.ui.toast(`duet: over ${QUEUE_MAX} waiting · oldest dropped`);
-	}
-	queue.push(env);
+	env._seq = ++arrival;
+	queue.push(env); // never dropped: what doesn't fit one turn comes in the next
 	// The user must act only in ask mode (or auto paused): then one toast per sender per burst.
 	const now = Date.now();
 	if (!autoActive() && now - (lastToast.get(env.from) ?? 0) > TOAST_GAP_MS) $.ui.toast(`${env.from}: new request`);
@@ -436,8 +441,8 @@ function onEnvelope($, r, env) {
 // ---------- delivery ----------
 
 async function deliver($) {
-	if (!autoActive() || !queue.length || busyWithPeer()) return;
-	if (autoTurns >= MAX_AUTO) {
+	if (!autoActive() || !(queue.length || carry.length) || busyWithPeer()) return;
+	if (autoTurns >= MAX_AUTO && queue.length) {
 		paused = true;
 		pausedForTool = false;
 		$.ui.toast(`duet: ${MAX_AUTO} in a row · rest wait for you`);
@@ -452,9 +457,17 @@ async function deliver($) {
 		redraw($);
 		return;
 	}
-	if (!autoActive() || !queue.length || busyWithPeer()) return;
-	autoTurns++;
-	await startPeerTurn($, queue.splice(0, BATCH_MAX));
+	if (!autoActive() || !(queue.length || carry.length) || busyWithPeer()) return;
+	// The rest of a split hand-over is the same request continued: it never counts toward MAX_AUTO.
+	if (queue.length) autoTurns++;
+	await startPeerTurn($, queue.splice(0));
+}
+
+// Messages already taken (a press, or auto) that didn't fit the last hand-over: Claude's next turn.
+async function flowCarry($) {
+	if (!room || !carry.length || busyWithPeer()) return;
+	if (autoActive()) return deliver($);
+	await startPeerTurn($, carry.splice(0), carryPreSend);
 }
 
 // Would a shell command nobody named run without the user being asked, right now? Claude Code's own
@@ -471,8 +484,12 @@ async function runsUnasked($) {
 	}
 }
 
+// Hand over everything, in order, as much as fits one turn; the rest is carried to the next turn.
 async function startPeerTurn($, envs, preSend = false) {
-	pendingPeer = { envs, text: frameForClaude(envs, cwd, SEND_TOOL), roomKey: room?.key ?? "", submitted: false, preSend };
+	const { take, rest } = fitHandover([...carry.splice(0), ...envs]); // carried first: they are older
+	carry = rest;
+	carryPreSend = preSend;
+	pendingPeer = { envs: take, roomKey: room?.key ?? "", submitted: false, preSend };
 	await saveTurn($);
 	redraw($);
 	await submitWhenIdle($);
@@ -483,6 +500,15 @@ async function submitWhenIdle($) {
 	const p = pendingPeer;
 	if (!p || p.submitted || runningTurn) return;
 	p.submitted = true;
+	// Everything taken meanwhile goes in this turn too (auto: everything that arrived while Claude
+	// worked), in order, as much as fits; the rest is carried to the next turn.
+	const pool = fitHandover([...p.envs, ...carry.splice(0), ...(autoActive() ? queue.splice(0) : [])]);
+	p.envs = pool.take;
+	carry = pool.rest;
+	// Built now, not when taken: the room line, and the joins and leaves so far, are as of this hand-over.
+	p.text = frameForClaude(p.envs, cwd, SEND_TOOL, { room: livePeers().map(([name, x]) => ({ name, via: viaLabel(x.via) })), me: room?.name, events, more: carry.length });
+	p.events = events;
+	events = [];
 	const froms = [...new Set(p.envs.map((x) => x.from))];
 	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, at: Date.now(), preSend: !!p.preSend }];
 	userPromptSince = false;
@@ -497,7 +523,10 @@ async function submitWhenIdle($) {
 	if (result?.drop) {
 		// Refused (another mod, or a UserPromptSubmit hook): back to waiting, and no auto retry loop.
 		expected = expected.filter((x) => x.text !== p.text);
-		if (room?.key === p.roomKey) queue.unshift(...p.envs);
+		if (room?.key === p.roomKey) {
+			queue.unshift(...p.envs, ...carry.splice(0));
+			events = [...(p.events ?? []), ...events];
+		}
 		paused = room?.mode === "auto" ? true : paused;
 		pausedForTool = false;
 		await saveTurn($);
@@ -510,7 +539,7 @@ async function cancelWaiting($) {
 	const p = pendingPeer;
 	if (!p || p.submitted) return;
 	pendingPeer = null;
-	if (room?.key === p.roomKey) queue.unshift(...p.envs);
+	if (room?.key === p.roomKey) queue.unshift(...p.envs, ...carry.splice(0));
 	await saveTurn($);
 	redraw($);
 }
@@ -679,6 +708,8 @@ async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	room = r;
 	generation++;
 	queue = [];
+	carry = [];
+	events = [];
 	outbox = [];
 	peers.clear();
 	const stored = await $.store.get("history:" + key);
@@ -826,18 +857,12 @@ async function setMode($, mode) {
 
 // ---------- what the user does with a card ----------
 
-// The card shows, and acts on, the waiting messages from one sender together (up to a batch).
-function firstGroup() {
-	if (!queue.length) return [];
-	const from = queue[0].from;
-	return queue.filter((e) => e.from === from).slice(0, BATCH_MAX);
-}
-
-// Gate 1: a press acts at once. "take" (Process), "take-send" (Process and send), "ignore".
+// Gate 1: a press acts at once on every waiting message, from every sender, in arrival order.
+// "take" (Process), "take-send" (Process and send), "ignore".
 let choosing = false; // a gate-1 press is checking the send tool: a second press waits its turn
 async function choose($, action) {
 	if (choosing) return;
-	const envs = firstGroup();
+	const envs = [...queue];
 	if (!envs.length || !room) return;
 	const r = room;
 	const take = action === "take" || action === "take-send";
@@ -870,7 +895,7 @@ async function choose($, action) {
 	if (take) {
 		await startPeerTurn($, envs, action === "take-send");
 	} else {
-		sendNote($, "declined", envs[0].from);
+		for (const from of new Set(envs.map((e) => e.from))) sendNote($, "declined", from);
 		redraw($);
 		await saveCursor($);
 	}
@@ -1320,21 +1345,25 @@ function drawCard($, e) {
 	if (queue.length) {
 		// Gate 1.
 		noteKeys($, "room");
-		const group = firstGroup();
+		const group = queue; // every waiting message, from every sender, in arrival order: one press takes them all
 		const env = group[0];
+		const froms = [...new Set(group.map((g) => g.from))];
 		const via = viaLabel(peers.get(env.from)?.via);
-		const others = queue.length - 1;
 		const reply = (g) => (g.reLine ? [Text({ dimColor: true, children: [`↳ re “${sanitize(g.reLine, 80)}”`] })] : []);
-		// Every word Claude would get on "Process": the whole text of each message in the group, every
-		// line, wrapped, never cut to the band's width or a line count (a peer could hide an
-		// instruction past the cut).
-		const body = group.flatMap((g, i) => [...(i > 0 ? [Text({ key: `sep${i}`, dimColor: true, children: ["—"] })] : []), ...reply(g), ...textRows(Text, g.text, `q${i}.`)]);
+		// Every word Claude would get on "Process": the whole text of each message, every line, wrapped,
+		// never cut to the band's width or a line count (a peer could hide an instruction past the cut).
+		// With more than one sender, each message says who sent it.
+		const label = (g) => (froms.length > 1 ? [Text({ dimColor: true, children: [`${oneLine(g.from)} · ${timeOf(g.ts)}`] })] : []);
+		const body = group.flatMap((g, i) => [...(i > 0 ? [Text({ key: `sep${i}`, dimColor: true, children: ["—"] })] : []), ...label(g), ...reply(g), ...textRows(Text, g.text, `q${i}.`)]);
+		// Claude Code draws a band up to 100,000 characters: past that the card can't show every word, so it says so.
+		const chars = group.reduce((n, g) => n + g.text.length, 0);
+		if (chars > BAND_CHARS) body.unshift(Text({ key: "clip", dimColor: true, children: [`${chars.toLocaleString("en-US")} characters: the band shows the first ${BAND_CHARS.toLocaleString("en-US")} · /duet History has every word`] }));
 		const head = Box({
 			flexDirection: "row",
 			justifyContent: "space-between",
 			children: [
-				Box({ flexDirection: "row", children: [Text({ bold: true, color: AMBER, children: [env.from] }), Text({ dimColor: true, children: [`${via ? " · " + via : ""} · ${timeOf(env.ts)}${paused ? " · auto paused" : ""}`] })] }),
-				...(others > 0 ? [Text({ dimColor: true, children: [`+${others}`] })] : []),
+				Box({ flexDirection: "row", children: [Text({ bold: true, color: AMBER, children: [oneLine(froms.join(", "))] }), Text({ dimColor: true, children: [`${froms.length === 1 && via ? " · " + via : ""} · ${timeOf(env.ts)}${paused ? " · auto paused" : ""}`] })] }),
+				...(group.length > 1 ? [Text({ dimColor: true, children: [`${group.length} messages`] })] : []),
 			],
 		});
 		const keys = buttons([
@@ -1344,7 +1373,7 @@ function drawCard($, e) {
 			Button({ key: "take-send", label: "Process and send", hotkey: "3", plain: true, onPress: () => armed($) && void choose($, "take-send").catch(() => {}) }),
 		]);
 		// As gate 2: a request taller than the band keeps its keys under the title, inside the window.
-		const rows = group.reduce((n, g, i) => n + rowsFor(g.text, e.props?.bodyColumns ?? 80) + (g.reLine ? 1 : 0) + (i > 0 ? 1 : 0), 0);
+		const rows = group.reduce((n, g, i) => n + rowsFor(g.text, e.props?.bodyColumns ?? 80) + (g.reLine ? 1 : 0) + (froms.length > 1 ? 1 : 0) + (i > 0 ? 1 : 0), 0);
 		const fits = rows + 4 <= (e.props?.maxRows ?? 10);
 		return frame(AMBER, fits ? [head, ...body, keys] : [head, keys, ...body]);
 	}
@@ -1456,7 +1485,7 @@ function modeLabel() {
 	if (!room) return "";
 	const ps = peerList() || "no one yet";
 	// Both gates: requests (gate 1) and replies (gate 2) waiting for the user.
-	const n = queue.length + outbox.length;
+	const n = queue.length + carry.length + outbox.length;
 	const waiting = n ? ` · ${n} waiting` : "";
 	return `duet · ${ps} · ${room.mode}${paused ? " · paused" : ""}${waiting}${connected ? "" : " · offline"}`;
 }
@@ -1543,6 +1572,10 @@ export function register(on) {
 			expected = Array.isArray(turn.expected) ? turn.expected : [];
 			peerTurn = turn.peerTurn ?? null;
 			runningTurn = turn.runningTurn ?? "";
+			carry = Array.isArray(turn.carry) ? turn.carry : [];
+			carryPreSend = !!turn.carryPreSend;
+			events = Array.isArray(turn.events) ? turn.events : [];
+			arrival = Math.max(Number(turn.arrival) || 0, ...carry.map((e) => e._seq ?? 0), ...events.map((e) => e.seq ?? 0));
 		}
 		void supervise($).catch(() => {});
 		if (e.isInteractive || (await canDraw($))) {
@@ -1726,6 +1759,7 @@ export function register(on) {
 		if (!e.agentId) await saveTurn($);
 		const result = await next(e);
 		void submitWhenIdle($).catch(() => {});
+		void flowCarry($).catch(() => {});
 		void deliver($).catch(() => {});
 		return result;
 	});
