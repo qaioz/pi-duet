@@ -21,10 +21,10 @@ Claude Code **2.1.287+** with mods on · terminal and Desktop Code tab.
 </Steps>
 
 The prompt installs or updates the plugin, enables it if this folder has it off, checks mods are on, and
-leaves `~/.duet/join.json` for duet to take (this folder, 30 min). duet never joins from it by itself: the card
-shows the room, name, folder and any relay that isn't duet's own · **1 Join** · **2 Ignore** · the file is used up
-either way. duet already loaded: the card shows without a reload. A window already in a room: the card says
-which room it leaves.
+leaves `~/.duet/join.json` (30 min). duet looks at it when that command's turn ends, at a start and at a reload,
+never between. duet never joins from it by itself: the card shows the room, name, this window's folder and any
+relay that isn't duet's own · **1 Join** · **2 Ignore** · the file is used up either way. duet already loaded: the
+card shows when the command finishes, no reload. A window already in a room: the card says which room it leaves.
 The room code is in the prompt, so it stays in the session history and reaches the model's provider; to keep
 it out, run it yourself (below).
 

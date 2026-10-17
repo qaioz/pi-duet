@@ -1,5 +1,5 @@
 // duet for Claude Code, as a mod: pair this session with another developer's coding agent (pi,
-// Claude Code or Codex) through a shared room on an ntfy relay.
+// Claude Code or Codex) through a shared room on a relay.
 //
 //   /duet new            make a room and join it        /duet <room> [name] [relay]   join a room
 //   /duet                open the duet pane              /duet ask | auto              gates on / off
@@ -9,71 +9,56 @@
 // network API; Node isn't guaranteed). Sending: `$.http.fetch` POST — which also means a session
 // whose policy refuses mod network requests never joins (curl is never used to go around it).
 //
-// Two gates in ask mode. Gate 1: each request waits as a card above the prompt (1 Process,
+// Two gates in ask mode. Gate 1: every waiting message waits as one card above the prompt (1 Process,
 // 2 Ignore, 3 Process and send). Gate 2: every reply Claude sends with the duet tool waits as a card
 // showing the whole reply (1 Send, 2 Don't send); the tool call holds until the press. "Process and
 // send" is the user's OK for one reply ahead: the first send of that request's turn to its sender
 // goes out without the gate 2 card. It lives in peerTurn only (never in what Claude reads or sets)
-// and ends with the turn; a second send, a send to anyone else, or any other turn still waits. Auto mode: no gates, up to MAX_AUTO
-// requests in a row without the user. While Claude works on a peer's request it runs under the
-// user's own permission mode, like any other turn: duet adds no checks of its own. So gate 2 holds
-// the duet tool only; it is not a fence around what leaves the computer: where commands run unasked,
-// a peer can ask Claude to post to the room's relay topic (or anywhere) with curl.
+// and ends with the turn. Auto mode: no gates, up to MAX_AUTO requests in a row without the user.
+// While Claude works on a peer's request it runs under the user's own permission mode, like any
+// other turn: duet adds no checks of its own. Gate 2 holds the duet tool only; it is not a fence
+// around what leaves the computer.
 //
-// Which turn is the peer's (for the spinner, the notes the peer gets, and which request a reply
-// answers): Claude Code hands turn.start the prompt's text wrapped in its own lines ("The duet plugin
-// sent a message: …"), so a turn is the peer's when its text contains a frame duet submitted, until
-// that turn's own turn.complete. duet submits only while Claude is idle, so its turn is the next one.
+// Which turn is the peer's (for the spinner and which request a reply answers): Claude Code hands
+// turn.start the prompt's text wrapped in its own lines ("The duet plugin sent a message: …"), so a
+// turn is the peer's when its text contains a frame duet submitted, until that turn's own
+// turn.complete. duet submits only while Claude is idle, so its turn is the next one.
 //
 // Every function that touches `$` is declared at the top level of this file: Claude Code's
 // validator refuses `$` passed to an imported function. wire.js is pure.
 import {
-	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, fitHandover, frameForClaude, isEnvelope, isForMe, placeFor,
+	DEFAULT_SERVER, LEAVE_WORDS, MAX_AUTO, MAX_BYTES, MAX_TEXT, attachmentUrl, byteLength, envelope, firstLine, fitName, fitHandover, frameForClaude, isEnvelope, isForMe,
 	isName, isPlaceholderName, isRelayUrl, isRoomCode, joinQuestion, newRoomCode, randomId, readJoinFile, sanitize, stripHidden, HIDDEN_MARK, sha256hex, timeOf, topicFor,
 } from "./wire.js";
 
 const PANE = "duet";
 const SEND_TOOL = "mcp__duet__send";
-const REPAIR_POLL_MS = 10_000; // ntfy.sh writes its cache in batches; re-poll a resumed range once
+const REPAIR_POLL_MS = 10_000; // the relay writes its cache in batches; re-poll a resumed range once
 const MAX_BACKOFF_MS = 30_000;
-const LOCK_STALE_MS = 60_000;
-const JOIN_POLL_MS = 2500; // the join file, looked for while not in a room
-const HISTORY_MAX = 200; // per room, kept in $.store across restarts
-const HISTORY_TEXT_MAX = 1500; // characters of one history entry saved to $.store (memory keeps it whole)
-const HISTORY_BYTES_MAX = 512 * 1024; // one room's saved history, as JSON in UTF-8: 5 rooms stay well under $.store's 4 MiB
-const HISTORY_ROOMS = 5; // rooms whose history is kept; older ones are dropped
+const HISTORY_MAX = 200; // entries the pane keeps, in memory, for this session
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
 const BAND_CHARS = 100_000; // Claude Code draws a band's text up to this many characters
-const TOAST_GAP_MS = 15_000; // one "new request" toast per sender per burst
-// Permission modes in which a tool call still asks the user unless a rule allows it. Only used for
-// the one confirm when the user turns auto on in a session that runs commands unasked.
-const ASKING_MODES = ["default", "acceptEdits", "plan", "dontAsk"];
 
 // ---------- state (module variables; the room and the turn in progress are also kept in $.store) ----------
 
 const moduleId = randomId(); // this module instance; a reload loads a new one (kept in DUET_MODULE)
-let token = randomId(); // this window; adopted from $.store after a module reload
 let installId = "";
 let sessionId = "";
 let cwd = "";
 let home = "";
-let duetDir = ""; // ~/.duet (DUET_HOME): the lock every duet client on this computer shares
+let duetDir = ""; // ~/.duet (DUET_HOME): where the website's prompt writes the join file
 let server = DEFAULT_SERVER;
 let defaultName = "";
-let permissionMode = ""; // "" until Claude Code reports it (classic.* events)
 
-let room = null; // { code, name, key, fromId, topic, lockKey, fileLock, mode, cursor, server, riskOk }
-let generation = 0; // bumped on every join and leave; loops of an older room stop
-let joinEpoch = 0; // bumped by /duet off: a join still in flight then gives up
+let room = null; // { code, name, key, fromId, topic, mode, cursor, server }
+let generation = 0; // bumped on every join and leave (and /duet off): loops and joins of an older room stop
 let joinedAt = 0; // when this window's own join went out: a join just after it is the others' answer
 let wakeSupervisor = null;
 let child = null; // the running curl stream
 let connected = false;
 let connError = "";
-let heartbeat = null;
-let joinPoll = null; // the join file's timer, while not in a room (interactive sessions only)
-let watchJoin = false; // this session looks for the join file (it can draw): again after a leave
 let joinOffer = null; // { room, name, relay, question }: a join file taken, waiting for 1 Join / 2 Ignore
+let interactive = false; // this session can draw (terminal, Desktop): the only kind that takes a join file
 let heldCursor = null; // the newest resume point, saved once nothing received is still open
 const seen = new Set();
 const peers = new Map(); // name -> { via, at, left }
@@ -83,24 +68,20 @@ let carry = []; // messages taken (a press, or auto) that didn't fit the last ha
 let carryPreSend = false; // the press that took them was "Process and send"
 let events = []; // [{ name, what: "joined" | "left", via, ts, seq }] since Claude's last duet turn: items of the next hand-over
 let arrival = 0; // arrival order of messages and events, for the hand-over
-const lastToast = new Map(); // sender -> time of the last "new request" toast
 let pendingPeer = null; // { envs, text, roomKey, submitted, preSend }: taken, waiting for Claude to be idle
 let expected = []; // [{ text, froms, roomKey, envs, at, preSend }]: submitted frames whose turn hasn't started yet
-let peerTurn = null; // { froms, roomKey, turnId, waitNoted, answers, preSend }: preSend = the sender whose reply is OK'd ahead ("" once used)
+let peerTurn = null; // { froms, roomKey, turnId, answers, preSend }: preSend = the sender whose reply is OK'd ahead ("" once used)
 let runningTurn = ""; // the main loop's turn in progress, "" while Claude is idle
 let userPromptSince = false; // the user's own prompt entered since duet's last submission
 let outbox = []; // [{ id, text, to, decision }]: replies waiting at gate 2
 let autoTurns = 0;
 let paused = false;
 
-let history = []; // { at, who, text, note }: the room as the pane shows it, read-only
-let historySave = null; // a pending $.store write of the history
+let history = []; // { at, who, text, note }: the room as the pane shows it, read-only, this session
 let tab = "history"; // the pane's open tab: "history" | "settings"
 let paneNote = ""; // one terse line under Settings ("code copied")
 const sent = new Map(); // our messages' ids -> first line, to show what a reply answers
-let host = ""; // this computer's name, for the folder hash a join carries (see wire.js placeFor)
 let lineChain = Promise.resolve(); // received lines, one at a time in arrival order (stream and repair poll)
-const warnedAbout = new Set(); // warnings already given: "crowd", "place:<name>"
 
 const viaLabel = (via) => (Object.hasOwn(VIA, String(via)) ? VIA[via] : "");
 const oneLine = (s) => sanitize(s, 200).replace(/\n/g, " "); // a name or list of names on a card, safe to draw
@@ -114,10 +95,8 @@ const peerTurnFrom = (x, turnId, exact) => ({
 	froms: x.froms,
 	roomKey: x.roomKey,
 	turnId,
-	waitNoted: false,
 	answers: (x.envs ?? []).map((m) => ({ from: m.from, id: m.id })),
 	preSend: exact && x.preSend && x.froms.length === 1 ? x.froms[0] : "",
-	agents: [], // subagents started during this turn: their sends count as the turn's
 });
 
 // ---------- small helpers that use $ ----------
@@ -132,35 +111,10 @@ function wait($, ms) {
 	});
 }
 
-// Simple history: name · time · text. Notes (joins, leaves) are dim lines. Saved per room.
-// The pane keeps the whole text in memory (it is where the user reads a request in full); only the
-// copy saved to $.store is cut, to HISTORY_TEXT_MAX characters an entry.
+// Simple history: name · time · text. Notes (joins, leaves) are dim lines. This session only.
 function remember($, entry) {
-	const text = String(entry.text ?? "");
-	history.push({ at: new Date().toISOString(), who: entry.who ?? "", text, ...(entry.note ? { note: true } : {}) });
+	history.push({ at: new Date().toISOString(), who: entry.who ?? "", text: String(entry.text ?? ""), ...(entry.note ? { note: true } : {}) });
 	if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
-	if (!room || historySave) return;
-	const key = "history:" + room.key;
-	// One write per burst.
-	historySave = $.clock.after(200, () => {
-		historySave = null;
-		void $.store.set(key, fitHistory(history)).catch(() => {});
-	});
-}
-
-// The newest entries whose JSON fits HISTORY_BYTES_MAX (non-ASCII text, escapes: a character can be
-// several bytes), so a full $.store never blocks the writes of the cursor, the room and the lock.
-function fitHistory(full) {
-	const list = full.map((h) => (typeof h.text === "string" && h.text.length > HISTORY_TEXT_MAX ? { ...h, text: h.text.slice(0, HISTORY_TEXT_MAX) + "…" } : h));
-	let total = 2;
-	let i = list.length;
-	while (i > 0) {
-		const size = byteLength(JSON.stringify(list[i - 1])) + 1;
-		if (total + size > HISTORY_BYTES_MAX) break;
-		total += size;
-		i--;
-	}
-	return i ? list.slice(i) : list;
 }
 
 async function canDraw($) {
@@ -192,12 +146,6 @@ async function publish($, relay, topic, env) {
 					: "";
 		throw new Error(`relay HTTP ${res.status}${hint}`);
 	}
-}
-
-function sendNote($, note, to) {
-	if (!room) return;
-	const env = envelope({ fromId: room.fromId, from: room.name, kind: "note", note, ...(to ? { to } : {}) });
-	void publish($, room.server, room.topic, env).catch(() => {});
 }
 
 // The resume point to keep: just before the oldest message not yet handled, or the newest seen.
@@ -316,7 +264,7 @@ async function handleLine($, r, gen, line, live, floor) {
 		return;
 	}
 	if (evt.event !== "message" || typeof evt.id !== "string" || seen.has(evt.id)) return;
-	// ntfy answers a since= id it doesn't have with its whole cache: skip what's before the resume point.
+	// The relay answers a since= id it doesn't have with its whole cache: skip what's before the resume point.
 	if (floor && ((floor.id && evt.id === floor.id) || evt.time < floor.time)) return;
 	seen.add(evt.id);
 	if (seen.size > 1000) seen.delete(seen.values().next().value);
@@ -355,8 +303,8 @@ async function handleLine($, r, gen, line, live, floor) {
 	} catch {}
 	if (gen !== generation) return;
 	if (isEnvelope(env)) {
-		// Where to resume so this message comes again if it is still open at a restart or a move.
-		// A first message has no previous id: resume from just before its second (ntfy takes a time).
+		// Where to resume so this message comes again if it is still open at a restart.
+		// A first message has no previous id: resume from just before its second (the relay takes a time).
 		env._prev = r.cursor ?? { id: "", time: evt.time - 1 };
 		onEnvelope($, r, env);
 	}
@@ -367,61 +315,31 @@ async function handleLine($, r, gen, line, live, floor) {
 	}
 }
 
-// Our own name from another client (another computer: the local lock can't see it). Warn, once per
-// client; only for what it sent since this window joined (not a replay from before), and not from
-// this very folder (a window taking over).
-function sameName($, r, env) {
-	if (env.fromId === r.fromId || (env.kind !== "join" && env.kind !== "msg") || warnedAbout.has("same:" + env.fromId)) return;
-	if (String(env.from).normalize("NFC").toLowerCase() !== r.name.normalize("NFC").toLowerCase()) return;
-	if ((env.place && env.place === r.place) || !(Date.parse(env.ts) >= joinedAt - 5000)) return;
-	warnedAbout.add("same:" + env.fromId);
-	const via = viaLabel(env.via);
-	const text = `another ${oneLine(r.name)} is in this room${via ? ` (${via})` : ""} · use another name`;
-	remember($, { text, note: true });
-	$.ui.toast("duet: " + text, { timeoutMs: 10_000 }); // needs the user: long enough to be seen
-}
-
 function onEnvelope($, r, env) {
-	sameName($, r, env);
 	if (!isForMe(env, r.fromId, r.name)) return;
 	const before = peers.get(env.from);
 	const isNew = !before || before.left;
 	peers.set(env.from, { via: env.via ?? before?.via ?? "", at: Date.now(), left: false });
-	// Quiet: warnings, joins, leaves and notes go to the history only.
-	if (livePeers().length > 1 && !warnedAbout.has("crowd")) {
-		warnedAbout.add("crowd");
-		remember($, { text: `more than two in the room (${peerList()}): a reply without "to" reaches everyone`, note: true });
-	}
 	if (env.kind === "join") {
-		if (env.place && env.place === r.place && !warnedAbout.has("place:" + env.from)) {
-			warnedAbout.add("place:" + env.from);
-			remember($, { text: `${env.from} is in this same folder (another window)`, note: true });
-		}
 		if (isNew) {
 			const via = viaLabel(env.via);
 			remember($, { text: `${env.from} joined${via ? " · " + via : ""}`, note: true });
-			// Answer once, so a newcomer learns who is here; not a join that answers ours (sent twice otherwise).
-			// A join answering ours isn't a change either: those peers are the room line's.
-			if (Date.now() - joinedAt > 5000) events.push({ name: env.from, what: "joined", via, ts: env.ts, seq: ++arrival });
-			if (Date.now() - joinedAt > 5000) void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code", place: r.place })).catch(() => {});
+			// A join answering ours (sent within seconds of it) isn't a change: those peers are the room
+			// line's. Any later join is an item of the next hand-over, and gets one answer so the
+			// newcomer learns who is here.
+			if (Date.now() - joinedAt > 5000) {
+				events.push({ name: env.from, what: "joined", via, ts: env.ts, seq: ++arrival });
+				void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "join", via: "claude-code" })).catch(() => {});
+			}
 		}
 		redraw($);
 		return;
 	}
 	if (env.kind === "note") {
-		const text = {
-			declined: `${env.from} ignored your message`,
-			stopped: `${env.from} stopped your request`,
-			failed: `${env.from}'s agent failed on your request`,
-			"approval-wait": `${env.from} is approving a step`,
-			left: `${env.from} left`,
-			moved: `${env.from} moved to another window`,
-		}[env.note];
-		if (env.note === "left") {
-			peers.set(env.from, { ...peers.get(env.from), left: true });
-			events.push({ name: env.from, what: "left", ts: env.ts, seq: ++arrival });
-		}
-		remember($, { text, note: true });
+		// The only note on the wire: a leave.
+		peers.set(env.from, { ...peers.get(env.from), left: true });
+		events.push({ name: env.from, what: "left", ts: env.ts, seq: ++arrival });
+		remember($, { text: `${env.from} left`, note: true });
 		redraw($);
 		return;
 	}
@@ -430,10 +348,8 @@ function onEnvelope($, r, env) {
 	remember($, { who: env.from, text: env.text });
 	env._seq = ++arrival;
 	queue.push(env); // never dropped: what doesn't fit one turn comes in the next
-	// The user must act only in ask mode (or auto paused): then one toast per sender per burst.
-	const now = Date.now();
-	if (!autoActive() && now - (lastToast.get(env.from) ?? 0) > TOAST_GAP_MS) $.ui.toast(`${env.from}: new request`);
-	lastToast.set(env.from, now);
+	// The user must act only in ask mode (or auto paused): one toast per message.
+	if (!autoActive()) $.ui.toast(`${env.from}: new request`);
 	void deliver($).catch(() => {});
 	redraw($);
 }
@@ -470,20 +386,6 @@ async function flowCarry($) {
 	await startPeerTurn($, carry.splice(0), carryPreSend);
 }
 
-// Would a shell command nobody named run without the user being asked, right now? Claude Code's own
-// decision for a made-up command answers it ("allow": bypassPermissions or a rule like Bash(*)); its
-// "auto" mode counts as unasked (a classifier approves, not the user). Only asked when the user turns
-// auto on, for the one confirm.
-async function runsUnasked($) {
-	if (permissionMode === "auto") return true;
-	try {
-		const r = await $.tool.check({ tool: "Bash", input: { command: "duet-permission-check" } });
-		return r?.decision === "allow";
-	} catch {
-		return !ASKING_MODES.includes(permissionMode);
-	}
-}
-
 // Hand over everything, in order, as much as fits one turn; the rest is carried to the next turn.
 async function startPeerTurn($, envs, preSend = false) {
 	const { take, rest } = fitHandover([...carry.splice(0), ...envs]); // carried first: they are older
@@ -499,6 +401,12 @@ async function startPeerTurn($, envs, preSend = false) {
 async function submitWhenIdle($) {
 	const p = pendingPeer;
 	if (!p || p.submitted || runningTurn) return;
+	if (!room || room.key !== p.roomKey) {
+		pendingPeer = null; // the room was left while this waited: its request stays with the room (resume point saved)
+		await saveTurn($);
+		redraw($);
+		return;
+	}
 	p.submitted = true;
 	// Everything taken meanwhile goes in this turn too (auto: everything that arrived while Claude
 	// worked), in order, as much as fits; the rest is carried to the next turn.
@@ -546,78 +454,10 @@ async function cancelWaiting($) {
 
 // ---------- joining and leaving ----------
 
-async function claim($, lockKey) {
-	const cur = await $.store.get(lockKey);
-	if (cur && cur.token !== token && !cur.released && Date.now() - cur.at < LOCK_STALE_MS) return cur;
-	await $.store.set(lockKey, { token, cwd, at: Date.now(), released: false });
-	// $.store has no compare-and-swap: write, wait, read back, and keep it only if it is still ours.
-	await wait($, 300);
-	const back = await $.store.get(lockKey);
-	return back?.token === token ? null : back;
-}
-
-// ---------- the lock every duet client shares ----------
-// One window per room and name on this computer, whatever the client: pi, Codex (the MCP server) or
-// this plugin. Claude Code windows also agree among themselves through $.store (claim, above), which
-// can ask "Move it here?"; the file below keeps the other clients out. Same format as lock.js:
-// ~/.duet/<hash>.lock holding { v: 2, client, token, pid, cwd, at }, rewritten every 20 s, held while
-// `at` is under a minute old.
-
-async function readFileLock($, path) {
-	let text;
-	try {
-		text = String(await $.fs.read(path)).trim();
-	} catch {
-		return null;
-	}
-	try {
-		const l = JSON.parse(text);
-		return l && typeof l === "object" ? l : null;
-	} catch {
-		return null;
-	}
-}
-
-// true / false, or undefined where it can't be told (no `kill`, as on Windows).
-async function pidAlive($, pid) {
-	try {
-		return (await $.process.run(["kill", "-0", String(pid)], { timeoutMs: 3000 })).exitCode === 0;
-	} catch {
-		return undefined;
-	}
-}
-
-async function fileLockHeld($, l) {
-	if (!l || l.released) return false;
-	if (l.pid && (await pidAlive($, l.pid)) === false) return false;
-	return Date.now() - (Number(l.at) || 0) < LOCK_STALE_MS;
-}
-
-async function writeFileLock($, path, released) {
-	try {
-		await $.fs.write(path, JSON.stringify({ v: 2, client: "claude-code", token, cwd, at: released ? 0 : Date.now(), ...(released ? { released: true } : {}) }) + "\n");
-	} catch (err) {
-		$.ui.log(`couldn't write the shared lock ${path}: ${String(err?.message ?? err)}`, { to: "debug" });
-	}
-}
-
-const describeClient = (l) => ({ pi: "pi", codex: "Codex", mcp: "a duet MCP server", "claude-code": "another Claude Code" })[l?.client] ?? "another duet window";
-
 // Runs detached from the command or button that asked for it, so its waits count against no hook.
 // mode: "ask" or "auto" (a module reload keeps the mode it had); quiet: a rejoin nobody typed.
 // copy: /duet new puts the fresh code on the clipboard.
-// Joins on their way (a rejoin, the env room, /duet, the join file): the join file's poll waits for them.
-let joinsInFlight = 0;
 async function join($, code, nameArg, mode, quiet, relayArg, copy) {
-	joinsInFlight++;
-	try {
-		return await joinNow($, code, nameArg, mode, quiet, relayArg, copy);
-	} finally {
-		joinsInFlight--;
-	}
-}
-
-async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	if (!isRoomCode(code)) {
 		$.ui.log("room code: 3–64 letters, digits, . _ - · or /duet new");
 		return;
@@ -632,79 +472,31 @@ async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	}
 	const relay = (relayArg || server).replace(/\/+$/, "");
 	const name = fitName(nameArg || defaultName || "anon");
-	const epoch = joinEpoch;
 	if (room) {
 		if (room.code === code && room.name === name && room.server === relay) return openPane($);
-		await leave($, "left", false);
+		await leave($, true, false);
 	}
+	const gen = generation; // a leave or /duet off while this join is on its way: don't join after all
 	const key = `${relay} ${code} ${name}`;
 	const fromId = (await sha256hex(`${installId} ${key}`)).slice(0, 32);
 	const topic = await topicFor(code);
-	const hash16 = (await sha256hex(key)).slice(0, 16);
-	const lockKey = "owner:" + hash16;
-	const fileLock = `${duetDir}/${hash16}.lock`;
-
-	const held = await claim($, lockKey);
-	if (held && quiet) return; // another window has it: a quiet rejoin leaves it there
-	let moved = false;
-	if (held) {
-		let answer = "Cancel";
-		try {
-			answer = await $.ui.ask(`duet: ${code} · ${name} · open in another window (${held.cwd}) · move here?`, ["Move here", "Cancel"]);
-		} catch {}
-		if (answer !== "Move here") return;
-		await $.store.set(lockKey, { ...held, release: token });
-		let released = false;
-		for (let i = 0; i < 20 && !released; i++) {
-			await wait($, 500);
-			const cur = await $.store.get(lockKey);
-			released = !cur || !!cur.released;
-		}
-		// No answer in 10 s: that window is gone or stuck; take the room anyway.
-		if (!released) $.ui.log("other window silent · took the room");
-		await $.store.set(lockKey, { token, cwd, at: Date.now(), released: false });
-		moved = true;
-	}
-	// Another client (pi, Codex), or a Claude Code with its own config, in this room under this name.
-	const other = await readFileLock($, fileLock);
-	if (other && other.token !== token && !(moved && other.client === "claude-code") && (await fileLockHeld($, other))) {
-		const cur = await $.store.get(lockKey);
-		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
-		if (!quiet) {
-			const where = other.cwd ? ` (${other.cwd})` : other.pid ? ` (pid ${other.pid})` : "";
-			$.ui.log(`${name} already in ${code} here · ${describeClient(other)}${where} · not joined`);
-			$.ui.toast(`duet: ${name} already in this room · ${describeClient(other)}`);
-		}
-		return;
-	}
-	await writeFileLock($, fileLock);
 
 	// No saved place in this room: listen from just before joining, so the others' answers to our
 	// join (sent within a second or two) aren't missed while the stream is still opening.
 	const saved = await $.store.get("cursor:" + key);
 	const cursor = saved ?? { id: "", time: Math.floor(Date.now() / 1000) - 2 };
-	const r = { code, name, key, fromId, topic, lockKey, fileLock, server: relay, mode: mode === "auto" ? "auto" : "ask", cursor, riskOk: false };
+	const r = { code, name, key, fromId, topic, server: relay, mode: mode === "auto" ? "auto" : "ask", cursor };
 	try {
 		// The first network request: if the relay can't be reached, or this session's policy refuses
 		// network requests from mods, duet doesn't join.
-		r.place = await placeFor(cwd, topic, host);
-		await publish($, relay, topic, envelope({ fromId, from: name, kind: "join", via: "claude-code", place: r.place }));
+		await publish($, relay, topic, envelope({ fromId, from: name, kind: "join", via: "claude-code" }));
 		joinedAt = Date.now();
 	} catch (err) {
-		const cur = await $.store.get(lockKey);
-		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
-		await writeFileLock($, fileLock, true);
 		$.ui.log(`relay ${relay} unreachable: ${String(err?.message ?? err)} · not joined`);
 		$.ui.toast("duet: relay unreachable · not joined");
 		return;
 	}
-	if (epoch !== joinEpoch) {
-		// /duet off came while this join was on its way: don't join after all.
-		const cur = await $.store.get(lockKey);
-		if (cur?.token === token) await $.store.set(lockKey, { ...cur, released: true });
-		await writeFileLock($, fileLock, true);
-		return;
-	}
+	if (gen !== generation || room) return;
 	room = r;
 	generation++;
 	queue = [];
@@ -712,26 +504,15 @@ async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	events = [];
 	outbox = [];
 	peers.clear();
-	const stored = await $.store.get("history:" + key);
-	// Keep the histories of the last few rooms only: $.store is 4 MiB for everything.
-	try {
-		const recent = [key, ...(((await $.store.get("history-rooms")) ?? []).filter((k) => k !== key))];
-		for (const old of recent.slice(HISTORY_ROOMS)) await $.store.delete("history:" + old);
-		await $.store.set("history-rooms", recent.slice(0, HISTORY_ROOMS));
-	} catch {}
-	history = Array.isArray(stored) ? stored.slice(-HISTORY_MAX) : [];
+	history = [];
 	autoTurns = 0;
 	paused = false;
 	pausedForTool = false;
 	heldCursor = null;
 	await $.store.set("room:" + cwd, { code, name, relay, at: Date.now() });
 	await $.store.set("name", name);
-	await $.store.set("active:" + sessionId, { lockKey, token, code, name, mode: r.mode, relay });
+	await $.store.set("active:" + sessionId, { code, name, mode: r.mode, relay });
 	defaultName = name;
-	heartbeat?.cancel?.();
-	heartbeat = $.clock.every(2000, () => void beat($).catch(() => {}));
-	joinPoll?.cancel?.();
-	joinPoll = null;
 	wakeSupervisor?.();
 	remember($, { text: quiet ? `you rejoined as ${name}` : `you joined as ${name}`, note: true });
 	let copied = false;
@@ -746,67 +527,18 @@ async function joinNow($, code, nameArg, mode, quiet, relayArg, copy) {
 	void deliver($).catch(() => {});
 }
 
-// Every 2 s: notice another window taking the room, hand it over when asked, refresh the lock.
-let lastBeat = 0;
-async function beat($) {
-	const fresh = expected.filter((x) => Date.now() - x.at < 30 * 60_000);
-	if (fresh.length !== expected.length) {
-		expected = fresh;
-		await saveTurn($);
-		redraw($);
-	}
-	if (!room) return;
-	const r = room;
-	const cur = await $.store.get(r.lockKey);
-	if (room !== r) return;
-	if (cur && cur.token !== token && !cur.released) {
-		await leave($, null, false, true);
-		$.ui.log(`${r.code} moved to another window (${cur.cwd})`);
-		return;
-	}
-	if (cur?.release && cur.release !== token) {
-		// Save where to resume (before any card still open here) before letting go of the room.
-		await leave($, "moved", false);
-		$.ui.log(`${r.code} handed to another window`);
-		return;
-	}
-	if (Date.now() - lastBeat > 20_000) {
-		lastBeat = Date.now();
-		// Someone else holds the shared lock: another client found this window stale and took over.
-		const shared = await readFileLock($, r.fileLock);
-		if (room !== r) return;
-		if (shared && shared.token !== token && shared.client !== "claude-code" && (await fileLockHeld($, shared))) {
-			// Not a failure and nothing to do: history and the transcript only (quiet).
-			remember($, { text: `room moved to ${describeClient(shared)}`, note: true });
-			await leave($, null, false, true);
-			$.ui.log(`${r.code} is now open as ${r.name} in ${describeClient(shared)}${shared.cwd ? ` (${shared.cwd})` : ""} · left here`);
-			return;
-		}
-		await writeFileLock($, r.fileLock);
-		await $.store.set(r.lockKey, { token, cwd, at: lastBeat, released: false });
-		await $.store.set("room:" + cwd, { code: r.code, name: r.name, relay: r.server, at: lastBeat });
-	}
-}
-
 // A request already handed to Claude keeps running after a leave; its reply can't be sent once the
 // room is gone. forget: /duet off — the folder forgets its room.
-async function leave($, note, forget, lost) {
+async function leave($, tell, forget) {
 	if (!room) return;
 	const r = room;
-	if (note) sendNote($, note);
+	if (tell) void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "note", note: "left" })).catch(() => {});
 	await saveCursor($);
-	if (historySave) {
-		historySave.cancel?.();
-		historySave = null;
-	}
-	await $.store.set("history:" + r.key, fitHistory(history)).catch(() => {});
 	// A request taken but not yet handed to Claude stays with the room (its resume point is saved).
 	if (pendingPeer && !pendingPeer.submitted) pendingPeer = null;
 	await saveTurn($);
 	room = null;
 	generation++;
-	heartbeat?.cancel?.();
-	heartbeat = null;
 	try {
 		child?.return?.();
 	} catch {}
@@ -814,14 +546,8 @@ async function leave($, note, forget, lost) {
 	connected = false;
 	queue = [];
 	heldCursor = null;
-	if (!lost) {
-		const cur = await $.store.get(r.lockKey);
-		if (cur?.token === token) await $.store.set(r.lockKey, { ...cur, released: true });
-		if ((await readFileLock($, r.fileLock))?.token === token) await writeFileLock($, r.fileLock, true);
-	}
 	await $.store.delete("active:" + sessionId);
 	if (forget) await $.store.delete("room:" + cwd);
-	if (watchJoin) pollJoinFile($);
 	redraw($);
 }
 
@@ -830,20 +556,6 @@ async function setMode($, mode) {
 		$.ui.log("not in a room · /duet new or /duet <code>");
 		return;
 	}
-	if (mode === "auto" && !room.riskOk && (await runsUnasked($))) {
-		// The one confirm: commands run unasked here, so auto lets the other side's agent run them.
-		let answer = "Keep ask";
-		try {
-			answer = await $.ui.ask("duet auto? · commands run unasked here · the other agent could run them", ["Turn auto on", "Keep ask"]);
-		} catch {}
-		if (!room) return;
-		if (answer !== "Turn auto on") {
-			redraw($);
-			return;
-		}
-		room.riskOk = true;
-	}
-	if (!room) return;
 	room.mode = mode;
 	autoTurns = 0;
 	paused = false;
@@ -865,6 +577,7 @@ async function choose($, action) {
 	const envs = [...queue];
 	if (!envs.length || !room) return;
 	const r = room;
+	const gen = generation; // /duet off bumps it at once: a press whose check was still running then does nothing
 	const take = action === "take" || action === "take-send";
 	if (take && busyWithPeer()) {
 		$.ui.toast("duet: busy with the last request");
@@ -885,17 +598,16 @@ async function choose($, action) {
 			return;
 		}
 		// The check waited: a leave, another press or a turn may have come in meanwhile.
-		if (room !== r || !envs.every((e) => queue.includes(e))) return;
+		if (gen !== generation || room !== r || !envs.every((e) => queue.includes(e))) return;
 		if (busyWithPeer()) {
 			$.ui.toast("duet: busy with the last request");
 			return;
 		}
 	}
 	queue = queue.filter((e) => !envs.includes(e));
-	if (take) {
-		await startPeerTurn($, envs, action === "take-send");
-	} else {
-		for (const from of new Set(envs.map((e) => e.from))) sendNote($, "declined", from);
+	if (take) await startPeerTurn($, envs, action === "take-send");
+	else {
+		// Ignored: nothing goes to the other side, like a person not answering.
 		redraw($);
 		await saveCursor($);
 	}
@@ -977,39 +689,37 @@ async function openPane($) {
 
 // Back in the room after a restart, without asking: the folder remembers its room until /duet off.
 async function autoRejoin($) {
-	if (room || joinsInFlight || joinOffer || !(await canDraw($))) return;
+	if (room || joinOffer || !(await canDraw($))) return;
 	const rec = await $.store.get("room:" + cwd);
-	if (!rec?.code || room || joinsInFlight) return; // a join started while this looked
+	if (!rec?.code || room) return; // a join started while this looked
 	await join($, rec.code, rec.name, "ask", true, rec.relay);
 }
 
-// The website's prompt writes ~/.duet/join.json and the user types /reload-plugins (or, with duet
-// already loaded, nothing: the poll finds it). Taken once: emptied at once, so no other window takes
-// it too. A file for another agent or folder is left alone; a stale one is emptied. Taking it never
-// joins: it shows the card "Join <room> as <name>? · <folder>" (1 Join, 2 Ignore), so a room is joined
-// by the user's own hand even when something else wrote the file. The poll looks only while not in a
-// room; a reload in a room looks too (inRoomToo) and shows the same card, which says what it leaves.
-// A /duet typed after the prompt empties the file (dropJoinFile).
-async function takeJoinFile($, inRoomToo = false, nested = false) {
-	if ((room && !inRoomToo) || joinsInFlight) return false;
+// The website's prompt writes ~/.duet/join.json: the agent runs the prompt's command, and when that
+// turn ends the file is looked at, so the card shows with no reload (a fresh install needs
+// /reload-plugins, which is a start). Looked at only at a start, a reload and the end of a turn,
+// never polled: whichever Claude Code looks next takes it (emptied at once).
+// Taking it never joins: it shows the card "Join <room> as <name>? · <folder>" (1 Join, 2 Ignore), so a
+// room is joined by the user's own hand even when something else wrote the file. In a room already,
+// the card says which room it leaves.
+async function takeJoinFile($) {
 	const path = `${duetDir}/join.json`;
 	let text;
 	try {
-		// Asked every 2.5 s: a missing file is the usual answer, and not an error.
 		if (!(await $.fs.exists(path))) return false;
 		text = String(await $.fs.read(path));
 	} catch {
 		return false;
 	}
-	const got = readJoinFile(text, "claude-code", cwd, Date.now(), nested);
-	if (!got || (room && !inRoomToo) || joinsInFlight) return false;
+	const got = readJoinFile(text, "claude-code", Date.now());
+	if (!got) return false;
 	try {
 		await $.fs.write(path, "{}");
 	} catch {
 		return false;
 	}
 	if (!got.take) return false;
-	joinOffer = { room: got.take.room, name: got.take.name, relay: got.take.relay, question: joinQuestion(got.take, home) };
+	joinOffer = { ...got.take, question: joinQuestion({ ...got.take, folder: cwd }, home) };
 	logToolOff($);
 	redraw($);
 	return true;
@@ -1023,24 +733,6 @@ function answerJoinOffer($, yes) {
 	if (!o) return;
 	if (yes) void join($, o.room, o.name, "ask", false, o.relay).catch(() => {});
 	else void autoRejoin($).catch(() => {}); // a start that showed the card first: back to the folder's room
-}
-
-// A /duet <room> or /duet new typed by the user: a join file for this window is older than it, so it goes.
-async function dropJoinFile($) {
-	if (joinOffer) {
-		joinOffer = null;
-		redraw($);
-	}
-	const path = `${duetDir}/join.json`;
-	try {
-		if (!(await $.fs.exists(path))) return;
-		if (readJoinFile(String(await $.fs.read(path)), "claude-code", cwd, Date.now(), true)) await $.fs.write(path, "{}");
-	} catch {}
-}
-
-function pollJoinFile($) {
-	joinPoll?.cancel?.();
-	joinPoll = $.clock.every(JOIN_POLL_MS, () => void takeJoinFile($).catch(() => {}));
 }
 
 // The send tool: registered first thing in session.start (before anything that could throw or wait),
@@ -1085,11 +777,11 @@ const toolOffText = () =>
 const toolOffShown = () => !!toolOff && !!(room || joinOffer);
 
 // Is "duet" in this folder's disabledMcpServers in Claude Code's global config (read only, never
-// written)? Claude Code keys it by the git checkout's root, else by the folder it started in (with /
-// on Windows too). false whenever it can't be told.
+// written)? Claude Code keys it by the git checkout's root, else by the folder it started in.
+// false whenever it can't be told.
 async function mcpSwitchedOff($) {
 	try {
-		const dir = ((await $.env.get("CLAUDE_CONFIG_DIR")) || home).replace(/[\\/]+$/, "");
+		const dir = ((await $.env.get("CLAUDE_CONFIG_DIR")) || home).replace(/\/+$/, "");
 		if (!dir) return false;
 		const projects = JSON.parse(String(await $.fs.read(`${dir}/.claude.json`)))?.projects;
 		if (!projects || typeof projects !== "object") return false;
@@ -1098,8 +790,7 @@ async function mcpSwitchedOff($) {
 			const top = await $.process.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 3000 });
 			if (top.exitCode === 0 && top.stdout.trim()) key = top.stdout.trim();
 		} catch {}
-		const slash = key.replace(/\\/g, "/");
-		const entry = Object.hasOwn(projects, key) ? projects[key] : Object.hasOwn(projects, slash) ? projects[slash] : undefined;
+		const entry = Object.hasOwn(projects, key) ? projects[key] : undefined;
 		const list = entry?.disabledMcpServers;
 		return Array.isArray(list) && list.includes(MCP_SERVER);
 	} catch {
@@ -1205,12 +896,10 @@ async function sendTool($, e, signal) {
 	if (fromPeer && peerTurn.roomKey !== room.key) return { result: "Not sent: request from a room you left · tell your user" };
 	const r = room;
 	// "Process and send": the user OK'd this request's reply ahead. Only the first send of its turn
-	// (subagents included) that reaches exactly its sender; used up before any await, so two sends in
-	// parallel can't both use it.
+	// that reaches exactly its sender; used up before any await, so two sends in parallel can't both use it.
 	const live = livePeers().map(([n]) => n);
 	const reaches = to ?? (live.length === 1 ? live[0] : "");
-	// Only from the turn that runs now, or a subagent it started.
-	const ownTurn = fromPeer && peerTurn.turnId === runningTurn && (!e.agentId || (peerTurn.agents ?? []).includes(e.agentId));
+	const ownTurn = fromPeer && peerTurn.turnId === runningTurn && !e.agentId; // the main loop's turn, not a subagent's
 	const preTo = ownTurn && !autoActive() && peerTurn.preSend && reaches === peerTurn.preSend ? peerTurn.preSend : "";
 	const preSent = !!preTo;
 	if (preSent) {
@@ -1222,7 +911,7 @@ async function sendTool($, e, signal) {
 	// Gate 2, in ask mode: the whole reply waits above the prompt for Send / Don't send. Without
 	// `to` a reply reaches everyone in the room, so the card names everyone.
 	if (!autoActive() && !preSent) {
-		const item = { id: randomId(), text, to: to ?? (peerList() || "the room"), decision: "", agentId: e.agentId };
+		const item = { id: randomId(), text, to: to ?? (peerList() || "the room"), decision: "" };
 		outbox = [...outbox, item];
 		$.ui.toast(`duet: reply to ${oneLine(item.to)} waiting`);
 		redraw($);
@@ -1274,32 +963,6 @@ function rowsFor(text, columns) {
 	return String(text).split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / w)), 0);
 }
 
-// The join card and the room's cards share hotkeys 1 and 2, and either can replace the other between
-// two presses (a request arrives under a Join card, or a Join card shows once the last request is
-// settled). For ARM_MS after such a switch their keys do nothing, so a press meant for the card that
-// just went never lands on the new one.
-const ARM_MS = 600;
-let lastKeyCard = ""; // "join" | "room": the last card with keys drawn
-let keysArmed = true;
-let armTimer = null;
-function noteKeys($, kind) {
-	if (kind === lastKeyCard) return;
-	const switched = lastKeyCard !== "";
-	lastKeyCard = kind;
-	if (!switched) return;
-	keysArmed = false;
-	armTimer?.cancel?.();
-	armTimer = $.clock.after(ARM_MS, () => {
-		keysArmed = true;
-		armTimer = null;
-	});
-}
-const armed = ($) => {
-	if (keysArmed) return true;
-	$.ui.toast("duet: the card just changed · press again");
-	return false;
-};
-
 function drawCard($, e) {
 	const { Box, Text, Button } = $.ui.resolve(e);
 	const frame = (color, children) => Box({ flexDirection: "column", borderStyle: "round", borderColor: color, paddingX: 1, children });
@@ -1307,25 +970,23 @@ function drawCard($, e) {
 	// A join file taken: the user's own press joins. Under any card of the room this window is in.
 	const offerCard = () =>
 		joinOffer &&
-		(noteKeys($, "join"), true) &&
 		frame(BLUE, [
 			// Not cut to oneLine's 200: the relay must stay on the card (joinQuestion caps the folder itself).
 			Text({ bold: true, children: [`${sanitize(joinOffer.question, 1000).replace(/\n/g, " ")}${room ? ` · leaves ${oneLine(room.code)}` : ""}`] }),
 			buttons([
-				Button({ key: "join-offer", label: "Join", hotkey: "1", plain: true, onPress: () => armed($) && answerJoinOffer($, true) }),
-				Button({ key: "join-ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => armed($) && answerJoinOffer($, false) }),
+				Button({ key: "join-offer", label: "Join", hotkey: "1", plain: true, onPress: () => answerJoinOffer($, true) }),
+				Button({ key: "join-ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => answerJoinOffer($, false) }),
 			]),
 		]);
 	if (!room) return offerCard() || null;
 	// Gate 2 first: Claude's tool call is waiting on it.
 	if (outbox.length) {
 		const item = outbox[0];
-		noteKeys($, "room");
 		const more = outbox.length > 1 ? ` · +${outbox.length - 1}` : "";
 		const title = Text({ bold: true, children: [`Send to ${oneLine(item.to)}? · full reply${more}`] });
 		const keys = buttons([
-			Button({ key: "send", label: "Send", hotkey: "1", plain: true, onPress: () => armed($) && decide($, item, "send") }),
-			Button({ key: "dont-send", label: "Don't send", hotkey: "2", plain: true, onPress: () => armed($) && decide($, item, "drop") }),
+			Button({ key: "send", label: "Send", hotkey: "1", plain: true, onPress: () => decide($, item, "send") }),
+			Button({ key: "dont-send", label: "Don't send", hotkey: "2", plain: true, onPress: () => decide($, item, "drop") }),
 		]);
 		const body = textRows(Text, item.text, "r");
 		// A bare digit presses only Buttons inside the band's window: a reply taller than the band
@@ -1344,7 +1005,6 @@ function drawCard($, e) {
 	if (queue.length && autoActive()) return frame(AMBER, [Text({ dimColor: true, children: [`${queue.length} waiting · auto`] })]);
 	if (queue.length) {
 		// Gate 1.
-		noteKeys($, "room");
 		const group = queue; // every waiting message, from every sender, in arrival order: one press takes them all
 		const env = group[0];
 		const froms = [...new Set(group.map((g) => g.from))];
@@ -1367,10 +1027,10 @@ function drawCard($, e) {
 			],
 		});
 		const keys = buttons([
-			Button({ key: "take", label: "Process", hotkey: "1", plain: true, onPress: () => armed($) && void choose($, "take").catch(() => {}) }),
-			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => armed($) && void choose($, "ignore").catch(() => {}) }),
+			Button({ key: "take", label: "Process", hotkey: "1", plain: true, onPress: () => void choose($, "take").catch(() => {}) }),
+			Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => void choose($, "ignore").catch(() => {}) }),
 			// 3, not 2: a habit press of 2 (Ignore here, Don't send on the reply card) must never skip gate 2.
-			Button({ key: "take-send", label: "Process and send", hotkey: "3", plain: true, onPress: () => armed($) && void choose($, "take-send").catch(() => {}) }),
+			Button({ key: "take-send", label: "Process and send", hotkey: "3", plain: true, onPress: () => void choose($, "take-send").catch(() => {}) }),
 		]);
 		// As gate 2: a request taller than the band keeps its keys under the title, inside the window.
 		const rows = group.reduce((n, g, i) => n + rowsFor(g.text, e.props?.bodyColumns ?? 80) + (g.reLine ? 1 : 0) + (froms.length > 1 ? 1 : 0) + (i > 0 ? 1 : 0), 0);
@@ -1457,8 +1117,8 @@ function drawPane($, e) {
 						hotkey: "l",
 						plain: true,
 						onPress: () => {
-							joinEpoch++;
-							void leave($, "left", true).catch(() => {});
+							generation++;
+							void leave($, true, true).catch(() => {});
 						},
 					}),
 				],
@@ -1501,10 +1161,6 @@ async function clearTurn($) {
 	redraw($);
 }
 
-function notePermissionMode(e) {
-	if (typeof e.permission_mode === "string" && e.permission_mode) permissionMode = e.permission_mode;
-}
-
 // ---------- hooks ----------
 
 // Resolved once session.start has its settings; /duet (registered before them) waits for it.
@@ -1522,7 +1178,7 @@ export function register(on) {
 		if (!(await registerSendTool($))) $.ui.log(`duet: the send tool didn't register (${sanitize(sendToolError, 120)}) · /reload-plugins`);
 		cwd = e.cwd || (await $.session.cwd());
 		home = (await $.env.get("HOME")) || (await $.env.get("USERPROFILE")) || "";
-		duetDir = ((await $.env.get("DUET_HOME")) || `${home.replace(/[\\/]+$/, "")}/.duet`).replace(/\\/g, "/");
+		duetDir = ((await $.env.get("DUET_HOME")) || `${home.replace(/\/+$/, "")}/.duet`).replace(/\\/g, "/");
 		// The registration has waited (Claude Code holds it up to 8 s): is the tool among Claude's?
 		void checkSendTool($).catch(() => {});
 		const relay = (await $.env.get("DUET_SERVER")) || "";
@@ -1540,14 +1196,6 @@ export function register(on) {
 			await $.store.set("install", installId);
 		}
 		sessionId = await $.session.id();
-		// This computer and folder, hashed: a join carries it, so two windows in one folder notice.
-		// `hostname` prints what Node's os.hostname() returns (pi and the MCP server use that).
-		host = "";
-		try {
-			const h = await $.process.run(["hostname"], { timeoutMs: 3000 });
-			if (h.exitCode === 0) host = h.stdout.trim();
-		} catch {}
-		if (!host) host = (await $.env.get("HOSTNAME")) || "";
 
 		defaultName = (await $.store.get("name")) || "";
 		if (!defaultName) {
@@ -1578,24 +1226,21 @@ export function register(on) {
 			arrival = Math.max(Number(turn.arrival) || 0, ...carry.map((e) => e._seq ?? 0), ...events.map((e) => e.seq ?? 0));
 		}
 		void supervise($).catch(() => {});
-		if (e.isInteractive || (await canDraw($))) {
-			// After a module reload this window was in a room: take it up again, silently.
-			const active = await $.store.get("active:" + sessionId);
-			const owner = active ? await $.store.get(active.lockKey) : null;
-			if (active && owner?.token === active.token && !owner.released) {
-				token = active.token;
-				// A join file pasted since: the card, never a switch by itself.
+		interactive = !!e.isInteractive || (await canDraw($));
+		if (interactive) {
+			// After a module reload this window was in a room: take it up again, silently. A join file
+			// pasted since shows its card over it (never a switch by itself).
+			const active = sameProcess ? await $.store.get("active:" + sessionId) : null;
+			if (active?.code) {
 				void join($, active.code, active.name, active.mode, true, active.relay)
-					.then(() => takeJoinFile($, true, true))
+					.then(() => takeJoinFile($))
 					.catch(() => {});
 			} else if (envRoom) {
 				// Started as DUET_ROOM=<room> DUET_NAME=<name> claude (the website's line).
 				void join($, envRoom, envName || undefined, "ask", false).catch(() => {});
-			} else if (!(await takeJoinFile($, false, true).catch(() => false))) {
+			} else if (!(await takeJoinFile($).catch(() => false))) {
 				void autoRejoin($).catch(() => {});
 			}
-			watchJoin = true;
-			if (!room) pollJoinFile($);
 		}
 		markReady();
 		return next(e);
@@ -1608,13 +1253,7 @@ export function register(on) {
 		return result;
 	});
 
-	on("classic.SessionStart", { source: "startup" }, async ($, e, next) => {
-		notePermissionMode(e);
-		return next(e);
-	});
-
 	on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
-		notePermissionMode(e);
 		// /clear and friends may give the session a new id; the room stays with this window.
 		const old = sessionId;
 		sessionId = await $.session.id();
@@ -1625,7 +1264,7 @@ export function register(on) {
 		}
 		if (room && old !== sessionId) {
 			await $.store.delete("active:" + old);
-			await $.store.set("active:" + sessionId, { lockKey: room.lockKey, token, code: room.code, name: room.name, mode: room.mode, relay: room.server });
+			await $.store.set("active:" + sessionId, { code: room.code, name: room.name, mode: room.mode, relay: room.server });
 		}
 		return next(e);
 	});
@@ -1642,9 +1281,6 @@ export function register(on) {
 			// All session.end hooks share 1.5 s: best effort, and nothing on a crash. The folder keeps
 			// its room ("room:<cwd>"), so the next session here rejoins quietly.
 			void publish($, r.server, r.topic, envelope({ fromId: r.fromId, from: r.name, kind: "note", note: "left" })).catch(() => {});
-			void $.store.set("history:" + r.key, fitHistory(history)).catch(() => {});
-			void $.store.set(r.lockKey, { token, cwd, at: 0, released: true }).catch(() => {});
-			if (r.fileLock) void readFileLock($, r.fileLock).then((l) => (l?.token === token ? writeFileLock($, r.fileLock, true) : undefined)).catch(() => {});
 			void $.store.delete("active:" + sessionId).catch(() => {});
 		}
 		if (e.reason !== "clear" && e.reason !== "resume") void $.store.delete("turn:" + sessionId).catch(() => {});
@@ -1668,27 +1304,26 @@ export function register(on) {
 			$.ui.log(`/duet ${sanitize(arg, 64)}: type it yourself`);
 			return {};
 		}
-		// Joining and moving wait on the relay and the other window: run them detached, so the
-		// command returns at once and no hook time limit applies.
-		if (!first) void openPane($).catch(() => {});
-		else if (arg === "new") {
-			await dropJoinFile($);
-			void join($, newRoomCode(), second, "ask", false, undefined, true).catch(() => {});
+		// A typed /duet outranks a join card still up.
+		const joinsOrLeaves = arg === "new" || LEAVE_WORDS.includes(arg) || (isRoomCode(first) && !["ask", "auto", "status"].includes(arg));
+		if (joinOffer && joinsOrLeaves) {
+			joinOffer = null;
+			redraw($);
 		}
+		// Joining waits on the relay: run it detached, so the command returns at once and no hook time
+		// limit applies.
+		if (!first) void openPane($).catch(() => {});
+		else if (arg === "new") void join($, newRoomCode(), second, "ask", false, undefined, true).catch(() => {});
 		else if (LEAVE_WORDS.includes(arg)) {
-			joinEpoch++;
-			await dropJoinFile($); // leaving: a join file written meanwhile mustn't put the window straight back
-			if (room) void leave($, "left", true).catch(() => {});
+			generation++; // a join still on its way gives up
+			if (room) void leave($, true, true).catch(() => {});
 			else {
 				await $.store.delete("room:" + cwd);
 				$.ui.log("not in a room");
 			}
 		} else if (arg === "ask" || arg === "auto") void setMode($, arg).catch(() => {});
 		else if (arg === "status") $.ui.log(room ? `${modeLabel()} · ${room.code} · you are ${room.name}` : "not in a room");
-		else if (isRoomCode(first)) {
-			await dropJoinFile($);
-			void join($, first, second, "ask", false, third).catch(() => {});
-		}
+		else if (isRoomCode(first)) void join($, first, second, "ask", false, third).catch(() => {});
 		else $.ui.log("usage: /duet new · /duet <code> [name] [relay] · /duet off · /duet ask|auto · /duet");
 		return {};
 	});
@@ -1716,14 +1351,7 @@ export function register(on) {
 	});
 
 	on("turn.start", async ($, e, next) => {
-		if (e.agentId) {
-			// A subagent the peer's turn starts: its reply counts as the turn's ("Process and send").
-			if (peerTurn && peerTurn.turnId === runningTurn && !(peerTurn.agents ?? []).includes(e.agentId)) {
-				peerTurn.agents = [...(peerTurn.agents ?? []), e.agentId].slice(-50);
-				await saveTurn($);
-			}
-			return next(e);
-		}
+		if (e.agentId) return next(e); // a subagent's turn: not the main loop's
 		runningTurn = e.turnId;
 		expected = expected.filter((x) => Date.now() - x.at < 30 * 60_000);
 		const i = expected.findIndex((x) => String(e.text ?? "").includes(x.text));
@@ -1733,7 +1361,7 @@ export function register(on) {
 			peerTurn = peerTurnFrom(x, e.turnId, true);
 		} else if (expected.length && !userPromptSince) {
 			// duet's request is pending and no prompt of the user's came since: its text may have been
-			// changed on the way. Count it as the peer's, so the notes and the reply link still work.
+			// changed on the way. Count it as the peer's, so the reply link still works.
 			const x = expected.shift();
 			peerTurn = peerTurnFrom(x, e.turnId, false);
 		}
@@ -1744,43 +1372,23 @@ export function register(on) {
 	});
 
 	on("turn.complete", async ($, e, next) => {
-		if (!e.agentId && e.turnId === runningTurn) runningTurn = "";
-		// A turn ended (Esc, an error) while a reply it sent still waits at gate 2: its call was
-		// abandoned, so settle it, unsent. (next.signal normally does this first.) Only that loop's
-		// own replies: a background subagent's send keeps waiting after the main turn ends.
-		for (const item of outbox) if ((item.agentId ?? "") === (e.agentId ?? "")) decide($, item, "stopped");
-		if (!e.agentId && peerTurn && peerTurn.turnId === e.turnId) {
-			const t = peerTurn;
+		if (e.agentId) return next(e);
+		if (e.turnId === runningTurn) runningTurn = "";
+		// The turn ended (Esc, an error) while a reply it sent still waits at gate 2: its call was
+		// abandoned, so settle it, unsent. (next.signal normally does this first.)
+		for (const item of outbox) decide($, item, "stopped");
+		if (peerTurn && peerTurn.turnId === e.turnId) {
 			peerTurn = null;
-			if (e.isAborted) for (const p of t.froms) sendNote($, "stopped", p);
-			else if (e.reason === "error" || e.reason === "refusal") for (const p of t.froms) sendNote($, "failed", p);
 			redraw($);
 		}
-		if (!e.agentId) await saveTurn($);
+		await saveTurn($);
 		const result = await next(e);
 		void submitWhenIdle($).catch(() => {});
 		void flowCarry($).catch(() => {});
 		void deliver($).catch(() => {});
+		// The website's prompt, pasted into this session: its command wrote the join file during this turn.
+		if (!joinOffer && interactive) void takeJoinFile($).catch(() => {});
 		return result;
-	});
-
-	on("classic.PermissionRequest", async ($, e, next) => {
-		notePermissionMode(e);
-		if (peerTurn && !peerTurn.waitNoted) {
-			peerTurn.waitNoted = true;
-			for (const p of peerTurn.froms) sendNote($, "approval-wait", p);
-		}
-		return next(e);
-	});
-
-	on("classic.PostToolUse", async ($, e, next) => {
-		notePermissionMode(e);
-		return next(e);
-	});
-
-	on("classic.UserPromptSubmit", async ($, e, next) => {
-		notePermissionMode(e);
-		return next(e);
 	});
 
 	on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {

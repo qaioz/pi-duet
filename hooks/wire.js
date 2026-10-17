@@ -13,7 +13,7 @@ export const MAX_AUTO = 8;
 // A Text string child may hold at most 10,000 characters; keep well under.
 export const MAX_SHOWN = 6000;
 
-export const NOTES = ["declined", "stopped", "failed", "approval-wait", "left", "moved"];
+export const NOTES = ["left"]; // the only note left on the wire: a leave. Older clients' other notes are dropped.
 
 const NAME = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._-]{0,39}$/u;
 // No hidden characters either (\p{M} holds the variation selectors and the grapheme joiner): a name
@@ -39,30 +39,12 @@ export const LEAVE_WORDS = ["off", "leave", "stop", "disable", "quit", "exit"];
 export const isRoomCode = (room) =>
 	typeof room === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(room) && !LEAVE_WORDS.includes(room.toLowerCase());
 
-// The join file (~/.duet/join.json) the website's prompt writes: { agent, room, name, relay, cwd,
-// pcwd, at } with `at` in Unix seconds. What a client does with its text: "take" ({ room, name,
-// relay }: shown to the user to confirm, never joined by itself), "clear" (stale or from the future:
-// nobody will take it) or null (leave it: another client or folder may). The same rules as lock.js
-// acceptJoin (Codex, pi): a relay is required, `at` is a number and not ahead of this clock.
+// The join file (~/.duet/join.json) the website's prompt writes: { agent, room, name, relay, at }
+// with `at` in Unix seconds. Read once, at a start or a reload, never polled. "take" ({ room, name,
+// relay }: shown on a card, never joined by itself), "clear" (stale, from the future, or not for this
+// agent) or null (unreadable). Whichever Claude Code loads next takes it; the card names this folder.
 export const JOIN_FRESH_S = 30 * 60;
-// A folder as both sides write it: Git Bash's /c/x and Windows' C:\x are one folder; no trailing slash.
-const folderKey = (p) => (typeof p === "string" && p ? p.replace(/\\/g, "/").replace(/^\/([A-Za-z])(?=\/|$)/, "$1:").replace(/\/+$/, "") || "/" : "");
-// Windows paths (C:\x, \\server\x) compare without case; Linux and macOS ones as written.
-const isWindowsPath = (p) => typeof p === "string" && (/^[A-Za-z]:/.test(p) || p.includes("\\"));
-// The join file's folder is this one or, on this window's own start or reload (nested), one inside it:
-// the agent's shell may have cd'd into a subfolder. A poll takes only its own folder, so a window open
-// in ~ doesn't take every prompt pasted below it.
-export const sameFolder = (paths, folder, nested = false) => {
-	const here0 = folderKey(folder);
-	return !!here0 && paths.some((p) => {
-		const fold = isWindowsPath(folder) || isWindowsPath(p);
-		const here = fold ? here0.toLowerCase() : here0;
-		const k = fold ? folderKey(p).toLowerCase() : folderKey(p);
-		const root = here === "/" || /^[A-Za-z]:$/.test(here); // / or C:\ is no one's project
-		return !!k && (k === here || (nested && !root && k.startsWith(here + "/")));
-	});
-};
-export function readJoinFile(text, agent, folder, nowMs, nested = false) {
+export function readJoinFile(text, agent, nowMs) {
 	let j;
 	try {
 		j = JSON.parse(text);
@@ -71,29 +53,24 @@ export function readJoinFile(text, agent, folder, nowMs, nested = false) {
 	}
 	if (!j || typeof j !== "object" || typeof j.at !== "number") return null;
 	const age = nowMs / 1000 - j.at;
-	// `date +%s` on this computer wrote it: a time ahead of now was not written by the prompt.
 	if (!(age >= 0 && age <= JOIN_FRESH_S)) return { clear: true };
-	if (j.agent !== agent) return null;
-	if (!sameFolder([j.cwd, j.pcwd], folder, nested)) return null;
+	if (j.agent !== agent) return null; // another client's (pi, Codex): theirs to take
 	const relay = typeof j.relay === "string" ? j.relay.replace(/\/+$/, "") : "";
 	if (!isRoomCode(j.room) || !isName(j.name) || isPlaceholderName(j.name) || !isRelayUrl(relay)) return null;
-	// The folder shown is this window's own: the file's cwd is free text, and only one of cwd/pcwd matched.
-	return { take: { room: j.room, name: j.name, relay, folder } };
+	return { take: { room: j.room, name: j.name, relay } };
 }
 
-// What the user is asked before a join file joins (every client): "Join <room> as <name>? · <folder>",
-// with "· relay <host>" before the folder when it isn't duet's own relay. The relay is never cut; the
-// folder (the window's own, home as ~) is one line, its end kept, at most FOLDER_MAX characters.
+// "Join <room> as <name>? · <folder>", with "· relay <host>" before the folder when it isn't duet's
+// own relay. The folder is this window's own (home as ~), one line, its end kept.
 const FOLDER_MAX = 60;
-export const DUET_RELAY = "https://duet.gaioz.online";
 export function joinQuestion({ room, name, relay, folder }, home = "") {
-	let where = String(folder ?? "").replace(/[\\/]+$/, "") || "/";
-	const h = String(home ?? "").replace(/[\\/]+$/, "");
-	if (h && (where === h || where.startsWith(h + "/") || where.startsWith(h + "\\"))) where = "~" + where.slice(h.length);
+	let where = String(folder ?? "").replace(/\/+$/, "") || "/";
+	const h = String(home ?? "").replace(/\/+$/, "");
+	if (h && (where === h || where.startsWith(h + "/"))) where = "~" + where.slice(h.length);
 	where = where.replace(/\s+/g, " ");
 	if (where.length > FOLDER_MAX) where = "…" + where.slice(-(FOLDER_MAX - 1));
 	let relayHost = "";
-	if (relay && relay !== DUET_RELAY) {
+	if (relay && relay !== DEFAULT_SERVER) {
 		try {
 			relayHost = new URL(relay).host;
 		} catch {
@@ -137,13 +114,6 @@ export function newRoomCode() {
 	return `${WORDS[r[0] % WORDS.length]}-${WORDS[r[1] % WORDS.length]}-${String(r[2] % 10000).padStart(4, "0")}-${tail}`;
 }
 
-// Which computer and folder an agent works in, as a hash (same recipe as transport.js placeFor):
-// two windows in the same folder share it, so a join can warn that they may edit the same files.
-// Salted with the room's topic, so the same folder can't be recognised across rooms.
-export async function placeFor(cwd, topic, host) {
-	return (await sha256hex(`duet-place:${topic}:${host}:${cwd}`)).slice(0, 16);
-}
-
 // A long message's attachment, accepted only when it is a real upload on this very relay (same rules
 // as transport.js attachmentUrl): same origin, path exactly <relay path>/file/<id>[.ext], no query,
 // and a size. Anyone can post an attachment that points anywhere.
@@ -179,8 +149,7 @@ export function isEnvelope(e) {
 		!isName(e.from) ||
 		typeof e.ts !== "string" ||
 		(e.to !== undefined && typeof e.to !== "string") ||
-		(e.re !== undefined && typeof e.re !== "string") ||
-		(e.place !== undefined && typeof e.place !== "string")
+		(e.re !== undefined && typeof e.re !== "string")
 	)
 		return false;
 	if (e.kind === "join") return true;
