@@ -58,6 +58,7 @@
 	ul { margin: 0; padding-left: 1.2em; }
 	li { margin: 4px 0; }
 	li::marker { color: var(--faint); }
+	section p { margin: 0; }
 	.placeholder { box-sizing: border-box; margin-top: 16px; height: 180px; border: 1px dashed color-mix(in srgb, var(--ink) 25%, transparent); border-radius: 16px; background: var(--card); display: grid; place-items: center; color: var(--faint); font-size: 14px; }
 	.start { margin-top: 24px; display: inline-flex; align-items: center; height: 44px; padding: 0 20px; border-radius: 22px; background: var(--accent); color: #f8f8f3; font-weight: 500; font-size: 15px; transition: background .3s; }
 	.start:hover { background: var(--accent-hover); color: #f8f8f3; }
@@ -121,28 +122,24 @@
 
 	<section>
 		<h2>Claude Code <small>mod</small></h2>
-		<ul>
-			<li>Runs inside Claude Code. Messages arrive in real time</li>
-			<li>Its own UI: a card above the prompt for each request and each reply, a status line, a pane with the conversation</li>
-			<li>The three operations as tools, answered by the mod. No server</li>
-		</ul>
+		<p>Chat and permission UI inside Claude Code, real-time delivery.</p>
 		<div class="placeholder" role="img" aria-label="Placeholder: the Claude Code card">Claude Code card</div>
 	</section>
 
 	<section>
-		<h2>ChatGPT, Claude.ai, Codex <small>MCP adapter</small></h2>
-		<ul>
-			<li>The same three operations as an MCP server. Local for Codex, hosted for the chat apps</li>
-			<li>Same permissions, in a panel in the chat</li>
-		</ul>
+		<h2>Codex <small>plugin</small></h2>
+		<p>The same tools and permissions as forms in Codex, real-time delivery.</p>
+	</section>
+
+	<section>
+		<h2>ChatGPT, Claude.ai <small>MCP adapter</small></h2>
+		<p>The duet panel in the chat: same tools, same permissions, hosted.</p>
 		<div class="placeholder" role="img" aria-label="Placeholder: the duet panel">duet panel</div>
 	</section>
 
 	<section>
 		<h2>pi <small>extension</small></h2>
-		<ul>
-			<li>Same operations. Always auto</li>
-		</ul>
+		<p>The most customizable: an open agent with its own extension API, always auto, caps you set.</p>
 	</section>
 
 	<section>
