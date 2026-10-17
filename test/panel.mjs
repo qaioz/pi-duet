@@ -1,6 +1,6 @@
 // Tests for the duet panel (panel.js), as served by both servers, no model and no cost:
 //   - mcp.js over stdio: which hosts get the panel tools, the resource, a join from the panel, a peer's
-//     request handed over (the framed text) or ignored (the other side hears "declined");
+//     request handed over (the framed text) or ignored (nothing goes on the wire);
 //   - hosted.js over HTTP: two panels kept apart, the room code never sent back or logged, the limits;
 //   - the panel itself in a real browser (Playwright + Chromium), inside a minimal MCP Apps host page
 //     wired to hosted.js: peer HTML stays text, one click puts the framed text in ui/message, light/dark.
@@ -214,9 +214,10 @@ async function localTests() {
 		const s = data(await desk.call("duet_room_state"));
 		return s.waiting.length && s;
 	}, 10_000, "second request");
-	await desk.call("duet_ignore", { id: st.waiting[0].id });
-	const declined = await until(async () => (await nika.notes()).find((e) => e.note === "declined" && e.to === "nika"), 10_000, "declined note").catch(() => null);
-	check("stdio: Ignore tells the other side (declined)", !!declined, declined ? JSON.stringify({ from: declined.from, note: declined.note, to: declined.to }) : "no declined note");
+	const ignoredSt = data(await desk.call("duet_ignore", { id: st.waiting[0].id }));
+	await sleep(2000);
+	const declined = (await nika.notes()).find((e) => e.note === "declined");
+	check("stdio: Ignore takes the request off the panel and puts nothing on the wire", !declined && !ignoredSt.waiting.length, declined ? "a declined note went out" : `no note; waiting after Ignore: ${ignoredSt.waiting.length}`);
 	// A long request: the panel gets its start, "Show all" (duet_read) the whole; Put it back undoes a take.
 	const long = "LONG-START " + "word ".repeat(6000) + "LONG-END";
 	await nika.say(long);
@@ -454,10 +455,10 @@ async function hostedTests() {
 
 	// Ignore, leave.
 	await data(await b.call("duet_ignore", { id: wb.waiting[0].id }));
-	const declined = await until(async () => (await lev.notes()).find((e) => e.note === "declined" && e.to === "lev"), 10_000, "declined").catch(() => null);
 	await b.call("duet_room_leave");
 	const leftNote = await until(async () => (await lev.notes()).find((e) => e.note === "left" && e.from === "maya"), 10_000, "left").catch(() => null);
-	check("hosted: Ignore and Leave reach the other side", !!declined && !!leftNote, `declined: ${!!declined}, left: ${!!leftNote}`);
+	const declined = (await lev.notes()).find((e) => e.note === "declined");
+	check("hosted: Ignore puts nothing on the wire; Leave reaches the other side", !declined && !!leftNote, `declined note: ${!!declined}, left: ${!!leftNote}`);
 
 	// duet_room with a room and name from the user's message: checked, handed to the panel in _meta (it
 	// joins with its own token), never joined or kept here.

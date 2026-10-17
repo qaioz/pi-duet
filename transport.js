@@ -151,6 +151,12 @@ export function isEnvelope(/** @type {any} */ e) {
 	);
 }
 
+// A leave (`kind: "note", note: "left"`), the only note on the wire. Only a subscriber that asks
+// for it (onNote) gets it; isEnvelope stays messages and joins.
+export function isLeave(/** @type {any} */ e) {
+	return e?.v === 1 && typeof e.fromId === "string" && typeof e.from === "string" && isName(e.from) && typeof e.ts === "string" && e.kind === "note" && e.note === "left" && (e.to === undefined || typeof e.to === "string");
+}
+
 // Drop our own echoes (by install id, since two people may share a display name) and
 // messages addressed to someone else.
 /** @param {Envelope} env @param {string} myFromId @param {string} myName */
@@ -191,6 +197,7 @@ export async function publish(server, topic, env, signal) {
  * @param {{
  *   server: string, topic: string, since?: Cursor,
  *   onEnvelope(env: Envelope): void,
+ *   onNote?(env: any): void,
  *   onCursor?(cursor: Cursor): void,
  *   onExpired?(why: "expired" | "failed"): void,
  *   onState?(connected: boolean, error?: string): void,
@@ -247,6 +254,10 @@ export function subscribe(opts) {
 		if (isEnvelope(env)) {
 			try {
 				opts.onEnvelope(env);
+			} catch {}
+		} else if (opts.onNote && isLeave(env)) {
+			try {
+				opts.onNote(env);
 			} catch {}
 		}
 		if (live) {

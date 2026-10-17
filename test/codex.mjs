@@ -182,7 +182,7 @@ async function main() {
 		!queuedHist.text.includes("REQ-QUEUED") && queuedHist.text.includes("(not shown to your user)") && !queuedCtx.includes("REQ-QUEUED"),
 		JSON.stringify(queuedHist.text.split("\n").slice(1)),
 	);
-	// The queued prompt arrives: duet asks; "Ignore" blocks it and tells the peer.
+	// The queued prompt arrives: duet asks; "Ignore" blocks it and sends nothing (as in Claude Code).
 	const ignored = c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "turn-1", prompt: q1[4] });
 	const form = await c.answer("Ignore");
 	const ignoredOut = json((await ignored).text);
@@ -193,11 +193,12 @@ async function main() {
 			.filter(Boolean)
 			.map((l) => json(json(l)?.message ?? ""))
 			.filter((e) => e?.kind === "note");
-	const declined = await until(async () => (await notes()).find((e) => e.note === "declined" && e.to === "nika"), 5000, "declined note").catch(() => undefined);
+	await sleep(2000);
+	const declined = (await notes()).find((e) => e.note === "declined");
 	check(
-		"ask mode: the queued request shows a form; Ignore blocks the prompt and tells the other side",
-		/^duet · nika · \d\d:\d\d\n\nREQ-QUEUED/.test(form.params.message) && JSON.stringify(form.params.requestedSchema.properties.answer.enum) === '["Process","Ignore","Process and send"]' && ignoredOut?.decision === "block" && !!declined,
-		`form: ${JSON.stringify(form.params.message.slice(0, 80))}; hook answer: ${JSON.stringify(ignoredOut)}; a "declined" note to nika on the relay: ${!!declined}`,
+		"ask mode: the queued request shows a form; Ignore blocks the prompt and puts nothing on the wire",
+		/^duet · nika · \d\d:\d\d\n\nREQ-QUEUED/.test(form.params.message) && JSON.stringify(form.params.requestedSchema.properties.answer.enum) === '["Process","Ignore","Process and send"]' && ignoredOut?.decision === "block" && !declined,
+		`form: ${JSON.stringify(form.params.message.slice(0, 80))}; hook answer: ${JSON.stringify(ignoredOut)}; a note on the relay: ${!!declined}`,
 	);
 	// The next one: "Process" lets the prompt run; nothing in that turn is refused; its reply waits for gate 2.
 	await p.send("REQ-TAKE");
@@ -409,26 +410,31 @@ async function main() {
 	await p.send("REQ-SKIP-ME");
 	await p.send("REQ-FOR-INBOX-2");
 	await sleep(1500);
-	// "check duet" in ask mode: each waiting request in the form; the model gets only the processed ones.
+	// "check duet" in ask mode: everything waiting in one form; Process hands all of it over, in order,
+	// after the room line; Ignore hands nothing over.
+	const inboxFormsBefore = c.asks.length;
 	const inboxCall = c.call("duet_inbox", {}, { id: "user-9" });
-	let inboxDone = false;
-	inboxCall.then(() => (inboxDone = true));
-	const inboxForms = [];
-	while (!inboxDone) {
-		if (c.asks.length > (c.answered ?? 0)) {
-			const msg = c.asks[c.answered ?? 0].params.message;
-			inboxForms.push(msg);
-			await c.answer(msg.includes("REQ-FOR-INBOX-2") ? "Process" : "Ignore");
-		} else await sleep(50);
-	}
+	const allForm = await c.answer("Process");
 	const inboxRead = await inboxCall;
+	// REQ-FOR-INBOX was pushed into Codex's queue before the Interrupt: not duet's to show again.
+	const order = ["REQ-SKIP-ME", "REQ-FOR-INBOX-2"].map((t) => inboxRead.text.indexOf(t));
+	await c.hook({ event: "Stop", thread: "thr-1", turn: "user-9" });
+	await c.hook({ event: "Interrupt", thread: "thr-1", turn: "user-9" }); // hold the next one for "check duet"
+	await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "user-9b", prompt: "check duet" });
+	await p.send("REQ-SKIP-ME-2");
+	await sleep(1500);
+	const skipCall = c.call("duet_inbox", {}, { id: "user-9b" });
+	await c.answer("Ignore");
+	const skipRead = await skipCall;
 	const histFromPeer = await c.call("duet_history", {}, { id: "twin-2" });
 	check(
-		"check duet (ask): one form per request; only the processed ones reach the model; a request can't read the room's history",
-		inboxForms.some((m) => m.includes("REQ-FOR-INBOX-2")) && inboxForms.some((m) => m.includes("REQ-SKIP-ME")) && inboxRead.text.includes("REQ-FOR-INBOX-2") && !inboxRead.text.includes("REQ-SKIP-ME") && !/REQ-FOR-INBOX(?!-2)/.test(inboxRead.text) && /for your user/.test(histFromPeer.text),
-		`forms: ${inboxForms.length}; inbox: ${JSON.stringify(inboxRead.text.slice(0, 80))}; history from a request: ${histFromPeer.text}`,
+		"check duet (ask): one form for everything waiting; Process hands all of it over in order after the room line; Ignore hands nothing; a request can't read the room's history",
+		c.asks.length - inboxFormsBefore === 2 && /· 2 messages/.test(allForm.params.message) && ["REQ-SKIP-ME", "REQ-FOR-INBOX-2"].every((t) => allForm.params.message.includes(t)) &&
+			inboxRead.text.startsWith("[duet] In this room: nika") && order.every((i, n) => i > 0 && (n === 0 || i > order[n - 1])) && !/REQ-FOR-INBOX(?!-2)/.test(inboxRead.text) &&
+			!skipRead.text.includes("REQ-SKIP-ME-2") && /ignored 1/.test(skipRead.text) && /for your user/.test(histFromPeer.text),
+		`forms: ${c.asks.length - inboxFormsBefore}; form head: ${JSON.stringify(allForm.params.message.split("\n")[0])}; inbox: ${JSON.stringify(inboxRead.text.slice(0, 80))}; order ${order}; Ignore: ${JSON.stringify(skipRead.text)}; history from a request: ${histFromPeer.text}`,
 	);
-	await c.hook({ event: "Stop", thread: "thr-1", turn: "user-9" });
+	await c.hook({ event: "Stop", thread: "thr-1", turn: "user-9b" });
 
 	// ---- gate 1 shows exactly what Codex gets (review H1, M1) ----
 	// A peer hides an instruction in tag characters and variation selectors, and puts more past 600
@@ -845,6 +851,76 @@ async function joinFileTests() {
 		`before: ${eSt0.slice(0, 25)}; form: ${eAsk.params.message.slice(0, 40)}; ${eOut.systemMessage}; after a second file: ${eSt2.slice(0, 50)}; file kept: ${e.left().includes(r6)}`,
 	);
 	await e.s.stop();
+
+	// ---- Release 13: Codex delivers as Claude Code does (room line, everything, joins and leaves inline) ----
+	const r13 = freshRoom();
+	const fc13 = fakeCodex("r13");
+	const proj13 = join(ROOT, "proj13");
+	const t = startServer("tamo", r13, { cwd: proj13, env: { DUET_CODEX_BIN: fc13.bin } });
+	await t.init();
+	const nika = peer(r13);
+	await until(async () => (await t.call("duet_status")).text.includes("· connected"), 15_000, "connected");
+	await t.hook({ event: "SessionStart", thread: "thr-1", folder: proj13 });
+	await nika.send("R13-HELLO"); // nika is in the room now (a message counts)
+	await sleep(1000);
+	await t.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "u13-0", prompt: "hello" });
+	const s0 = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-0" });
+	await t.answer("Process");
+	await s0;
+	await t.hook({ event: "Stop", thread: "thr-1", turn: "u13-0" });
+	await sleep(5500); // past the window in which a join answers ours
+	const pushes0 = fc13.queued().length;
+	// A join and a leave alone start nothing.
+	const karloId = "peer-" + randomUUID();
+	const karlo = (f) => publish(SERVER, topicFor(r13), envelope({ fromId: karloId, from: "karlo", ...f }));
+	await karlo({ kind: "join", via: "pi" });
+	await sleep(1500);
+	const answered = nika.got.find((x) => x.kind === "join" && x.from === "tamo");
+	const pushesAfterJoin = fc13.queued().length;
+	await karlo({ kind: "note", note: "left" });
+	await sleep(1500);
+	const pushesAlone = fc13.queued().length;
+	// A turn runs; karlo comes back; 210 messages arrive (more than the old inbox cap of 200 and the old
+	// batch of 8); karlo leaves again. The turn's end hands over all of it, in arrival order.
+	await t.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "u13-1", prompt: "work on something" });
+	await karlo({ kind: "join", via: "pi" });
+	await sleep(300);
+	for (let i = 1; i <= 210; i++) await nika.send(`R13-M${String(i).padStart(3, "0")}`);
+	await karlo({ kind: "note", note: "left" });
+	await until(async () => (await t.call("duet_status")).text.includes("messages waiting: 210"), 20_000, "210 waiting").catch(() => {});
+	const st13 = (await t.call("duet_status")).text;
+	const s1 = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-1" });
+	const form13 = await t.answer("Process");
+	const reason13 = json((await s1).text)?.reason ?? "";
+	const pos = (x) => reason13.indexOf(x);
+	const last = (x) => reason13.lastIndexOf(x);
+	// karlo's first join and leave (alone, no turn) wait for this hand-over too: two of each, in order.
+	const evOrder = [pos("karlo joined (pi)"), pos("karlo left"), last("karlo joined (pi)"), last("karlo left")];
+	const allIn = Array.from({ length: 210 }, (_, i) => `R13-M${String(i + 1).padStart(3, "0")}`).every((m, i, a) => pos(m) > 0 && (i === 0 || pos(m) > pos(a[i - 1])));
+	check(
+		"R13 Codex: a join or leave alone starts no turn (they wait for the next hand-over); a late join gets one join back; the turn's end hands over all 210 waiting (one form) after the room line, joins and leaves inline in arrival order",
+		pushesAfterJoin === pushes0 && pushesAlone === pushes0 && !!answered && st13.includes("messages waiting: 210") &&
+			/· 210 messages/.test(form13.params.message) && reason13.startsWith("[duet] In this room: nika · you are tamo") && allIn &&
+			/\[duet\] karlo joined \(pi\), \d\d:\d\d/.test(reason13) && evOrder.every((i, n) => i > 0 && (n === 0 || i > evOrder[n - 1])) && evOrder[2] < pos("R13-M001") && /\[duet\] karlo left, \d\d:\d\d/.test(reason13) && evOrder[3] > pos("R13-M210") && !reason13.includes("more message"),
+		`pushes ${pushes0}→${pushesAfterJoin}→${pushesAlone}; join answered: ${!!answered}; status: ${st13.match(/messages waiting: \d+/)?.[0]}; form: ${JSON.stringify(form13.params.message.split("\n")[0])}; hand-over starts ${JSON.stringify(reason13.slice(0, 60))}; all 210 in order: ${allIn}; joined/left/joined/left at ${evOrder}, M001 ${pos("R13-M001")}, M210 ${pos("R13-M210")}`,
+	);
+	// More than one form holds: the first part, then "N more", and the rest comes next.
+	await t.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "u13-2", prompt: "more work" });
+	for (let i = 1; i <= 4; i++) await nika.send(`R13-BIG${i} ` + "y".repeat(25_000));
+	await until(async () => (await t.call("duet_status")).text.includes("messages waiting: 4"), 15_000, "4 waiting").catch(() => {});
+	const s2 = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-2" });
+	await t.answer("Process");
+	const reason2 = json((await s2).text)?.reason ?? "";
+	const s3 = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-2" });
+	await t.answer("Process");
+	const reason3 = json((await s3).text)?.reason ?? "";
+	check(
+		"R13 Codex: what doesn't fit one form comes next turn, and the hand-over says how many more wait",
+		reason2.includes("R13-BIG1") && reason2.includes("R13-BIG2") && !reason2.includes("R13-BIG3") && reason2.includes("2 more messages waiting: they come in your next turn.") && reason3.includes("R13-BIG3") && reason3.includes("R13-BIG4") && !reason3.includes("more message"),
+		`first: ${["BIG1", "BIG2", "BIG3", "BIG4"].filter((b) => reason2.includes("R13-" + b))} ${reason2.match(/\d+ more messages? waiting/)?.[0]}; next: ${["BIG1", "BIG2", "BIG3", "BIG4"].filter((b) => reason3.includes("R13-" + b))}`,
+	);
+	nika.stop();
+	await t.stop();
 }
 
 try {
