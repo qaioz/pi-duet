@@ -467,9 +467,14 @@ async function main() {
 	await c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "m1-0", prompt: "hello again" });
 	await p.send("HUGE " + "y".repeat(61_000));
 	await sleep(2000);
-	const m1Stop = c.hook({ event: "Stop", thread: "thr-1", turn: "m1-0" });
+	// Too big for the Stop hook's output: it goes as its own prompt once the turn ends; its form there.
+	const m1Before = fc.queued().length;
+	const m1StopOut = (await c.hook({ event: "Stop", thread: "thr-1", turn: "m1-0" })).text;
+	await until(() => fc.queued().length > m1Before, 10_000, "huge pushed");
+	const m1Push = fc.queued().at(-1)[4];
+	const m1Prompt = c.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "m1-1", prompt: m1Push });
 	const m1Form = await c.answer("Ignore");
-	const m1Out = (await m1Stop).text;
+	const m1Out = m1StopOut + (json((await m1Prompt).text)?.decision === "block" ? "" : "not blocked");
 	check(
 		"gate 1 (Codex): a request too long for the form gets Ignore only; nothing reaches Codex",
 		JSON.stringify(m1Form.params.requestedSchema.properties.answer.enum) === '["Ignore"]' && /too long for this form/.test(m1Form.params.message) && m1Out === "",
@@ -890,36 +895,54 @@ async function joinFileTests() {
 	await karlo({ kind: "note", note: "left" });
 	await until(async () => (await t.call("duet_status")).text.includes("messages waiting: 210"), 20_000, "210 waiting").catch(() => {});
 	const st13 = (await t.call("duet_status")).text;
-	const s1 = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-1" });
-	const form13 = await t.answer("Process");
-	const reason13 = json((await s1).text)?.reason ?? "";
-	const pos = (x) => reason13.indexOf(x);
-	const last = (x) => reason13.lastIndexOf(x);
-	// karlo's first join and leave (alone, no turn) wait for this hand-over too: two of each, in order.
+	// The turn's end hands them over in parts that Codex shows the model whole (a hook's output is cut
+	// at ~10 KB): each part one form, the rest said ("N more"), until none wait.
+	const parts = [];
+	const forms13 = [];
+	for (let k = 0; k < 12 && /messages waiting: [1-9]/.test((await t.call("duet_status")).text); k++) {
+		const sk = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-1" });
+		forms13.push((await t.answer("Process")).params.message.split("\n")[0]);
+		parts.push(json((await sk).text)?.reason ?? "");
+	}
+	const all13 = parts.join("\n");
+	const p1 = parts[0] ?? "";
+	const pos = (x) => p1.indexOf(x);
+	const last = (x) => p1.lastIndexOf(x);
+	const lastMsgP1 = Math.max(...[...p1.matchAll(/R13-M\d{3}/g)].map((m) => m.index));
+	// karlo's first join and leave (alone, no turn) wait for the first part too: two of each, in order.
 	const evOrder = [pos("karlo joined (pi)"), pos("karlo left"), last("karlo joined (pi)"), last("karlo left")];
-	const allIn = Array.from({ length: 210 }, (_, i) => `R13-M${String(i + 1).padStart(3, "0")}`).every((m, i, a) => pos(m) > 0 && (i === 0 || pos(m) > pos(a[i - 1])));
+	const allIn = Array.from({ length: 210 }, (_, i) => `R13-M${String(i + 1).padStart(3, "0")}`).every((m, i, a) => all13.indexOf(m) > 0 && (i === 0 || all13.indexOf(m) > all13.indexOf(a[i - 1])));
+	const counted = forms13.map((h) => Number(h.match(/· (\d+) messages/)?.[1] ?? 1));
 	check(
-		"R13 Codex: a join or leave alone starts no turn (they wait for the next hand-over); a late join gets one join back; the turn's end hands over all 210 waiting (one form) after the room line, joins and leaves inline in arrival order",
+		"R13 Codex: a join or leave alone starts no turn (they wait for the next hand-over); a late join gets one join back; the turn's end hands over all 210 waiting, in parts Codex shows whole (one form each, 'N more' in all but the last), after the room line, joins and leaves inline",
 		pushesAfterJoin === pushes0 && pushesAlone === pushes0 && !!answered && st13.includes("messages waiting: 210") &&
-			/· 210 messages/.test(form13.params.message) && reason13.startsWith("[duet] In this room: nika · you are tamo") && allIn &&
-			/\[duet\] karlo joined \(pi\), \d\d:\d\d/.test(reason13) && evOrder.every((i, n) => i > 0 && (n === 0 || i > evOrder[n - 1])) && evOrder[2] < pos("R13-M001") && /\[duet\] karlo left, \d\d:\d\d/.test(reason13) && evOrder[3] > pos("R13-M210") && !reason13.includes("more message"),
-		`pushes ${pushes0}→${pushesAfterJoin}→${pushesAlone}; join answered: ${!!answered}; status: ${st13.match(/messages waiting: \d+/)?.[0]}; form: ${JSON.stringify(form13.params.message.split("\n")[0])}; hand-over starts ${JSON.stringify(reason13.slice(0, 60))}; all 210 in order: ${allIn}; joined/left/joined/left at ${evOrder}, M001 ${pos("R13-M001")}, M210 ${pos("R13-M210")}`,
+			parts.length >= 2 && parts.every((p) => Buffer.byteLength(p) <= 8000) && counted.reduce((x, y) => x + y, 0) === 210 && parts.slice(0, -1).every((p) => /\d+ more messages? waiting: they come in your next turn\./.test(p)) && !parts.at(-1).includes("more message") &&
+			parts.every((p) => p.startsWith("[duet] In this room: nika · you are tamo")) && allIn &&
+			evOrder.every((i, n) => i > 0 && (n === 0 || i > evOrder[n - 1])) && evOrder[2] < pos("R13-M001") && evOrder[3] > lastMsgP1 && !parts.slice(1).some((p) => p.includes("karlo")),
+		`pushes ${pushes0}→${pushesAfterJoin}→${pushesAlone}; join answered: ${!!answered}; status: ${st13.match(/messages waiting: \d+/)?.[0]}; parts: ${parts.length} (${parts.map((p) => Buffer.byteLength(p)).join(", ")} bytes), forms ${JSON.stringify(forms13.slice(0, 2))}…; all 210 in order: ${allIn}; part 1 joined/left/joined/left at ${evOrder}, M001 ${pos("R13-M001")}, its last message ${lastMsgP1}`,
 	);
-	// More than one form holds: the first part, then "N more", and the rest comes next.
+	await t.hook({ event: "Stop", thread: "thr-1", turn: "u13-1" });
+	// A message too big for the hook's ~10 KB goes as its own prompt once the turn is over (a push, in
+	// parts of one form each, "N more" said).
 	await t.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "u13-2", prompt: "more work" });
 	for (let i = 1; i <= 4; i++) await nika.send(`R13-BIG${i} ` + "y".repeat(25_000));
 	await until(async () => (await t.call("duet_status")).text.includes("messages waiting: 4"), 15_000, "4 waiting").catch(() => {});
-	const s2 = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-2" });
-	await t.answer("Process");
-	const reason2 = json((await s2).text)?.reason ?? "";
-	const s3 = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-2" });
-	await t.answer("Process");
-	const reason3 = json((await s3).text)?.reason ?? "";
+	const bigBefore = fc13.queued().length;
+	const s2 = await t.hook({ event: "Stop", thread: "thr-1", turn: "u13-2" });
+	await until(() => fc13.queued().length - bigBefore >= 2, 10_000, "big pushes").catch(() => {});
+	const bigPushes = fc13.queued().slice(bigBefore).map((q) => q[4]);
 	check(
-		"R13 Codex: what doesn't fit one form comes next turn, and the hand-over says how many more wait",
-		reason2.includes("R13-BIG1") && reason2.includes("R13-BIG2") && !reason2.includes("R13-BIG3") && reason2.includes("2 more messages waiting: they come in your next turn.") && reason3.includes("R13-BIG3") && reason3.includes("R13-BIG4") && !reason3.includes("more message"),
-		`first: ${["BIG1", "BIG2", "BIG3", "BIG4"].filter((b) => reason2.includes("R13-" + b))} ${reason2.match(/\d+ more messages? waiting/)?.[0]}; next: ${["BIG1", "BIG2", "BIG3", "BIG4"].filter((b) => reason3.includes("R13-" + b))}`,
+		"R13 Codex: a hand-over too big for the Stop hook goes as its own prompt after the turn: pushes of one form each, 'N more' said",
+		s2.text === "" && bigPushes.length === 2 && bigPushes[0].includes("R13-BIG1") && bigPushes[0].includes("R13-BIG2") && !bigPushes[0].includes("R13-BIG3") && bigPushes[0].includes("2 more messages waiting: they come in your next turn.") && bigPushes[1].includes("R13-BIG3") && bigPushes[1].includes("R13-BIG4") && !bigPushes[1].includes("more message"),
+		`Stop: ${JSON.stringify(s2.text.slice(0, 40))}; pushes: ${bigPushes.map((p) => ["BIG1", "BIG2", "BIG3", "BIG4"].filter((b) => p.includes("R13-" + b)).join("+") + (p.match(/\d+ more messages? waiting/)?.[0] ? " (" + p.match(/\d+ more messages? waiting/)[0] + ")" : "")).join(" | ")}`,
 	);
+	// The two pushed prompts arrive: each gets its form (Ignore here, so nothing more runs).
+	for (const pp of bigPushes) {
+		const id = pp.match(/\(duet request ([0-9a-f]{16})\)$/)?.[1];
+		const h = t.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: `u13-big-${id}`, prompt: pp });
+		await t.answer("Ignore");
+		await h;
+	}
 	await t.hook({ event: "Stop", thread: "thr-1", turn: "u13-2" });
 	// Pushes are sized in bytes, not only characters: three 15,000-character Georgian messages (3 bytes
 	// a character) go in pushes that each fit one program argument (review: E2BIG, retried forever).
@@ -935,10 +958,17 @@ async function joinFileTests() {
 	await sleep(2500);
 	const hugeStatus = (await t.call("duet_status")).text;
 	const hugePushes = fc13.queued().length - pushesBig;
+	// The next turn's end shows it alone, Ignore only; after Ignore nothing waits.
+	await t.hook({ event: "UserPromptSubmit", thread: "thr-1", turn: "u13-3", prompt: "anything" });
+	const hs = t.hook({ event: "Stop", thread: "thr-1", turn: "u13-3" });
+	const hugeForm = await t.answer("Ignore");
+	const hugeOut = (await hs).text;
+	const afterHuge = (await t.call("duet_status")).text;
 	check(
-		"R13 Codex: pushes fit one program argument in bytes (multibyte text is split, not retried forever); one message too big for an argument waits for the turn's end",
-		kaPushed && kaArgs.every((b) => b <= 120_000) && !/failed/.test(kaStatus) && hugePushes === 0 && /too long to start a Codex turn/.test(hugeStatus) && /messages waiting: 1/.test(hugeStatus),
-		`Georgian pushes: ${kaArgs.length} (${kaArgs.join(", ")} bytes), status after: ${JSON.stringify(kaStatus.match(/push[^;]*|messages waiting: \d+/g))}; huge: ${hugePushes} pushes, ${JSON.stringify(hugeStatus.match(/a message from[^;]*|messages waiting: \d+/g))}`,
+		"R13 Codex: pushes fit one program argument in bytes (multibyte text is split, not retried forever); one message Codex can't get whole waits for the turn's end, then shows alone with Ignore only",
+		kaPushed && kaArgs.every((b) => b <= 120_000) && !/failed/.test(kaStatus) && hugePushes === 0 && /too long for Codex to get whole/.test(hugeStatus) && /messages waiting: 1/.test(hugeStatus) &&
+			JSON.stringify(hugeForm.params.requestedSchema.properties.answer.enum) === '["Ignore"]' && /too long for Codex to get whole/.test(hugeForm.params.message) && hugeOut === "" && /messages waiting: 0/.test(afterHuge),
+		`Georgian pushes: ${kaArgs.length} (${kaArgs.join(", ")} bytes), status after: ${JSON.stringify(kaStatus.match(/push[^;]*|messages waiting: \d+/g))}; huge: ${hugePushes} pushes, ${JSON.stringify(hugeStatus.match(/a message from[^;]*|messages waiting: \d+/g))}; turn end: ${JSON.stringify(hugeForm.params.message.split("\n\n")[1]?.slice(0, 70))} ${JSON.stringify(hugeForm.params.requestedSchema.properties.answer.enum)}; then ${afterHuge.match(/messages waiting: \d+/)?.[0]}`,
 	);
 	nika.stop();
 	await t.stop();
