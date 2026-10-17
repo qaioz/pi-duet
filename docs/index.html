@@ -643,7 +643,7 @@ const AGENTS = {
 	claude: {
 		name: "Claude Code",
 		kind: "Terminal",
-		feat: "Lives in your terminal as a mod: a duet panel with history and settings, and every request and reply waits for your keypress.",
+		feat: "A Claude Code mod: chat and permission UI inside Claude Code, real-time delivery.",
 		cap: "A request from your friend arrives as a card: 1 Process · 2 Ignore · 3 Process and send. Claude works, then the reply waits: 1 Send · 2 Don't send.",
 		after_: "Every request and reply waits for your keypress, right in the terminal.",
 		prompt: {
@@ -686,7 +686,7 @@ If duet later says its send tool is off in this folder: /mcp → duet → Enable
 	codex: {
 		name: "Codex",
 		kind: "Terminal",
-		feat: "A plugin that shows a form before a request reaches Codex and before a reply leaves.",
+		feat: "A Codex plugin: the same tools and permissions as forms in Codex, real-time delivery.",
 		cap: "A request arrives as a form: Process this request? Codex works, then a second form: Send this reply?",
 		after_: "A form pops up before each request goes in and each reply goes out.",
 		prompt: {
@@ -718,7 +718,7 @@ If it failed, say which step failed instead.`,
 	pi: {
 		name: "pi",
 		kind: "Terminal",
-		feat: "pi: always auto. A friend's request starts a pi turn by itself, 8 in a row at most without you.",
+		feat: "The most customizable: an open agent with its own extension API, always auto, caps you set.",
 		cap: "A request arrives and pi just starts working on it, no prompts · pi: auto, 8 in a row max.",
 		after_: "Requests start a pi turn on their own — 8 in a row at most.",
 		prompt: {
@@ -751,8 +751,8 @@ If it failed, say which step failed instead.`,
 		],
 		receive: "Requests start a pi turn by themselves · 8 in a row max without you.",
 	},
-	chatgpt: { ...CHAT, name: "ChatGPT", feat: "A duet panel inside the chat: see who's in the room and hand a request to ChatGPT with one click.", cap: "The duet panel in the chat: room members, a request card with Process, then a “Send this reply?” card.", cases: [CHAT_CASES.chatgpt] },
-	claudeai: { ...CHAT, name: "Claude.ai", feat: "A duet panel in claude.ai, the Claude apps or Claude Desktop: requests show up in it, and replies wait for your Send.", cap: "The duet panel in the chat: room members, a request card with Process, then a “Send this reply?” card.", cases: [CHAT_CASES.web, CHAT_CASES.desktop] },
+	chatgpt: { ...CHAT, name: "ChatGPT", feat: "The duet panel in the chat: same tools, same permissions, hosted.", cap: "The duet panel in the chat: room members, a request card with Process, then a “Send this reply?” card.", cases: [CHAT_CASES.chatgpt] },
+	claudeai: { ...CHAT, name: "Claude.ai", feat: "The duet panel in claude.ai, the Claude apps or Claude Desktop: same tools, same permissions, hosted.", cap: "The duet panel in the chat: room members, a request card with Process, then a “Send this reply?” card.", cases: [CHAT_CASES.web, CHAT_CASES.desktop] },
 	other: { ...CHAT, name: "VS Code or Goose", kind: "MCP", feat: "duet as an MCP server for Copilot agent mode or Goose: say “open duet” or “check duet”.", cap: "duet as an MCP server: say “open duet” for the panel, or “check duet” for the waiting requests.", cases: [CHAT_CASES.vscode, CHAT_CASES.goose] },
 };
 const ORDER = Object.keys(AGENTS);
