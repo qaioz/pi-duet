@@ -79,7 +79,7 @@ const PROMPTS = (r, n, relay) =>
 			claude: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("claude-code", relay)} && claude plugin marketplace add qaioz/pi-duet && claude plugin marketplace update pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user >/dev/null && case "$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')" in *'✔ enabled'*) ;; *) claude plugin enable duet@pi-duet --scope local ;; esac && d=$(mktemp -d) && case "$(claude plugin test "$d" 2>&1)" in *'no hooks module to load'*) ;; *) echo 'duet: mods are off here' ;; esac && rmdir "$d"\n\nThen reply with only: Type /reload-plugins, then press 1 to join (if duet's Join card already shows, just press 1).
 If it printed "duet: mods are off here", reply only: Claude Code's mods are off in this folder (disableAllHooks in its .claude settings or yours, or a switch by your organization or Anthropic), so duet can't run here yet. If it failed, say which step failed instead.
 If duet later says its send tool is off in this folder: /mcp → duet → Enable.`,
-			codex: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server ${relay}) and stop. Otherwise run this as one shell command:\n\n${JOIN("codex", relay)} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet\n\nThen reply with only: Start a new Codex session in this folder, say "join duet", then choose Join (first time: trust duet's hooks).\nIf it failed, say which step failed instead.`,
+			codex: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server ${relay}), reply with only what it returns, and stop there. Otherwise run this as one shell command:\n\n${JOIN("codex", relay)} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet\n\nThen reply with only: Start a new Codex session in this folder, say "join duet", then choose Join (first time: trust duet's hooks).\nIf it failed, say which step failed instead.`,
 			pi: `Set up duet and join room {room} as {name}. ${RUN}\n\n${JOIN("pi", relay)} && pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet\n\nThen reply with only: Type /reload, then confirm to join.\nIf it failed, say which step failed instead.`,
 			...Object.fromEntries(CHATS.map((k) => [k, "Open duet: call duet_room with room {room} and name {name}."])),
 		}).map(([k, v]) => [k, v.replaceAll("{room}", r).replaceAll("{name}", n)]),
@@ -382,7 +382,7 @@ exit 0
 		const note = await evil.textContent("#relay");
 		// The commands always name a relay: a hostile one must give way to the default, untouched.
 		const shell = all.replaceAll("$(pwd -P)", "").replaceAll("$(date +%s)", "").replaceAll("$(mktemp -d)", "").replaceAll(`$(claude plugin list 2>/dev/null | grep -A3 'duet@pi-duet')`, "").replaceAll(`$(claude plugin test "$d" 2>&1)`, ""); // the prompts' own
-		const why = [/PWNED|\$\(|`|"q|'q|u:p@|javascript|\$&/.test(shell) && "shell", !all.includes("--server https://duet.gaioz.online") && "no --server", !all.includes('"relay":"https://duet.gaioz.online"') && "no relay json", !all.includes("server https://duet.gaioz.online) and stop") && "no codex server", !/ignored/.test(note) && `note "${note}"`].filter(Boolean);
+		const why = [/PWNED|\$\(|`|"q|'q|u:p@|javascript|\$&/.test(shell) && "shell", !all.includes("--server https://duet.gaioz.online") && "no --server", !all.includes('"relay":"https://duet.gaioz.online"') && "no relay json", !all.includes("server https://duet.gaioz.online), reply with only what it returns") && "no codex server", !/ignored/.test(note) && `note "${note}"`].filter(Boolean);
 		if (why.length) leaks.push(`${relay}: ${why.join(", ")}`);
 	}
 	await evil.goto(`${site}?relay=${encodeURIComponent("https://ntfy.example.com/")}#${room}`);
@@ -391,7 +391,7 @@ exit 0
 	check(
 		"crafted ?relay= can't inject into the commands",
 		leaks.length === 0 && kept.split("--server https://ntfy.example.com").length === 3 && kept.includes(`join duet room ${room} as YOUR_NAME, relay https://ntfy.example.com`) && kept.split(`/duet ${room} YOUR_NAME https://ntfy.example.com`).length === 3 && kept.includes(`claude.sh | sh -s -- ${room} YOUR_NAME https://ntfy.example.com`) && kept.includes("DUET_SERVER=https://ntfy.example.com DUET_ROOM=") && kept.includes("claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_SERVER=https://ntfy.example.com DUET_ROOM=") &&
-			kept.split('"relay":"https://ntfy.example.com"').length === 4 && kept.includes(`name YOUR_NAME, server https://ntfy.example.com) and stop`),
+			kept.split('"relay":"https://ntfy.example.com"').length === 4 && kept.includes(`name YOUR_NAME, server https://ntfy.example.com), reply with only what it returns`),
 		`${attempts.length} hostile relays ignored with a note (failures: ${JSON.stringify(leaks)}); a plain https relay is carried into the commands`,
 	);
 	await evilCtx.close();

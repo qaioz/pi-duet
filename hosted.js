@@ -30,7 +30,7 @@ import { pathToFileURL } from "node:url";
 import { appTools, cleanText, READS, SENDS, handOver, heldResult, JOIN_META, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomProps, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, isRoomCode, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.11.1"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.12.0"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -502,7 +502,7 @@ async function callTool(name, a, ip) {
 			if (name === "duet_take" && e.size > FULL_MAX && !e.opened) return panelError("Show all first");
 			seat.drop(e);
 			if (name === "duet_ignore") {
-				publish(RELAY, seat.topic, envelope({ fromId: seat.fromId, from: seat.name, kind: "note", note: "declined", to: e.from })).catch(() => {});
+				// Nothing on the wire (as in Claude Code and Codex): no client reads a "declined" note.
 				seat.remember({ who: "", text: `you didn't take ${e.from}'s request`, note: true });
 				return panelResult(seat.state());
 			}

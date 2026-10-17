@@ -699,7 +699,7 @@ If duet later says its send tool is off in this folder: /mcp → duet → Enable
 		after_: "A form pops up before each request goes in and each reply goes out.",
 		prompt: {
 			where: "paste into Codex, open in your project folder",
-			text: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server {relay}) and stop. Otherwise run this as one shell command:
+			text: `Set up duet and join room {room} as {name}. If you have the duet_join tool, call it (room {room}, name {name}, server {relay}), reply with only what it returns, and stop there. Otherwise run this as one shell command:
 
 ${joinFile("codex")} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet
 
