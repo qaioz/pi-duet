@@ -26,21 +26,25 @@ create: the first message makes the room.
 
 ## Messages
 
-Each message is one JSON object, posted as the body of an ntfy message. It is either a message or a
-status about a message, never both.
+Each message is one JSON object, posted as the body of an ntfy message. It carries exactly one of
+`text` (a message), `state` (a status about a message) or `presence` (someone joining or leaving).
 
 ```json
 { "id": "…", "from": "gaioz", "text": "Can you run the tests?", "re": "…" }
 { "id": "…", "from": "karlo", "re": "…", "state": "working" }
+{ "id": "…", "from": "nika", "presence": "join", "app": "claude-code" }
+{ "id": "…", "from": "nika", "presence": "leave" }
 ```
 
-| Field   | Required            | Meaning |
-|---------|---------------------|---------|
-| `id`    | yes                 | Random UUID, made once per message |
-| `from`  | yes                 | The sender's name in this room |
-| `text`  | for a message       | Plain text, at most 200,000 characters, no NUL |
-| `re`    | for a status; optional on a message | `id` of the message this one answers or is about |
-| `state` | for a status        | `seen`, `working`, `done`, `declined` or `failed` |
+| Field      | Required            | Meaning |
+|------------|---------------------|---------|
+| `id`       | yes                 | Random UUID, made once per message |
+| `from`     | yes                 | The sender's name in this room |
+| `text`     | for a message       | Plain text, at most 200,000 characters, no NUL |
+| `re`       | for a status; optional on a message | `id` of the message this one answers or is about |
+| `state`    | for a status        | `seen`, `working`, `done`, `declined` or `failed` |
+| `presence` | for presence        | `join` or `leave` |
+| `app`      | on a `join`         | `claude-code`, `codex`, `pi` or `chat` |
 
 The relay's own timestamp on each message is its time; there is no separate time field.
 
@@ -66,6 +70,22 @@ on the same relay.
 4. **Deliver everything.** Every new message goes to the agent, in order, from every sender. If the
    agent is busy, all of them go in its next turn. The cursor moves past a message only once it was
    handed to the agent or the user declined it.
+5. **Join.** On joining, post `presence: "join"` with your `app`.
+6. **Answer a newcomer once.** When a `join` comes from someone not in your participant list, post
+   your own `join` once, unless you joined in the last 5 seconds (then it is an answer to yours).
+   This is how a newcomer learns who is already here; it can't loop, because your answer is new
+   only to the newcomer, who has just joined.
+7. **Leave.** On leaving, post `presence: "leave"`.
+
+## Participants
+
+Everyone you have seen any message from, minus those whose latest presence is `leave`, with the time
+you last heard from each. Someone who crashed without leaving stays listed with that time, and drops
+out for newcomers after 12 hours. Anyone still online answers a newcomer's join (rule 6), so the
+12-hour window never hides a live participant.
+
+Clients show the participants to their user and tell their agent: who is in the room, and who
+joined or left since the agent's last turn. A join or leave alone never starts the agent.
 
 ## Identity and access
 
@@ -82,6 +102,7 @@ room.
 - **Approval gates:** each client asks its user before a message reaches the agent and before a reply
   leaves; nothing about them goes on the wire.
 - **History:** kept by each client, on its own machine, for as long as its user wants.
+- Same-folder warnings and "moved to another window": client behaviour.
 - No hop counts, turn budgets, encryption, signatures, presence heartbeats or directories.
 
 ## Later, only when needed
@@ -99,5 +120,6 @@ room.
 | `text`  | `content` |
 | `re`    | `["e", re]` tag |
 | `state` | a separate `kind` |
+| `presence`, `app` | a separate `kind`, `app` as a tag |
 | relay time | `created_at` |
 | room topic | `["t", topic]` tag, or a NIP-29 group |
