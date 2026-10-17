@@ -43,6 +43,7 @@ const HISTORY_TEXT_MAX = 1500; // characters of one history entry saved to $.sto
 const HISTORY_BYTES_MAX = 512 * 1024; // one room's saved history, as JSON in UTF-8: 5 rooms stay well under $.store's 4 MiB
 const HISTORY_ROOMS = 5; // rooms whose history is kept; older ones are dropped
 const VIA = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", chat: "chat panel" };
+const BAND_CHARS = 100_000; // Claude Code draws a band's text up to this many characters
 const TOAST_GAP_MS = 15_000; // one "new request" toast per sender per burst
 // Permission modes in which a tool call still asks the user unless a rule allows it. Only used for
 // the one confirm when the user turns auto on in a session that runs commands unasked.
@@ -201,7 +202,7 @@ function sendNote($, note, to) {
 
 // The resume point to keep: just before the oldest message not yet handled, or the newest seen.
 function resumePoint() {
-	const open = pendingPeer?.envs?.[0] ?? expected[0]?.envs?.[0] ?? queue[0];
+	const open = pendingPeer?.envs?.[0] ?? expected[0]?.envs?.[0] ?? carry[0] ?? queue[0];
 	if (open) return open._prev ?? null;
 	return heldCursor;
 }
@@ -216,7 +217,7 @@ async function saveCursor($) {
 
 // The turn in progress, kept across a module reload (which resets module variables).
 async function saveTurn($) {
-	await $.store.set("turn:" + sessionId, { pendingPeer, expected, peerTurn, runningTurn, carry, carryPreSend, at: Date.now() });
+	await $.store.set("turn:" + sessionId, { pendingPeer, expected, peerTurn, runningTurn, carry, carryPreSend, events, arrival, at: Date.now() });
 }
 
 // ---------- receiving ----------
@@ -440,7 +441,7 @@ function onEnvelope($, r, env) {
 // ---------- delivery ----------
 
 async function deliver($) {
-	if (!autoActive() || !queue.length || busyWithPeer()) return;
+	if (!autoActive() || !(queue.length || carry.length) || busyWithPeer()) return;
 	if (autoTurns >= MAX_AUTO) {
 		paused = true;
 		pausedForTool = false;
@@ -456,7 +457,7 @@ async function deliver($) {
 		redraw($);
 		return;
 	}
-	if (!autoActive() || !queue.length || busyWithPeer()) return;
+	if (!autoActive() || !(queue.length || carry.length) || busyWithPeer()) return;
 	autoTurns++;
 	await startPeerTurn($, [...carry.splice(0), ...queue.splice(0)]);
 }
@@ -505,6 +506,7 @@ async function submitWhenIdle($) {
 	carry = pool.rest;
 	// Built now, not when taken: the room line, and the joins and leaves so far, are as of this hand-over.
 	p.text = frameForClaude(p.envs, cwd, SEND_TOOL, { room: livePeers().map(([name, x]) => ({ name, via: viaLabel(x.via) })), me: room?.name, events, more: carry.length });
+	p.events = events;
 	events = [];
 	const froms = [...new Set(p.envs.map((x) => x.from))];
 	expected = [...expected, { text: p.text, froms, roomKey: p.roomKey, envs: p.envs, at: Date.now(), preSend: !!p.preSend }];
@@ -520,7 +522,10 @@ async function submitWhenIdle($) {
 	if (result?.drop) {
 		// Refused (another mod, or a UserPromptSubmit hook): back to waiting, and no auto retry loop.
 		expected = expected.filter((x) => x.text !== p.text);
-		if (room?.key === p.roomKey) queue.unshift(...p.envs, ...carry.splice(0));
+		if (room?.key === p.roomKey) {
+			queue.unshift(...p.envs, ...carry.splice(0));
+			events = [...(p.events ?? []), ...events];
+		}
 		paused = room?.mode === "auto" ? true : paused;
 		pausedForTool = false;
 		await saveTurn($);
@@ -1349,6 +1354,9 @@ function drawCard($, e) {
 		// With more than one sender, each message says who sent it.
 		const label = (g) => (froms.length > 1 ? [Text({ dimColor: true, children: [`${oneLine(g.from)} · ${timeOf(g.ts)}`] })] : []);
 		const body = group.flatMap((g, i) => [...(i > 0 ? [Text({ key: `sep${i}`, dimColor: true, children: ["—"] })] : []), ...label(g), ...reply(g), ...textRows(Text, g.text, `q${i}.`)]);
+		// Claude Code draws a band up to 100,000 characters: past that the card can't show every word, so it says so.
+		const chars = group.reduce((n, g) => n + g.text.length, 0);
+		if (chars > BAND_CHARS) body.unshift(Text({ key: "clip", dimColor: true, children: [`${chars.toLocaleString("en-US")} characters: the band shows the first ${BAND_CHARS.toLocaleString("en-US")} · /duet History has every word`] }));
 		const head = Box({
 			flexDirection: "row",
 			justifyContent: "space-between",
@@ -1565,6 +1573,8 @@ export function register(on) {
 			runningTurn = turn.runningTurn ?? "";
 			carry = Array.isArray(turn.carry) ? turn.carry : [];
 			carryPreSend = !!turn.carryPreSend;
+			events = Array.isArray(turn.events) ? turn.events : [];
+			arrival = Math.max(Number(turn.arrival) || 0, ...carry.map((e) => e._seq ?? 0), ...events.map((e) => e.seq ?? 0));
 		}
 		void supervise($).catch(() => {});
 		if (e.isInteractive || (await canDraw($))) {

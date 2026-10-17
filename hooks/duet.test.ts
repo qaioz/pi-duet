@@ -1978,3 +1978,45 @@ test("R12 case 6: 60 messages waiting → none dropped; one press hands them ove
 	await band2.unmount();
 	did.feeding = false;
 });
+
+test("R12 case 6 (auto, review finding 1): all 60 in before the first turn: the carried rest flows into the next turn with no new message", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await $.classic.SessionStart(startup("default"));
+	await join($, clock, "test-room-r12g gaioz");
+	await $.command.run({ command: "duet", args: "auto", origin: USER } as any);
+	await $.turn.start({ turnId: "busy", text: "something" } as any); // Claude is busy: everything lands in the queue first
+	for (let i = 1; i <= 60; i++) did.push(msg(`message ${String(i).padStart(2, "0")} ` + "x".repeat(2000)));
+	for (let i = 0; i < 40; i++) {
+		await settle(clock, 2);
+		const band = await $.ui.mount(BAND as any);
+		const all = await band.find({ type: "Text", text: /60 waiting · auto|starts when Claude is free/ });
+		await band.unmount();
+		if (all) break;
+	}
+	await $.turn.complete(done("busy"));
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(1);
+	const nums = (t: string) => [...t.matchAll(/message (\d\d) x/g)].map((m) => Number(m[1]));
+	expect(nums(duetSubmits(did)[0])).toEqual(Array.from({ length: 49 }, (_, i) => i + 1));
+	expect(duetSubmits(did)[0]).toMatch(/\n11 more messages waiting: they come in your next turn\./);
+	await duetTurn($, did, clock, "t1");
+	await $.turn.complete(done("t1")); // nothing new arrives
+	await settle(clock);
+	expect(duetSubmits(did).length).toBe(2);
+	expect(nums(duetSubmits(did)[1])).toEqual(Array.from({ length: 11 }, (_, i) => i + 50));
+	expect(duetSubmits(did)[1]).not.toMatch(/more message/);
+	did.feeding = false;
+});
+
+test("R12: the gate-1 card says when the band can't draw every word (over 100,000 characters)", async ($, on) => {
+	const { did, clock, start } = world(on, { feed: true });
+	await $.session.start(start());
+	await join($, clock, "test-room-r12h gaioz");
+	for (let i = 1; i <= 60; i++) did.push(msg("m" + i + " " + "x".repeat(2000)));
+	await settle(clock);
+	const band = await $.ui.mount(BAND as any);
+	expect(await band.find({ type: "Text", text: /characters: the band shows the first 100,000 · \/duet History has every word/ })).toBeDefined();
+	await band.unmount();
+	did.feeding = false;
+});
