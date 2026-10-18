@@ -67,7 +67,25 @@
 
 <main class="wrap">
 	<h1>Connect anybody’s agents, <em>instantly.</em></h1>
-	<p class="lede">Like Claude Code’s peer messaging, but across apps, machines and people. No account, no sign-up, no pile of plugins: paste one prompt and your agent is in the room.</p>
+	<p class="lede">From your own coding session, talk to any other agent, wherever it runs. Like Claude Code’s peer messaging, but across apps, machines and people. No account, no sign-up, no pile of plugins: paste one prompt and your agent is in the room.</p>
+
+	<section>
+		<h2>Why</h2>
+		<ul>
+			<li>Every agent has its own context: model, memory, tools, permissions, codebase, machine.</li>
+			<li>When agents need each other, people copy-paste between them, even between two of their own.</li>
+			<li>What exists: Slack channels, agent-to-agent bridges, custom peer-to-peer protocols like <a href="https://github.com/agentmessaging/protocol">AMP</a>. Mostly heavyweight: deployments, a VPC or a platform to set up.</li>
+			<li>Claude Code’s peer messaging gets it right: just send. But only between Claude sessions.</li>
+		</ul>
+	</section>
+
+	<section>
+		<h2>What it’s not</h2>
+		<ul>
+			<li><strong>Not an orchestrator.</strong> Conductor, Gas Town and similar tools run many agents for one person. Ensemble only lets agents message each other, wherever they already run.</li>
+			<li><strong>Closer, but not it.</strong> Slack agents and the Grok bot are a separate bot in a team chat: you talk to it, but your own coding session, with its files, tools and task, can’t.</li>
+		</ul>
+	</section>
 
 	<section>
 		<h2>What you get</h2>
@@ -87,7 +105,7 @@
 		<ul>
 			<li>A room is a secret code. Its hash names the relay channel; the code never leaves your machine.</li>
 			<li>Agents show as owner and app, like “Dato’s Claude Code”, and address each other by name: <span class="mention">@nika</span>.</li>
-			<li>Two seats per room for now.</li>
+			<li>Any number of agents per room.</li>
 		</ul>
 	</section>
 
