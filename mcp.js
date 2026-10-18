@@ -39,7 +39,7 @@ if (process.argv[2] === "setup") {
 	process.exit(0);
 }
 
-const VERSION = "0.12.1";
+const VERSION = "0.12.2";
 const DEFAULT_SERVER = "https://duet.gaioz.online";
 
 function parseArgs(argv) {
@@ -322,7 +322,7 @@ function onEnvelope(env) {
 	gone.delete(env.from);
 	if (Object.hasOwn(VIA, String(env.via))) peerVia.set(env.from, env.via); // a peer's own label: only the known ones
 	if (env.kind === "join") {
-		remember({ who: env.from, text: "joined", note: true, event: "joined", via: Object.hasOwn(VIA, String(env.via)) ? VIA[env.via] : "" });
+		remember({ who: env.from, text: "joined", note: true });
 		if (env.place && env.place === placeFor(folder || process.cwd(), topicFor(room))) warnings.add(`${env.from} is in this room from this same folder: two agents may edit the same files`);
 		// A join answering ours (within seconds of it) isn't news: those peers are the room line's. A
 		// later one is an item of the next hand-over, and gets one join back so the newcomer knows we're here.
@@ -336,7 +336,7 @@ function onEnvelope(env) {
 	env.seq = ++arrival;
 	// Cleaned once, on arrival: every form, the panel, the hand-over and everything Codex gets is this text.
 	env.text = cleanText(env.text);
-	remember({ who: env.from, text: env.text, pid: env.pid, id: env.id, ...(env.to ? { to: env.to } : {}) });
+	remember({ who: env.from, text: env.text, pid: env.pid, id: env.id });
 	lastFrom.set(env.from, { id: env.id, at: Date.now() });
 	inbox.push(env); // never capped: nothing received is dropped
 	deliver();
@@ -346,7 +346,7 @@ function onEnvelope(env) {
 function onNote(env) {
 	if (!isForMe(env, fromId, name) || gone.has(env.from)) return;
 	gone.add(env.from);
-	remember({ who: env.from, text: "left", note: true, event: "left" });
+	remember({ who: env.from, text: "left", note: true });
 	if (sinceJoin(env)) addEvent({ name: env.from, what: "left", ts: env.ts, seq: ++arrival });
 }
 // Hosts with a panel never hand events over (the panel shows the room): keep the latest only.
@@ -1151,20 +1151,12 @@ function panelState() {
 		name: inRoomNow ? name : "",
 		peers: [...peers].map(([p, at]) => ({ name: p, via: VIA[peerVia.get(p)] ?? "", here: Date.now() - at.getTime() < RECENT_MS })),
 		waiting: inRoomNow ? inbox.map((e) => ({ id: e.pid, from: e.from, at: e.ts, text: e.text.length <= FULL_MAX ? e.text : preview(e.text), full: e.text.length <= FULL_MAX, size: e.text.length })) : [],
-		// The conversation: messages (name · time · text, and whom one was addressed to) and joins and
-		// leaves, none of the requests still waiting.
+		// The conversation: messages only (name · time · text), none of the requests still waiting.
 		history: inRoomNow
 			? history
-					.filter((h) => (h.event || !h.note) && !(h.pid && inbox.some((e) => e.pid === h.pid)))
+					.filter((h) => !h.note && !(h.pid && inbox.some((e) => e.pid === h.pid)))
 					.slice(-40)
-					.map((h) => ({
-						who: h.who.replace(/^you \(.*\)$/, "you"),
-						mine: h.who.startsWith("you ("),
-						text: preview(h.text, 1200),
-						at: h.at,
-						...(h.to ? { to: h.to } : {}),
-						...(h.event ? { event: h.event, via: h.via ?? "" } : {}),
-					}))
+					.map((h) => ({ who: h.who.replace(/^you \(.*\)$/, "you"), mine: h.who.startsWith("you ("), text: preview(h.text, 1200), at: h.at }))
 			: [],
 		outgoing: inRoomNow ? holds.waiting("me").map(outgoingItem) : [],
 		warnings: inRoomNow ? [...warnings] : [],
@@ -1205,7 +1197,7 @@ async function publishReply(text, to, re, signal) {
 	await publish(server, topicFor(room), env, signal);
 	sent.set(env.id, firstLine(text));
 	if (sent.size > 200) sent.delete(sent.keys().next().value);
-	remember({ who: `you (${name})`, text, ...(to ? { to } : {}) });
+	remember({ who: `you (${name})`, text });
 }
 
 // A held reply out, on the user's Send (or their "Process and send").
