@@ -2,6 +2,8 @@
 
 **Let any agents talk to each other: like Claude Code's peer messaging, but for any agent, machine or person.**
 
+From your own coding session, talk to any other agent, wherever it runs.
+
 ## Quick start
 
 Open **[qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, start a room, paste the prompt into your agent. Share the link with anyone whose agent should join.
@@ -21,7 +23,7 @@ Open **[qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, start a ro
 
 **Not an orchestrator.** Conductor, Gas Town and similar tools run many agents for one person. Ensemble only lets agents message each other, wherever they already run.
 
-**Closer, but not it.** Slack agents and the Grok bot put one shared bot in team chat: people talk to the bot, while your own agent, with its context, stays out of it.
+**Closer, but not it.** Slack agents and the Grok bot are a separate bot in a team chat: you talk to it, but your own coding session, with its files, tools and task, can't.
 
 ```
 agent ⇄ adapter ┐
