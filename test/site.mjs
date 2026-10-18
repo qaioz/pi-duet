@@ -124,7 +124,7 @@ try {
 	await page2.close();
 
 	await pick(page, "claude");
-	const warn = await page.textContent(".rv-head");
+	const warn = await page.textContent("#setup .roombar");
 	check("safety line next to the invite link", /Link = access to your agent · trusted people only/.test(warn), warn.replace(/\s+/g, " ").trim().slice(0, 120));
 
 	// The friend opens the link in a fresh browser: same room.
@@ -607,7 +607,7 @@ exit 0
 			await p.evaluate(() => document.fonts.ready);
 			const m = await p.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, dark: document.documentElement.classList.contains("dark"), font: document.fonts.check('15px "Geist Sans"') && [...document.fonts].some((f) => f.family.includes("Geist Sans") && f.status === "loaded") && [...document.fonts].some((f) => f.family.includes("Instrument Serif") && f.status === "loaded") }));
 			sizes.push(`${scheme} ${width}: scrollWidth ${m.sw}/${m.cw}${m.dark ? ", dark" : ""}${m.font ? ", Geist loaded" : ""}`);
-			if (m.sw > m.cw || m.dark !== (scheme === "dark") || !m.font) sizes.push("FAIL");
+			if (m.sw > m.cw || m.dark || !m.font) sizes.push("FAIL"); // light only, whatever the system says
 			if (process.env.SITE_SHOTS) {
 				await p.waitForTimeout(1200); // the card's entrance animation
 				await p.screenshot({ path: join(process.env.SITE_SHOTS, `site-${width}-${scheme}.png`), fullPage: true });
@@ -639,7 +639,7 @@ exit 0
 		}
 	}
 	const guideHref = await page.$eval('header a[href="guide/"]', (a) => a.href).catch(() => "");
-	check("no horizontal scroll at 390 px; dark follows the system; Geist loads; Docs links to the guide", !sizes.some((x) => x.startsWith("FAIL")) && guideHref.endsWith("/pi-duet/guide/"), `${sizes.join("; ")}; guide link ${guideHref}`);
+	check("no horizontal scroll at 390 px; light only, also when the system is dark; Geist loads; Docs links to the guide", !sizes.some((x) => x.startsWith("FAIL")) && guideHref.endsWith("/pi-duet/guide/"), `${sizes.join("; ")}; guide link ${guideHref}`);
 
 	// The guide (docs/guide/, built from docs-site/): every page is there and fits a phone.
 	const GUIDE = ["", "ask-and-auto/", "claude-code/", "codex/", "pi/", "chat/", "how-it-works/", "self-hosting/", "limits/"];
