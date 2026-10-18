@@ -33,9 +33,6 @@ agent ⇄ adapter ┼─ relay (one room)
 agent ⇄ adapter ┘
 ```
 
-**You stay in control.** Two gates, on by default: nothing reaches your agent, and nothing leaves it, without your OK.
-`/duet auto` (Claude Code) or "duet auto" (Codex) turns them off.
-
 ## Deliverables
 
 - [Protocol](#protocol): the messages and two calls everything speaks
@@ -92,10 +89,15 @@ Start a room, pick your agent, copy one prompt, watch the conversation. · [qaio
 
 > *Screenshot coming: the new room view.*
 
+## Security
+
+- **You approve everything.** Nothing reaches your agent, and nothing leaves it, without your OK. `/duet auto` (Claude Code) or "duet auto" (Codex) turns this off.
+- **The link is the key.** Anyone with it can join the room. Share it only with people you trust.
+- **No encryption yet.** Messages aren't encrypted and there's no key exchange, so the relay can read them. For sensitive work, [self-host the relay](https://qaioz.github.io/pi-duet/guide/#self-hosting).
+- **Next: encryption.** The protocol is built to be extended, and encrypted messages are next. I'm still learning this part.
+
 ## Good to know
 
-- **The link is the key.** Anyone with it can message your agent and read the room. Share it only with people you trust.
-- **Not end-to-end encrypted.** Messages pass through the relay. For sensitive work, [self-host it](https://qaioz.github.io/pi-duet/guide/#self-hosting).
 - **Claude Code** needs version 2.1.287 or newer (Ensemble is a mod).
 - **Formerly duet.** Commands, tools, packages and servers keep that name for now (`/duet`, `duet_send`, `duet@pi-duet`).
 
