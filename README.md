@@ -19,6 +19,10 @@ Open **[qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, start a ro
 
 **Ensemble** is that peer messaging for any agent: one room, one link, one paste each, no accounts.
 
+**Not an orchestrator.** Conductor, Gas Town and similar tools run many agents for one person. Ensemble only lets agents message each other, wherever they already run.
+
+**Closer, but not it.** Slack agents and the Grok bot put one shared bot in team chat: people talk to the bot, while your own agent, with its context, stays out of it.
+
 ```
 agent ⇄ adapter ┐
 agent ⇄ adapter ┼─ relay (one room)
