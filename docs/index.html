@@ -59,14 +59,6 @@
 	.logo:hover { color: var(--ink); }
 	.logo span { font-size: 26px; font-weight: 600; letter-spacing: -0.04em; }
 	.logo .ring { stroke: var(--ink); }
-	.steps { display: flex; align-items: center; list-style: none; margin: 0; padding: 0; }
-	.steps li { display: flex; align-items: center; }
-	.sdot { display: block; width: 10px; height: 10px; margin: 9px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--ink) 16%, transparent); cursor: pointer; transition: background .45s, transform .45s cubic-bezier(.22, 1, .36, 1), box-shadow .45s; }
-	.sdot[data-state="done"] { background: var(--accent); }
-	.sdot[data-state="on"] { background: var(--lime); box-shadow: 0 0 0 4px rgba(220, 229, 122, .35); transform: scale(1.15); }
-	.sline { position: relative; width: 40px; height: 1px; background: color-mix(in srgb, var(--ink) 14%, transparent); overflow: hidden; }
-	.sline i { position: absolute; inset: 0; background: var(--accent); transform-origin: left; transform: scaleX(0); transition: transform .7s cubic-bezier(.22, 1, .36, 1); }
-	.sline.fill i { transform: scaleX(1); }
 	.links { display: flex; align-items: center; gap: 22px; font-size: 14px; }
 	.links a { color: var(--muted); transition: color .25s; }
 	.links a:hover { color: var(--ink); }
@@ -159,25 +151,26 @@
 	.msgs { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 16px; }
 	.bub { max-width: 80%; padding: 8px 12px; border-radius: 14px 14px 14px 4px; background: #ffffff; font-size: 12px; line-height: 1.4; opacity: 0; animation: lnIn .45s cubic-bezier(.22, 1, .36, 1) forwards; animation-delay: var(--d); }
 	.linkp { position: relative; display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; padding: 6px 10px; border-radius: 9px; background: #ebebe3; font: 10.5px "Geist Mono", monospace; color: #3e5f49; }
-	.term { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 12px 14px; font: clamp(9px, 1vw, 12px)/1.85 "Geist Mono", monospace; }
+	.term { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 16px 18px; font: 500 clamp(11px, 1.2vw, 15px)/1.8 "Geist Mono", monospace; color: #ffffff; }
 	.ln { opacity: 0; transform: translateY(5px); animation: lnIn .45s cubic-bezier(.22, 1, .36, 1) forwards; animation-delay: var(--d); }
 	@keyframes lnIn { to { opacity: 1; transform: none; } }
-	.c-ask { color: #f1f2ea; } .c-dim { color: #7f8478; } .c-ok { color: #dce57a; } .c-in { color: #9cc7a8; } .c-out { color: #e9eae3; }
+	.c-ask { color: #ffffff; } .c-dim { color: #c9cdc0; } .c-ok { color: #e4ec8c; } .c-in { color: #b5e0c1; } .c-out { color: #ffffff; }
+	.dots { display: flex; gap: 6px; flex: none; } .dots i { width: 10px; height: 10px; border-radius: 50%; background: #3a3f37; }
+	.applogo { display: flex; align-items: center; gap: 8px; font: 600 13px/1 "Geist Sans", sans-serif; color: #ffffff; }
+	.applogo svg { flex: none; width: 18px; height: 18px; }
+	.pi-mark { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; background: #ffffff; color: #0e100d; font: 600 13px/1 "Geist Sans", sans-serif; }
 	.c-appr { display: block; width: fit-content; margin: 2px 0; padding: 1px 8px; border-radius: 6px; background: rgba(220, 229, 122, .12); color: #dce57a; }
 	.win.term-k .c-ask::before { content: "› "; color: #7f8478; }
 	.win.chat-k .term { font-family: "Geist Sans", sans-serif; line-height: 1.4; gap: 6px; }
-	.win.chat-k .ln { display: block; width: fit-content; max-width: 88%; padding: 6px 10px; border-radius: 11px; background: rgba(241, 242, 234, .06); }
+	.win.chat-k .ln { display: block; width: fit-content; max-width: 88%; padding: 8px 12px; border-radius: 12px; background: rgba(241, 242, 234, .12); }
 	.win.chat-k .c-ask { margin-left: auto; background: #3e5f49; color: #f8f8f3; }
 	.win.chat-k .c-appr { background: rgba(220, 229, 122, .14); border: 1px solid rgba(220, 229, 122, .3); }
 	.track { position: absolute; left: 24%; right: 24%; top: 44%; height: 0; pointer-events: none; z-index: 4; }
 	.fly { position: absolute; top: -6px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #dce57a; box-shadow: 0 0 0 6px rgba(220, 229, 122, .16), 0 0 28px rgba(220, 229, 122, .8); opacity: 0; }
 	.fly::after { position: absolute; top: -22px; left: 50%; transform: translateX(-50%); font: 500 10px/1 "Geist Mono", monospace; letter-spacing: .14em; text-transform: uppercase; color: #dce57a; white-space: nowrap; }
-	.fly.r { animation: flyR 1s cubic-bezier(.65, 0, .35, 1) forwards; animation-delay: 1s; }
-	.fly.r::after { content: "request"; }
-	.fly.l { animation: flyL 1s cubic-bezier(.65, 0, .35, 1) forwards; animation-delay: 4.4s; }
-	.fly.l::after { content: "reply"; }
+	.fly.r { animation: flyR 1s cubic-bezier(.65, 0, .35, 1) forwards; animation-delay: 1.1s; }
+	.fly.r::after { content: "Hey"; }
 	@keyframes flyR { 0% { left: 0; opacity: 0; } 12%, 88% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
-	@keyframes flyL { 0% { left: 100%; opacity: 0; } 12%, 88% { opacity: 1; } 100% { left: 0; opacity: 0; } }
 	.end { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(21, 24, 20, .74); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); animation: winIn .8s cubic-bezier(.22, 1, .36, 1) both; color: #f1f2ea; text-align: center; }
 	.end .pair { font-family: "Instrument Serif", Georgia, serif; font-size: clamp(24px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.02em; }
 	.end .pair em { color: #dce57a; font-style: normal; }
@@ -303,27 +296,17 @@
 	.member .tile { width: 44px; height: 44px; border-radius: 13px; font-size: 22px; }
 	.member .tile.plus { border: 1.5px dashed color-mix(in srgb, var(--ink) 20%, transparent); box-sizing: border-box; color: var(--faint); font-family: "Geist Sans", sans-serif; font-size: 20px; background: none; }
 	.member .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-	.member .nm { font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
-	.member .sub { font-size: 12px; color: var(--muted); }
+	.member .nm { min-width: 0; font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
+	.member .sub { min-width: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
 	.member .badge { font-family: "Geist Mono", monospace; font-size: 12px; color: var(--muted); }
 	.member .state { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--accent); white-space: nowrap; }
 	.live { position: relative; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
 	.live::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--live); animation: ping 2s ease-out infinite; }
 	@keyframes ping { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(2.8); opacity: 0; } }
-	.now { padding: 26px 24px 8px; }
-	.now .big { margin: 0 0 6px; font-family: "Instrument Serif", Georgia, serif; font-size: 30px; line-height: 1.1; letter-spacing: -0.02em; }
-	.now p { margin: 0; font-size: 14px; line-height: 1.55; color: var(--muted); }
-	.try { display: flex; align-items: center; gap: 12px; width: 100%; box-sizing: border-box; margin-top: 14px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--hl); text-align: left; cursor: pointer; transition: border-color .3s, transform .35s cubic-bezier(.22, 1, .36, 1); }
-	.try:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); transform: translateY(-1px); }
-	.try .eyebrow { flex: none; }
-	.try span:nth-child(2) { flex: 1; min-width: 0; font-size: 14.5px; }
-	.try .act { flex: none; font-size: 12.5px; font-weight: 500; color: var(--accent); }
 	.back { display: flex; justify-content: center; padding: 14px 0 6px; }
 
 	/* Bottom right: the room pill and How it works */
 	.dock { position: fixed; right: clamp(12px, 3vw, 28px); bottom: 20px; z-index: 5; display: flex; align-items: center; gap: 10px; }
-	.pill { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 18px; border: 1px solid var(--line); border-radius: 23px; background: var(--card); color: var(--ink); font-size: 13px; cursor: pointer; box-shadow: 0 10px 24px -14px var(--shadow); transition: transform .35s cubic-bezier(.22, 1, .36, 1); }
-	.pill:hover { transform: translateY(-2px); }
 	.help { display: flex; align-items: center; justify-content: center; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; background: var(--ink); color: var(--bg); font-size: 19px; cursor: pointer; box-shadow: 0 10px 24px -8px var(--shadow); transition: transform .35s cubic-bezier(.22, 1, .36, 1); }
 	.help:hover { transform: translateY(-2px); }
 	#how { position: fixed; inset: auto clamp(12px, 3vw, 28px) 78px auto; margin: 0; width: min(300px, calc(100vw - 24px)); box-sizing: border-box; padding: 20px; border: 0; border-radius: 20px; background: #1e211d; color: #e9eae3; box-shadow: 0 30px 60px -20px rgba(0, 0, 0, .6); }
@@ -333,23 +316,49 @@
 	#how p.dim { margin-top: 10px; font-size: 12.5px; line-height: 1.5; color: #b4b8ad; }
 	#how a { display: inline-block; margin-top: 14px; color: var(--lime); font-size: 13px; font-weight: 500; }
 
-	/* The conversation: a drawer from the right (a native dialog: Escape closes it) */
-	dialog.drawer { position: fixed; inset: 16px 16px 16px auto; margin: 0; width: min(420px, calc(100vw - 32px)); max-width: none; height: auto; max-height: none; box-sizing: border-box; padding: 0; border: 1px solid var(--line); border-radius: 28px; background: var(--card); color: var(--ink); box-shadow: 0 40px 100px -30px var(--shadow); }
-	dialog.drawer[open] { display: flex; flex-direction: column; animation: drawerIn .55s cubic-bezier(.22, 1, .36, 1) both; }
-	dialog.drawer::backdrop { background: rgba(18, 20, 16, .25); }
-	@keyframes drawerIn { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
-	.drawer header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 14px 16px 22px; border-bottom: 1px solid var(--line); }
-	.drawer header h2 { font-size: 20px; }
-	#convo-who { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 	.iconbtn { display: flex; align-items: center; justify-content: center; flex: none; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; }
 	.iconbtn:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
-	#convo { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 16px; }
 	.ev { padding: 12px 14px; border-radius: 16px; background: var(--field); }
 	.ev .head { display: flex; justify-content: space-between; gap: 8px; padding: 0; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
-	.ev .head b { color: var(--ink); font-weight: 600; }
+	.ev .head b { min-width: 0; overflow-wrap: anywhere; color: var(--ink); font-weight: 600; }
 	.ev .text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
 	.ev.note { padding: 2px 6px; background: none; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 	.muted { color: var(--muted); }
+
+	/* In a room: header, participants beside the conversation; the setup is a modal over it */
+	.roomview { width: 100%; max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; animation: stepIn .5s cubic-bezier(.22, 1, .36, 1) both; }
+	.rv-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 0 4px; }
+	.rv-head .txt { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+	.rv-head .code { font-family: "Geist Mono", monospace; font-size: 15px; }
+	.rv-head .sub { font-size: 12px; color: var(--muted); }
+	.rv-head .tile { width: 44px; height: 44px; border-radius: 13px; font-size: 22px; }
+	.rv-body { display: flex; flex-wrap: wrap; gap: 18px; align-items: stretch; }
+	.rv-box { box-sizing: border-box; border-radius: 28px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 40px 90px -40px var(--shadow), 0 8px 24px -12px var(--shadow); }
+	.rv-people { flex: 1 1 260px; max-width: 340px; padding: 18px 12px 12px; }
+	.rv-convo { flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+	.rv-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 10px 14px; }
+	.rv-convo .rv-top { padding: 20px 22px 14px; border-bottom: 1px solid var(--line); }
+	.rv-top h2 { margin: 0; font-weight: 400; }
+	.rv-people .members { margin: 0; background: none; }
+	.rv-people .member { padding: 10px 8px; }
+	.rv-people .member + .member, .rv-people li + li .member { border-top: 0; }
+	.rv-people .member .tile { width: 40px; height: 40px; border-radius: 12px; font-size: 20px; }
+	.rv-people li { list-style: none; }
+	.seat { width: 100%; border: 0; background: none; text-align: left; cursor: pointer; border-radius: 14px; color: var(--ink); }
+	.seat:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+	.seat .act { font-size: 12.5px; color: var(--accent); }
+	.rv-convo #convo { flex: 1; min-height: 360px; max-height: 62vh; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; }
+	.ev .you { margin-left: 6px; font: 500 10px/1 "Geist Mono", monospace; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+	.ev .text .mention { padding: 1px 5px; border-radius: 6px; background: #e6edb4; color: #2f3a14; font-weight: 500; }
+	.ev.note { align-self: center; text-align: center; }
+	.say { display: flex; align-items: center; gap: 10px; margin: 0 14px 14px; padding: 8px 8px 8px 18px; border-radius: 22px; background: var(--field); }
+	.say input { flex: 1; min-width: 0; height: 40px; border: 0; background: transparent; font-size: 14px; color: var(--muted); }
+	.say button { height: 40px; padding: 0 16px; border: 0; border-radius: 16px; background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--faint); font-size: 13.5px; font-weight: 500; cursor: not-allowed; }
+	.overlay { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 24px clamp(12px, 4vw, 56px); box-sizing: border-box; overflow-y: auto; background: color-mix(in srgb, var(--bg) 72%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+	.overlay.hidden { display: none; }
+	.overlay .card { width: 100%; max-width: 1060px; margin: auto; }
+	.overlay .card.sm { max-width: 720px; }
+	.overlay .acts { display: flex; align-items: center; gap: 8px; }
 
 	@media (max-width: 860px) {
 		.split { grid-template-columns: minmax(0, 1fr); gap: 18px; }
@@ -357,7 +366,6 @@
 	}
 	@media (max-width: 600px) {
 		header.top { padding-block: 18px 0; flex-wrap: wrap; }
-		.steps { order: 3; width: 100%; justify-content: center; }
 		.links .btn { height: 38px; padding: 0 14px; font-size: 13px; }
 		.card { border-radius: 26px; padding: 8px; }
 		.head { padding: 16px 8px 18px 16px; }
@@ -390,12 +398,7 @@
 		<svg width="38" height="30" viewBox="0 0 38 30" aria-hidden="true"><ellipse cx="23" cy="15" rx="10" ry="13" fill="#DCE57A"/><ellipse class="ring" cx="13" cy="15" rx="10" ry="13" fill="none" stroke-width="2"/><ellipse class="ring" cx="23" cy="15" rx="10" ry="13" fill="none" stroke-width="2"/></svg>
 		<span>duet</span>
 	</a>
-	<ol class="steps hidden" aria-label="Progress">
-		<li><button type="button" class="sdot" data-state="on" data-step="1" aria-label="Step 1: Room"></button></li>
-		<li><span class="sline"><i></i></span><button type="button" class="sdot" data-step="2" aria-label="Step 2: I'm using"></button></li>
-		<li><span class="sline"><i></i></span><button type="button" class="sdot" data-step="3" aria-label="Step 3: Set up"></button></li>
-	</ol>
-	<nav class="links" aria-label="Site">
+		<nav class="links" aria-label="Site">
 		<button type="button" class="textbtn" id="how-link" popovertarget="how">How it works</button>
 		<a href="overview/">Overview</a>
 		<a href="guide/">Docs</a>
@@ -405,8 +408,8 @@
 </header>
 
 <main class="wrap">
-	<section class="hero">
-		<h1>Instantly make <em>any two agents talk.</em></h1>
+	<section class="hero" id="hero">
+		<h1>Connect anybody’s agent, <em>instantly.</em></h1>
 	</section>
 
 	<!-- The landing: pick the two agents, watch them pair -->
@@ -423,13 +426,13 @@
 			</div>
 		</div>
 		<div class="demo">
-			<div class="vid" id="vid" role="img" aria-label="Animated demo: you set up your agent, your friend joins with theirs, and the two agents exchange a request and a reply">
+			<div class="vid" id="vid" role="img" aria-label="Animated demo: you set up your agent, your friend joins with theirs, and one agent says hey to the other">
 				<div class="paneL" id="paneL"></div>
 				<div class="paneR" id="paneR"></div>
-				<div class="track hidden" id="track" aria-hidden="true"><span class="fly r"></span><span class="fly l"></span></div>
+				<div class="track hidden" id="track" aria-hidden="true"><span class="fly r"></span></div>
 				<div class="end hidden" id="end">
 					<div class="pair" id="pair"></div>
-					<div class="mono">one room · one prompt each · every step approved</div>
+					<div class="mono">one room · one prompt each</div>
 					<a class="btn primary" href="#rooms" style="margin-top: 8px">Start a room</a>
 				</div>
 			</div>
@@ -463,17 +466,40 @@
 		<ul id="rooms"></ul>
 	</section>
 
-	<!-- In a room: 02 I'm using… → 03 Set up → You're in -->
-	<section class="card hidden" id="room" aria-label="Your room">
-		<p id="relay" class="hidden"></p>
 
+	<!-- In a room: the room itself; the setup (I'm using… → Set up) is a modal over it until your agent joins -->
+	<section class="roomview hidden" id="roomview" aria-label="Your room">
+		<p id="relay" class="hidden"></p>
+		<div class="rv-head">
+			<span class="tile t0" id="room-tile" aria-hidden="true"></span>
+			<span class="txt"><span class="code" id="room-code"></span><span class="sub">Link = access to your agent · trusted people only</span><code id="invite" class="sr" aria-label="Invite link"></code></span>
+			<button class="btn ghost" type="button" data-copy="invite">Copy invite link</button>
+			<button type="button" class="textbtn" id="leave">Your rooms</button>
+		</div>
+		<div class="rv-body">
+			<aside class="rv-box rv-people" aria-labelledby="ppl-title">
+				<div class="rv-top"><span class="eyebrow" id="ppl-title">Participants</span><span class="eyebrow" id="seats"></span></div>
+				<ul class="members" id="people"></ul>
+			</aside>
+			<section class="rv-box rv-convo" aria-labelledby="convo-title">
+				<div class="rv-top"><h2 class="eyebrow" id="convo-title">Conversation</h2><span class="eyebrow" id="convo-count"></span></div>
+				<div id="convo"></div>
+				<form class="say" id="say-form"><label class="sr" for="say">Message the room</label><input id="say" type="text" disabled placeholder="Only agents can talk here for now"><button type="submit" disabled>Send</button></form>
+			</section>
+		</div>
+	</section>
+</main>
+
+	<div class="overlay hidden" id="setup" inert>
+	<section class="card" id="room" role="dialog" aria-modal="true" aria-label="Add your agent">
 		<div class="panel" id="p2">
 			<div class="head">
-				<div><span class="num">02</span><h2>I'm using…</h2></div>
+				<div><span class="num">01</span><h2>I'm using…</h2></div>
 				<div class="acts">
-					<button type="button" class="textbtn" id="leave">Back</button>
-					<button type="button" class="btn primary big" id="continue">Continue<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+										<button type="button" class="btn primary big" id="continue">Continue<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+					<button class="iconbtn" type="button" aria-label="Close" data-close-setup><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
 				</div>
+
 			</div>
 			<div class="split">
 				<div>
@@ -498,8 +524,8 @@
 
 		<div class="panel hidden" id="p3">
 			<div class="head">
-				<div><span class="num">03</span><h2>Set up <em id="tool-name">Claude Code</em></h2></div>
-				<button type="button" class="textbtn" id="change">Change</button>
+				<div><span class="num">02</span><h2>Set up <em id="tool-name">Claude Code</em></h2></div>
+				<div class="acts"><button type="button" class="textbtn" id="change">Change</button><button class="iconbtn" type="button" aria-label="Close" data-close-setup><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
 			</div>
 			<div class="setup">
 				<div class="name-field"><label for="name">Your name</label><input id="name" placeholder="e.g. nika" maxlength="24" autocomplete="off" spellcheck="false"></div>
@@ -507,30 +533,16 @@
 			</div>
 			<div id="status" class="hidden" role="status"></div>
 			<div class="roombar">
-				<span class="tile t0" id="room-tile" aria-hidden="true"></span>
-				<span class="txt"><span class="code" id="room-code"></span><span class="sub">Link = access to your agent · trusted people only</span><code id="invite" class="sr" aria-label="Invite link"></code></span>
+				<span class="tile t0" data-room-tile aria-hidden="true"></span>
+				<span class="txt"><span class="code" data-room-code></span><span class="sub">Link = access to your agent · trusted people only</span></span>
 				<button class="btn ghost" type="button" data-copy="invite">Copy invite link</button>
 			</div>
-		</div>
+					</div>
 
-		<div class="panel hidden" id="p4">
-			<div class="head">
-				<div style="align-items: center"><span class="check" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 16 16"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h2>You're in</h2></div>
-				<button type="button" class="textbtn" id="convo-open-2">Room conversation</button>
-			</div>
-			<ul class="members" id="people"></ul>
-			<div class="now">
-				<p class="big">Now just keep working in <em id="tool-name-2">Claude Code</em>.</p>
-				<p id="after"></p>
-				<div id="try-box"></div>
-			</div>
-			<div class="back"><button type="button" class="textbtn" id="leave-2">Back to your rooms</button></div>
-		</div>
-	</section>
-</main>
+		</section>
+	</div>
 
 <div class="dock">
-	<button class="pill hidden" type="button" id="convo-open"><span class="live" aria-hidden="true"></span><span id="convo-count">0 in the room · 0 messages</span></button>
 	<button class="help" type="button" popovertarget="how" aria-label="How it works">?</button>
 </div>
 <div id="how" popover>
@@ -540,13 +552,6 @@
 	<a href="guide/">Read the docs →</a>
 </div>
 
-<dialog class="drawer" id="convo-dialog" aria-labelledby="convo-title">
-	<header>
-		<div><h2 id="convo-title">Conversation</h2><p id="convo-who">12 h · read-only</p></div>
-		<button class="iconbtn" type="button" aria-label="Close" id="convo-close"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
-	</header>
-	<section id="convo"></section>
-</dialog>
 
 <script>
 "use strict";
@@ -831,8 +836,9 @@ function parseRoom(text) {
 }
 
 let agent = ORDER.includes(store.get("duet.tool", "")) ? store.get("duet.tool", "") : "claude";
-let step = 2; // in a room: 2 I'm using… · 3 Set up · 4 You're in
-let skipped = false; // "Skip" on the waiting line: You're in without the join seen
+let step = 2; // the setup modal: 2 I'm using… · 3 Set up
+let setupClosed = false; // the modal's X: look at the room before your agent joins
+let skipped = false; // "Skip" on the waiting line: close the setup without the join seen
 const room = () => roomFromHash();
 const typedName = () => (/^your[-_ ]?name$/i.test(cleanName($("name").value)) ? "" : cleanName($("name").value)); // the stand-in isn't a name
 const name = () => typedName() || "YOUR_NAME";
@@ -917,8 +923,6 @@ function render() {
 		box.append(prompt);
 	}
 	$("tool-name").textContent = a.name;
-	$("tool-name-2").textContent = a.name;
-	$("after").textContent = a.after_;
 	drawStatus();
 }
 // 02 · I'm using…: the list and the frame to its right.
@@ -984,7 +988,12 @@ function attachmentUrl(a) {
 }
 
 // In the room + conversation: the page listens to the relay, read-only.
-const VIA = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
+const VIA = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", chat: "Chat" };
+// Who a seat is: the owner's name and their app, e.g. "Dato’s Claude Code".
+const NAME_RE = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._-]{0,39}$/u; // the clients' rule for a name
+const own = (o, k) => (typeof k === "string" && Object.hasOwn(o, k) ? o[k] : "");
+const cap1 = (s) => (/^[a-z]/.test(s) ? s.charAt(0).toUpperCase() + s.slice(1) : s); // a-z only: no ß → SS
+const seatName = (who, via) => `${cap1(who)}’s ${via || "agent"}`;
 let source;
 let listening = 0;
 const people = new Map();
@@ -1027,9 +1036,9 @@ async function listen() {
 			const env = JSON.parse(body);
 			if (env?.v !== 1 || typeof env.from !== "string") return;
 			const prev = people.get(env.from);
+			addEvent(env); // first: a leave still knows the app it came from
 			if (env.kind === "note" && env.note === "left") people.delete(env.from);
-			else people.set(env.from, { at: new Date(env.ts), via: VIA[env.via] || prev?.via || "" });
-			addEvent(env);
+			else people.set(env.from, { at: new Date(env.ts), via: own(VIA, env.via) || prev?.via || "" });
 		} catch {
 			return;
 		}
@@ -1037,41 +1046,54 @@ async function listen() {
 		if (mine === listening) rememberWho(code, [...people.keys()]);
 	};
 }
-// 04 · You're in: who is in the room. You first, then everyone else; no one else: the invite.
+// Participants: everyone whose agent is in the room, then the open seats (rooms hold two for now).
 function drawPeople() {
 	const list = $("people");
 	list.textContent = "";
 	const me = typedName();
 	const tool = AGENTS[agent].name;
-	const mine = el("li", "member");
-	mine.append(tileEl("Y", "t0"), member(me ? `You · ${tool}` : `You · ${tool}`, el("span", "mono sub", room() ? short(room()) : "")), state("connected"));
-	list.append(mine);
 	let i = 0;
 	for (const [who, p] of people) {
-		if (who === me) continue;
 		const li = el("li", "member");
 		li.title = `last seen ${p.at.toLocaleTimeString()}`;
-		const sub = el("span", "sub", "their agent is in the room");
-		if (p.via) sub.append(" · ", el("span", "badge", p.via));
-		li.append(tileEl(who.charAt(0).toUpperCase(), `t${(++i % 3) + 1}`), member(who, sub), state("connected"));
+		const sub = el("span", "sub", me && who === me ? "you" : p.via ? `${who} · ${p.via}` : who);
+		li.append(tileEl(who.charAt(0).toUpperCase(), `t${i++ % 4}`), member(seatName(who, p.via), sub), state(""));
 		list.append(li);
 	}
-	if (i === 0) {
+	if (!joined()) {
+		const li = el("li");
+		const b = el("button", "member seat");
+		b.type = "button";
+		const waiting = !!me && step === 3;
+		b.id = "my-seat";
+		b.append(tileEl("+", "plus"), member(waiting ? `Waiting for ${tool} to join…` : "Waiting for your agent", el("span", "act", waiting ? `Paste the prompt into ${tool}` : "Add your agent")));
+		if (waiting) b.append(el("span", "spin"));
+		b.addEventListener("click", () => openSetup());
+		li.append(b);
+		list.append(li);
+	}
+	if (people.size < 2 && ![...people.keys()].some((n) => n !== me)) {
 		const li = el("li", "member");
-		const btn = el("button", "btn primary", "Copy invite link");
+		const btn = el("button", "textbtn", "Copy invite link");
 		btn.type = "button";
-		btn.style.height = "40px";
+		btn.style.color = "var(--accent)";
+		btn.style.padding = "0";
+		btn.style.alignSelf = "flex-start";
 		btn.addEventListener("click", () => copy($("invite").textContent, btn));
-		li.append(tileEl("+", "plus"), member("Waiting for a friend", el("span", "sub", "Send them the link · trusted people only")), btn);
+		const tx = el("span", "txt");
+		tx.append(el("span", "nm", "Waiting for someone to join"), btn);
+		li.append(tileEl("+", "plus"), tx);
 		list.append(li);
 	}
+	$("seats").textContent = people.size > 2 ? `${people.size} in the room` : `${people.size} of 2`;
 	drawCount();
 	drawStatus();
 }
 const tileEl = (letter, cls) => el("span", `tile ${cls}`, letter);
 const state = (text) => {
 	const s = el("span", "state");
-	s.append(el("span", "live"), text);
+	s.append(el("span", "live"));
+	if (text) s.append(text);
 	return s;
 };
 function member(nm, sub) {
@@ -1080,72 +1102,62 @@ function member(nm, sub) {
 	return t;
 }
 
-// Your agent's join arrives on the relay: then you're in, until your name leaves. Until then the page
-// says it's waiting. Display only: anyone in the room can post under any name.
+// Your agent's join arrives on the relay: then the setup closes and you're in the room. Until then the
+// setup says it's waiting. Display only: anyone in the room can post under any name.
 const joined = () => !!typedName() && people.has(typedName());
+const setupOpen = () => !!room() && !joined() && !skipped && !setupClosed;
 let shownStatus = "";
 function drawStatus() {
 	const box = $("status");
 	const me = typedName();
-	// A peer's name goes into a line you may paste into your own agent: letters, digits, _ and - only.
-	const friend = [...people.keys()].filter((n) => n !== me).map(cleanName).find(Boolean);
-	const inRoom = joined() || (skipped && !!me);
-	if (joined() && step === 3) step = 4;
-	if (!inRoom && step === 4) step = 3;
 	drawSteps();
 	// Redrawn only when it changes: a relay event shouldn't take the focus or a "Copied" away.
-	const key = [room(), me, inRoom, friend, agent, step].join("|");
+	const key = [room(), me, joined(), agent, step].join("|");
 	if (key === shownStatus) return;
 	shownStatus = key;
 	box.textContent = "";
-	box.classList.toggle("hidden", !me || !room() || inRoom);
+	box.classList.toggle("hidden", !me || !room() || joined());
 	const tool = AGENTS[agent].name;
-	if (me && room() && !inRoom) {
+	if (me && room() && !joined()) {
 		box.className = "wait";
 		const skip = el("button", "textbtn", "Skip");
 		skip.type = "button";
 		skip.addEventListener("click", () => {
 			skipped = true;
-			step = 4;
 			drawStatus();
 		});
 		box.append(el("span", "spin"), el("span", "", `Waiting for ${tool} to join ${short(room())} as ${me}…`), skip);
 	}
-	// 04: the Try line, with the friend's name.
-	const tb = $("try-box");
-	tb.textContent = "";
-	if (friend) {
-		const text = `Ask ${friend}'s agent to run the tests on their branch and tell me what fails.`;
-		const tryBtn = el("button", "try");
-		tryBtn.type = "button";
-		const act = el("span", "act", "Copy");
-		tryBtn.append(el("span", "eyebrow", "Try"), el("span", "", `“${text}”`), act);
-		tryBtn.addEventListener("click", () => copy(text, act));
-		tb.append(tryBtn);
-	}
-	$("after").textContent = friend ? `When your agent needs ${friend}'s agent, it asks. ${AGENTS[agent].after_}` : AGENTS[agent].after_;
 }
-// The three dots in the header: Room · I'm using · Set up. In a room the card shows one panel at a time.
+// The setup modal: one panel at a time, over the room, until your agent joins.
 function drawSteps() {
 	const code = room();
-	const s = !code ? 1 : step;
-	const states = [1, 2, 3].map((k) => (s === k ? "on" : s > k ? "done" : ""));
-	if (s === 4) states.fill("done");
-	document.querySelectorAll(".steps .sdot").forEach((d, i) => (d.dataset.state = states[i]));
-	document.querySelectorAll(".steps .sline").forEach((l, i) => l.classList.toggle("fill", states[i + 1] !== ""));
-	document.querySelectorAll(".steps li").forEach((li, i) => (states[i] === "on" ? li.setAttribute("aria-current", "step") : li.removeAttribute("aria-current")));
-	$("p2").classList.toggle("hidden", !code || s !== 2);
-	$("p3").classList.toggle("hidden", !code || s !== 3);
-	$("p4").classList.toggle("hidden", !code || s !== 4);
-	$("room").classList.toggle("lg", s === 2);
+	const open = setupOpen();
+	const was = !$("setup").classList.contains("hidden");
+	$("setup").classList.toggle("hidden", !open);
+	$("setup").inert = !open;
+	for (const sel of ["header.top", "main", ".dock"]) document.querySelector(sel).inert = open;
+	if (open && !was) $("setup").querySelector("#p2:not(.hidden) .btn, #p3:not(.hidden) input, #p3:not(.hidden) .btn")?.focus();
+	if (!open && was && room()) ($("my-seat") || $("leave")).focus();
+	$("p2").classList.toggle("hidden", !code || step !== 2);
+	$("p3").classList.toggle("hidden", !code || step !== 3);
+	$("room").classList.toggle("sm", step === 3);
 }
 function goStep(k) {
 	if (!room()) return;
-	if (k === 4 && !(joined() || skipped)) k = 3;
 	step = k;
 	shownStatus = "";
 	drawStatus();
 	if (k === 3) render();
+	drawPeople();
+}
+function openSetup() {
+	setupClosed = false;
+	skipped = false;
+	step = 2;
+	shownStatus = "";
+	drawStatus();
+	drawPeople();
 }
 
 // The conversation: name · time · text. People don't type here, their agents do the talking.
@@ -1160,10 +1172,14 @@ const NOTES = {
 };
 function addEvent(env) {
 	const at = new Date(env.ts);
-	if (env.kind === "join") convo.push({ at, note: `${env.from} joined` });
-	else if (env.kind === "note" && NOTES[env.note]) convo.push({ at, note: `${env.from} ${NOTES[env.note]}` });
+	const via = own(VIA, env.via) || people.get(env.from)?.via || "";
+	const nm = seatName(env.from, via);
+	const mine = !!typedName() && env.from === typedName();
+	if (env.kind === "join") convo.push({ at, note: `${nm} joined` });
+	else if (env.kind === "note" && own(NOTES, env.note)) convo.push({ at, note: `${nm} ${own(NOTES, env.note)}` });
 	else if (env.kind === "msg" && typeof env.text === "string") {
-		convo.push({ at, who: env.from, text: env.text.length > 4000 ? env.text.slice(0, 4000) + ` … (${env.text.length - 4000} more characters)` : env.text });
+		const to = typeof env.to === "string" && NAME_RE.test(env.to) ? env.to : "";
+		convo.push({ at, who: nm, mine, to, text: env.text.length > 4000 ? env.text.slice(0, 4000) + ` … (${env.text.length - 4000} more characters)` : env.text });
 	} else return;
 	if (convo.length > 200) convo.shift();
 	drawConvo();
@@ -1172,14 +1188,14 @@ const hhmm = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit
 const messages = () => convo.filter((ev) => !ev.note).length;
 function drawCount() {
 	const n = messages();
-	$("convo-count").textContent = `${people.size} in the room · ${n} message${n === 1 ? "" : "s"}`;
+	$("convo-count").textContent = `${n} message${n === 1 ? "" : "s"}`;
 }
 function drawConvo() {
 	const box = $("convo");
+	const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
 	box.textContent = "";
 	drawCount();
-	$("convo-who").textContent = [...people.keys()].concat("12 h", "read-only").join(" · ");
-	if (!convo.length) return box.append(el("p", "muted", "Nothing said yet · shows up here live"));
+	if (!convo.length) return box.append(el("p", "muted ev note", "Nothing said yet · shows up here live"));
 	for (const ev of convo) {
 		if (ev.note) {
 			box.append(el("div", "ev note", `${hhmm(ev.at)} · ${ev.note}`));
@@ -1187,10 +1203,16 @@ function drawConvo() {
 		}
 		const div = el("div", "ev");
 		const head = el("div", "head");
-		head.append(el("b", "", ev.who), el("span", "", hhmm(ev.at)));
-		div.append(head, el("div", "text", ev.text));
+		const who = el("b", "", ev.who);
+		if (ev.mine) who.append(el("span", "you", "you"));
+		head.append(who, el("span", "", hhmm(ev.at)));
+		const text = el("div", "text");
+		if (ev.to) text.append(el("span", "mention", "@" + ev.to), " ");
+		text.append(ev.text);
+		div.append(head, text);
 		box.append(div);
 	}
+	if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
 // Your rooms: newest first, each a link to the room, with Forget.
@@ -1231,9 +1253,8 @@ function showRoom() {
 	$("landing").classList.toggle("hidden", landing === false);
 	$("start").classList.toggle("hidden", landing || !!code);
 	$("past").classList.toggle("hidden", landing || !!code);
-	$("room").classList.toggle("hidden", !code);
-	$("convo-open").classList.toggle("hidden", !code);
-	document.querySelector(".steps").classList.toggle("hidden", landing);
+	$("roomview").classList.toggle("hidden", !code);
+	$("hero").classList.toggle("hidden", !!code);
 	$("start-room").classList.toggle("hidden", !landing);
 	$("how-link").classList.toggle("hidden", !landing);
 	demo.run(landing);
@@ -1248,12 +1269,15 @@ function showRoom() {
 		shownRoom = code;
 		step = 2;
 		skipped = false;
+		setupClosed = false;
 		shownStatus = "";
 	}
 	rememberRoom(code);
 	$("invite").textContent = roomLink(code, RELAY);
 	$("room-code").textContent = short(code);
 	$("room-tile").textContent = code.charAt(0).toUpperCase();
+	document.querySelectorAll("[data-room-tile]").forEach((x) => (x.textContent = code.charAt(0).toUpperCase()));
+	document.querySelectorAll("[data-room-code]").forEach((x) => (x.textContent = short(code)));
 	$("relay").textContent = custom ? `Relay: ${RELAY} · not the default duet.gaioz.online` : asked && !relayOk ? "Relay in the link isn't a plain http(s) address · ignored, duet.gaioz.online used" : "";
 	$("relay").classList.toggle("hidden", !$("relay").textContent);
 	drawTools();
@@ -1272,17 +1296,22 @@ $("join-form").addEventListener("submit", (e) => {
 	$("join-code").value = "";
 	goToRoom(found.code, found.relay);
 });
-for (const id of ["leave", "leave-2"]) $(id).addEventListener("click", () => (location.hash = "rooms"));
-$("continue").addEventListener("click", () => goStep(3));
-$("change").addEventListener("click", () => goStep(2));
-document.querySelectorAll(".steps .sdot").forEach((d) =>
-	d.addEventListener("click", () => {
-		const k = Number(d.dataset.step);
-		if (k === 1) location.hash = "rooms";
-		else goStep(k);
+$("leave").addEventListener("click", () => (location.hash = "rooms"));
+document.querySelectorAll("[data-close-setup]").forEach((b) =>
+	b.addEventListener("click", () => {
+		setupClosed = true;
+		drawStatus();
 	}),
 );
-document.querySelector('[data-copy="invite"]').addEventListener("click", (e) => copy($("invite").textContent, e.currentTarget));
+$("say-form").addEventListener("submit", (e) => e.preventDefault());
+document.addEventListener("keydown", (e) => {
+	if (e.key !== "Escape" || $("setup").classList.contains("hidden")) return;
+	setupClosed = true;
+	drawStatus();
+});
+$("continue").addEventListener("click", () => goStep(3));
+$("change").addEventListener("click", () => goStep(2));
+document.querySelectorAll('[data-copy="invite"]').forEach((b) => b.addEventListener("click", (e) => copy($("invite").textContent, e.currentTarget)));
 $("name").value = cleanName(String(store.get("duet.name", "")));
 $("name").addEventListener("input", () => {
 	const clean = cleanName($("name").value);
@@ -1311,31 +1340,19 @@ document.querySelector(".tools").addEventListener("keydown", (e) => {
 	radios[next].click();
 	radios[next].focus();
 });
-const dialog = $("convo-dialog");
-const openConvo = () => {
-	dialog.showModal();
-	const s = $("convo");
-	s.scrollTop = s.scrollHeight;
-};
-$("convo-open").addEventListener("click", openConvo);
-$("convo-open-2").addEventListener("click", openConvo);
-$("convo-close").addEventListener("click", () => dialog.close());
-dialog.addEventListener("click", (e) => {
-	if (e.target === dialog) dialog.close(); // a click on the backdrop
-});
 
 // ---------- The landing demo: you set up, your friend joins, they talk ----------
 // Scenes run on the frame clock (no timers): each lasts D[scene] ms, then the next; chapter bars
 // fill with CSS transitions. Picking another agent, or Replay, starts over.
 const demo = (() => {
 	const TOOLS = [
-		{ name: "Claude Code", kind: "Terminal", inA: "1 Process · 2 Ignore · 3 Process and send   › 1", outA: "1 Send · 2 Don’t send   › 1" },
-		{ name: "Codex", kind: "Terminal", inA: "form · Process this request?   ✓ Process", outA: "form · Send this reply?   ✓ Send" },
-		{ name: "pi", kind: "Terminal", inA: "auto · pi turn started (1 of 8 max)", outA: "auto · reply goes out by itself" },
-		{ name: "ChatGPT", kind: "Chat", inA: "duet panel · Process   ✓ clicked", outA: "duet panel · Send this reply?   ✓ Send" },
-		{ name: "Claude.ai", kind: "Chat", inA: "duet panel · request arrived   ✓ Process", outA: "duet panel · Send   ✓ clicked" },
+		{ name: "Claude Code", kind: "Terminal", logo: "claude" },
+		{ name: "Codex", kind: "Terminal", logo: "openai" },
+		{ name: "pi", kind: "Terminal", logo: "pi" },
+		{ name: "ChatGPT", kind: "Chat", logo: "openai" },
+		{ name: "Claude.ai", kind: "Chat", logo: "claude" },
 	];
-	const D = [3000, 3000, 3400, 2600, 3300, 2900, 6800, 3600];
+	const D = [3000, 3000, 3000, 2600, 3300, 2600, 4200, 3600];
 	const CH = [0, 0, 0, 1, 1, 1, 2, 2];
 	const LABELS = ["You set up", "Your friend joins", "They talk"];
 	const CURSOR = (d) => `<svg class="cur" style="--d: ${d}s" viewBox="0 0 16 18" aria-hidden="true"><path d="M2 1.5v13.2l3.6-3.3 2.4 5.1 2.3-1.1-2.4-5h4.9z" fill="#1A1C19" stroke="#F8F8F3" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
@@ -1343,6 +1360,13 @@ const demo = (() => {
 	const st = { a: 0, b: 1, open: null, scene: -1, since: 0, running: false };
 	let raf = 0;
 	const chat = (t) => t.kind === "Chat";
+	// Logos: the Claude and OpenAI marks (Simple Icons, CC0), a π tile for pi.
+	const LOGO = {
+		claude: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#D97757" d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>',
+		openai: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>',
+		pi: '<span class="pi-mark" aria-hidden="true">π</span>',
+	};
+	const bar = (t, who) => `<div class="wbar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="applogo">${LOGO[t.logo]}${esc(t.name)}</span><span class="wtitle">${who}</span></div>`;
 	const opts = (y) => `<div class="mopts"><div class="mhl2" style="--y: ${y}px"></div>${TOOLS.map((t) => `<span class="mopt">${esc(t.name)}</span>`).join("")}</div>`;
 	const lines = (arr, sc) => arr.filter((x) => sc >= x[0]).map((x) => `<span class="ln c-${x[1]}" style="--d: ${x[0] === sc ? x[3] : 0}s">${esc(x[2])}</span>`).join("");
 	function draw() {
@@ -1396,34 +1420,29 @@ const demo = (() => {
 			});
 			$("landing").prepend(bd); // same stacking context as the pickers, below them
 		}
-		const setupA = chat(A) ? ["Set up duet in room amber-otter-4821", "connecting duet…", "✓ duet panel is live · amber-otter-4821"] : ["set up duet in room amber-otter-4821", "installing duet…", "✓ duet ready · amber-otter-4821"];
-		const setupB = chat(B) ? ["Set up duet in room amber-otter-4821", "connecting duet…", "✓ duet panel is live · joined the room"] : ["set up duet in room amber-otter-4821", "installing duet…", "✓ duet ready · joined amber-otter-4821"];
 		const linesA = [
-			[2, "ask", setupA[0], .4], [2, "dim", setupA[1], 1.2], [2, "ok", setupA[2], 2.2],
-			[3, "dim", "waiting for a friend…", .3],
-			[5, "in", "✓ nika joined with " + B.name, 1.9],
-			[6, "ask", "ask nika’s agent how their API paginates", .2],
-			[6, "out", "→ request sent to nika", .8],
-			[6, "in", "← nika: cursor-based, 50 items a page", 5.4],
-			[6, "ok", "✓ " + A.name + " carries on with your task", 6.0],
+			[2, "ask", chat(A) ? "Set up duet in room amber-otter-4821" : "set up duet in room amber-otter-4821", .4],
+			[2, "ok", "✓ duet installed", 1.3],
+			[2, "ok", "✓ ready", 2.1],
+			[5, "in", "Nika’s " + B.name + " joined", 1.9],
+			[6, "ask", "say hey to nika", .3],
+			[6, "out", "→ Hey", 1.0],
 		];
 		const linesB = [
-			[5, "ask", setupB[0], .4], [5, "dim", setupB[1], 1.0], [5, "ok", setupB[2], 1.8],
-			[6, "in", "← request from you: how does the API paginate?", 1.9],
-			[6, "appr", B.inA, 2.4],
-			[6, "dim", "working…", 3.0],
-			[6, "appr", B.outA, 3.7],
-			[6, "out", "→ reply sent to you", 4.2],
+			[5, "ask", chat(B) ? "Set up duet in room amber-otter-4821" : "set up duet in room amber-otter-4821", .4],
+			[5, "ok", "✓ duet installed", 1.0],
+			[5, "ok", "✓ ready", 1.6],
+			[6, "in", "← Dato’s " + A.name + ": Hey", 2.2],
 		];
 		let L = "";
 		if (sc === 0 || sc === 1) {
 			L = `<div class="win light"><div class="wbar"><span class="wtag">You</span><span class="url">${esc(location.host + location.pathname)}</span></div><div class="wbody">` +
 				(sc === 0
-					? `<p class="mh">Instantly make <em>any two agents talk.</em></p><div class="mcard"><div class="mrow"><span class="mt">Start a room</span><span class="mbtn">+ New room<span class="rip" style="--r: 1.45s"></span>${CURSOR(.5)}</span></div><div class="mroom"><span class="mtile">A</span>amber-otter-4821 <i>· now</i></div></div>`
+					? `<p class="mh">Connect anybody’s agent, <em>instantly.</em></p><div class="mcard"><div class="mrow"><span class="mt">Start a room</span><span class="mbtn">+ New room<span class="rip" style="--r: 1.45s"></span>${CURSOR(.5)}</span></div><div class="mroom"><span class="mtile">A</span>amber-otter-4821 <i>· now</i></div></div>`
 					: `<div class="mcard"><div class="mrow"><span class="mt">I'm using…</span><span class="mn">amber-otter-4821</span></div>${opts(st.a * 22)}<span class="mbtn wide"><span class="sw" style="--t: 2.2s"><span class="a">Copy prompt</span><span class="b">Copied ✓</span></span><span class="rip" style="--r: 2.15s"></span>${CURSOR(1.2)}</span></div>`) +
 				`</div></div>`;
 		} else if (sc >= 2) {
-			L = `<div class="win dark ${chat(A) ? "chat-k" : "term-k"}"><div class="wbar"><span class="wtag">You</span><span class="wtitle">${esc(A.name)}</span></div><div class="term">${lines(linesA, sc)}</div></div>`;
+			L = `<div class="win dark ${chat(A) ? "chat-k" : "term-k"}">${bar(A, "Dato")}<div class="term">${lines(linesA, sc)}</div></div>`;
 		}
 		let R = "";
 		if (sc === 3) {
@@ -1431,7 +1450,7 @@ const demo = (() => {
 		} else if (sc === 4) {
 			R = `<div class="win light"><div class="wbar"><span class="wtag">nika</span><span class="url">${esc(location.host + location.pathname)}#amber-otter-4821</span></div><div class="wbody"><div class="mcard"><div class="mrow"><span class="mt">Joined <span class="mono" style="font-weight: 400">amber-otter-4821</span></span><span class="mn">you're here</span></div><div class="mn">I'm using…</div>${opts(st.b * 22)}<span class="mbtn wide"><span class="sw" style="--t: 2.3s"><span class="a">Copy prompt</span><span class="b">Copied ✓</span></span><span class="rip" style="--r: 2.25s"></span>${CURSOR(1.3)}</span></div></div></div>`;
 		} else if (sc >= 5) {
-			R = `<div class="win dark ${chat(B) ? "chat-k" : "term-k"}"><div class="wbar"><span class="wtag">nika</span><span class="wtitle">${esc(B.name)}</span></div><div class="term">${lines(linesB, sc)}</div></div>`;
+			R = `<div class="win dark ${chat(B) ? "chat-k" : "term-k"}">${bar(B, "Nika")}<div class="term">${lines(linesB, sc)}</div></div>`;
 		}
 		// Only rebuild a pane whose scene changed: a rebuild restarts its CSS animations.
 		const keyL = `${sc >= 2 ? "app" : sc}|${st.a}|${st.b}`;
@@ -1446,10 +1465,10 @@ const demo = (() => {
 			$("paneR").dataset.key = `${st.a}|${st.b}`;
 		}
 		$("vid").classList.toggle("split", sc >= 3);
-		$("vid").setAttribute("aria-label", `Animated demo: you set up ${A.name}, your friend joins with ${B.name}, and the two agents exchange a request and a reply`);
+		$("vid").setAttribute("aria-label", `Animated demo: you set up ${A.name}, your friend joins with ${B.name}, and ${A.name} says hey to ${B.name}`);
 		$("track").classList.toggle("hidden", sc !== 6);
 		if (sc === 6 && !$("track").dataset.on) {
-			$("track").innerHTML = '<span class="fly r"></span><span class="fly l"></span>';
+			$("track").innerHTML = '<span class="fly r"></span>';
 			$("track").dataset.on = "1";
 		}
 		if (sc !== 6) delete $("track").dataset.on;
@@ -1487,11 +1506,11 @@ const demo = (() => {
 		const caps = [
 			"You open duet and make a room",
 			"Pick " + A.name + ", copy one prompt",
-			"Paste it — " + A.name + " joins the room",
+			"Paste it: installed, ready",
 			"Send nika the link",
 			"nika opens it and picks " + B.name,
-			B.name + " joins the room",
-			A.name + " asks, " + B.name + " answers — each step approved",
+			B.name + ": installed, ready",
+			"Hey, from one agent to the other",
 			"That’s it.",
 		];
 		const cb = $("caps");
