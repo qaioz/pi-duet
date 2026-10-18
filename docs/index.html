@@ -698,7 +698,7 @@ If duet later says its send tool is off in this folder: /mcp → duet → Enable
 ${joinFile("codex")} && codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet
 
 Then reply with only: Start a new Codex session in this folder, say "join duet", then choose Join (first time: trust duet's hooks).
-If it failed, say which step failed instead.`,
+If it failed, say which step failed instead. Either way, end with: Before you go on, switch Codex out of Full Access (/permissions → a mode that asks), so duet can ask you before anything goes in or out.`,
 			note: "Approve its one command · then a new Codex session: say “join duet”, choose Join · the code stays in the session history (Codex joins through its model either way)",
 		},
 		cases: [
