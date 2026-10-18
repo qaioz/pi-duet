@@ -363,7 +363,7 @@ exit 0
 	await friend.fill("#name", "yourname");
 	const standIn = await friend.$$eval("#commands .cmd button, #commands .prompt button", (bs) => bs.length > 1 && bs.every((b) => b.disabled));
 	check("typing the stand-in \"yourname\" keeps copying off", standIn, `all copy buttons disabled: ${standIn}`);
-	await friend.click('[data-copy="invite"]');
+	await friend.click('#setup [data-copy="invite"]');
 	await friend.fill("#name", "__-nika");
 	const lead = await friend.inputValue("#name");
 	await friend.fill("#name", "nika");
@@ -448,8 +448,8 @@ exit 0
 	const longView = await page.evaluate(() => document.getElementById("convo").textContent);
 	check(
 		"room conversation shows a long message, simple history (no reply decorations)",
-		longView.includes("LONGSTART") && !longView.includes("↳") && !longView.includes("'s agent"),
-		`long message shown: ${longView.includes("LONGSTART")}; decorations: ${/↳|'s agent/.test(longView)}`,
+		longView.includes("LONGSTART") && !longView.includes("↳") && !/re: |in reply to/i.test(longView),
+		`long message shown: ${longView.includes("LONGSTART")}; decorations: ${/↳|re: |in reply to/i.test(longView)}`,
 	);
 	check(
 		"room conversation shows messages and notes as plain text, with nothing to type into",
@@ -465,14 +465,34 @@ exit 0
 		`count "${row.count}"; seats "${row.seats}"; input disabled ${row.say}; messages visible ${row.visible}`,
 	);
 
+	// Mentions: a message with "to" starts with @name, as the clients spell names (dots, any script); a "to"
+	// that isn't a name is left out. The page's text only: nothing peer-made becomes markup or copyable.
+	await publish(SERVER, topicFor(room), envelope({ fromId: "site-test", from: "nika", kind: "msg", to: "nika.b", text: "MENTION1" }));
+	await publish(SERVER, topicFor(room), envelope({ fromId: "site-test", from: "nika", kind: "msg", to: "ნიკა", text: "MENTION2" }));
+	await publish(SERVER, topicFor(room), envelope({ fromId: "site-test", from: "nika", kind: "msg", to: "<b>x</b> y", text: "MENTION3" }));
+	await page.waitForFunction(() => document.getElementById("convo").textContent.includes("MENTION3"), null, { timeout: 15_000 });
+	const mentions = await page.evaluate(() => ({ list: [...document.querySelectorAll("#convo .mention")].map((m) => m.textContent), bold: document.querySelectorAll("#convo b b").length }));
+	// The modal: X closes it, your seat opens it again, Escape closes it, and focus comes back to the seat.
+	await page.click("#setup:not(.hidden) [data-close-setup] >> visible=true");
+	const afterX = await page.evaluate(() => document.getElementById("setup").classList.contains("hidden") && !document.querySelector("main").inert);
+	await page.click("#my-seat");
+	const seatOpens = await page.evaluate(() => !document.getElementById("setup").classList.contains("hidden") && document.querySelector("main").inert && document.getElementById("setup").contains(document.activeElement));
+	await page.keyboard.press("Escape");
+	const escaped = await page.evaluate(() => document.getElementById("setup").classList.contains("hidden") && document.activeElement?.id === "my-seat");
+	check(
+		"mentions keep the name as sent (dots, any script), drop a non-name; the setup modal: X, reopen from your seat (rest of the page inert), Escape, focus back",
+		JSON.stringify(mentions.list) === JSON.stringify(["@nika.b", "@ნიკა"]) && mentions.bold === 0 && afterX && seatOpens && escaped,
+		`mentions ${JSON.stringify(mentions.list)}; X closed ${afterX}; reopened ${seatOpens}; Escape + focus ${escaped}`,
+	);
+
 	// Your agent's join is what puts you in: the friend typed "nika", and nika joined above: the setup closes on the room.
 	await friend.waitForSelector("#setup.hidden", { state: "attached", timeout: 15_000 }).catch(() => {});
 	const status = await friend.evaluate(() => ({ setupHidden: document.getElementById("setup").classList.contains("hidden"), people: document.getElementById("people").textContent }));
-	const ownerStatus = await page.evaluate(() => document.getElementById("status").classList.contains("hidden") && !document.getElementById("setup").classList.contains("hidden"));
+	const ownerStatus = await page.evaluate(() => document.getElementById("status").classList.contains("hidden") && !!document.getElementById("my-seat")); // closed by Escape above: the seat brings it back
 	check(
-		"status: waiting until your own name joins on the relay, then the setup closes on the room with who is here (no name typed: no status, setup stays)",
+		"status: waiting until your own name joins on the relay, then the setup closes on the room with who is here (no name typed: no status, your seat stays)",
 		statusBefore.includes("Waiting for") && statusBefore.includes("as nika") && status.setupHidden && status.people.includes("you") && status.people.includes("Gaioz’s") && ownerStatus,
-		`before the join: "${statusBefore.slice(0, 70)}"; setup closed ${status.setupHidden}; people "${status.people.replace(/\s+/g, " ").slice(0, 120)}"; no-name page: status hidden, setup open ${ownerStatus}`,
+		`before the join: "${statusBefore.slice(0, 70)}"; setup closed ${status.setupHidden}; people "${status.people.replace(/\s+/g, " ").slice(0, 120)}"; no-name page: status hidden, seat there ${ownerStatus}`,
 	);
 
 	// Your rooms: the browser remembers the room (with who was in it), opens it from the list, forgets it.
@@ -570,7 +590,7 @@ exit 0
 	const oldInvite = await oldPage.textContent("#invite");
 	await oldPage.goto(`${start}#docs`);
 	await oldPage.reload();
-	const notRoom = (await oldPage.isVisible("#landing")) && !(await oldPage.isVisible("#room"));
+	const notRoom = (await oldPage.isVisible("#landing")) && !(await oldPage.isVisible("#roomview")) && !(await oldPage.isVisible("#setup"));
 	check("old base32 room links still open their room; other fragments don't", oldInvite.endsWith("#" + old) && notRoom, `${oldInvite.replace(/^.*#/, "#")}; "#docs" shows the landing: ${notRoom}`);
 	await oldCtx.close();
 
