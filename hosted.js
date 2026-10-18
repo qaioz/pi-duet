@@ -30,7 +30,7 @@ import { pathToFileURL } from "node:url";
 import { appTools, cleanText, READS, SENDS, handOver, heldResult, JOIN_META, makeHolds, outgoingItem, panelError, panelResult, PRESEND_MS, preview, resourceContents, resourceEntries, roomProps, roomTool, SEND_NOTE, sendToolMeta, sentResult, shortRoom, toWhom, waitingLine } from "./panel.js";
 import { envelope, firstLine, fitName, isForMe, isName, isPlaceholderName, isRelayUrl, isRoomCode, MAX_BYTES, MAX_TEXT, publish, stripHidden, subscribe, topicFor } from "./transport.js";
 
-export const VERSION = "0.12.0"; // the MCP server's version, as in mcp.js
+export const VERSION = "0.12.1"; // the MCP server's version, as in mcp.js
 const PORT = Number(process.env.PORT ?? 8092); // 0: any free port (tests)
 const HOST = process.env.HOST || "127.0.0.1";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://mcp-duet.gaioz.online").replace(/\/+$/, "");
@@ -150,6 +150,7 @@ function openRoom(topic) {
 		server: RELAY,
 		topic,
 		onEnvelope: (env) => r.seats.forEach((s) => s.onEnvelope(env)),
+		onNote: (env) => r.seats.forEach((s) => s.onLeave(env)), // the panel's conversation shows leaves
 		onState: (up, error) => {
 			[r.up, r.error] = [up, up ? "" : `offline: ${error}`];
 			r.seats.forEach((s) => s.rev++);
@@ -244,14 +245,18 @@ class Seat {
 		}
 		this.peers.set(env.from, Date.now());
 		if (VIA[env.via]) this.peerVia.set(env.from, env.via);
-		if (env.kind === "join") return this.remember({ who: env.from, text: "joined", note: true });
+		if (env.kind === "join") return this.remember({ who: env.from, text: "joined", note: true, event: "joined", via: Object.hasOwn(VIA, String(env.via)) ? VIA[env.via] : "" });
 		const pid = String(++this.seq);
 		const text = cleanText(env.text); // once, on arrival: the panel, its history and the hand-over all show this
-		this.remember({ who: env.from, text, pid });
+		this.remember({ who: env.from, text, pid, ...(env.to ? { to: env.to } : {}) });
 		this.lastFrom.set(env.from, { id: env.id, at: Date.now() });
 		if (this.lastFrom.size > PEERS_MAX) this.lastFrom.delete(this.lastFrom.keys().next().value);
 		if (allChars + text.length > LIMIT.allChars) return this.warnings.add("a request was dropped: the hosted server is full right now (Claude Code, Codex or pi have no such limit)");
 		this.hold({ pid, id: env.id, from: env.from, ts: env.ts, re: env.re, text, size: text.length });
+	}
+	// A leave (a note on the wire): only a line in the panel's conversation; who's here is unchanged.
+	onLeave(env) {
+		if (isForMe(env, this.fromId, this.name)) this.remember({ who: env.from, text: "left", note: true, event: "left" });
 	}
 	revNow() {
 		const here = [...this.peers.values()].filter((at) => Date.now() - at < RECENT_MS).length;
@@ -268,11 +273,12 @@ class Seat {
 			name: this.name,
 			peers: [...this.peers].map(([p, at]) => ({ name: p, via: VIA[this.peerVia.get(p)] ?? "", here: Date.now() - at < RECENT_MS })),
 			waiting: this.inbox.map((e) => ({ id: e.pid, from: e.from, at: e.ts, text: e.size <= FULL_MAX ? e.text : preview(e.text), full: e.size <= FULL_MAX, size: e.size })),
-			// The conversation: messages only (name · time · text), none of the requests still waiting.
+			// The conversation: messages (name · time · text, and whom one was addressed to) and joins and
+			// leaves, none of the requests still waiting.
 			history: this.history
-				.filter((h) => !h.note && !(h.pid && this.inbox.some((e) => e.pid === h.pid)))
+				.filter((h) => (h.event || !h.note) && !(h.pid && this.inbox.some((e) => e.pid === h.pid)))
 				.slice(-40)
-				.map((h) => ({ who: h.who, mine: !!h.mine, text: h.text, at: h.at })),
+				.map((h) => ({ who: h.who, mine: !!h.mine, text: h.text, at: h.at, ...(h.to ? { to: h.to } : {}), ...(h.event ? { event: h.event, via: h.via ?? "" } : {}) })),
 			outgoing: holds.waiting(this.key).map(outgoingItem),
 			warnings: [...this.warnings],
 			modelNote:
@@ -397,7 +403,7 @@ async function sendHeld(h) {
 	}
 	seat.sent.add(env.id);
 	if (seat.sent.size > 100) seat.sent.delete(seat.sent.values().next().value);
-	seat.remember({ who: "you", mine: true, text: h.text });
+	seat.remember({ who: "you", mine: true, text: h.text, ...(h.sendTo ? { to: h.sendTo } : {}) });
 }
 
 async function callTool(name, a, ip) {

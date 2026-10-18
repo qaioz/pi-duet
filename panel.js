@@ -335,40 +335,135 @@ export const resourceContents = (uri, version, { live = "", hosted = false, serv
 
 const STYLE = `<style>
 ${BASECOAT_CSS}
+/* The room look (the duet site's room): a warm ground, light surfaces, one green. Basecoat's tokens point at it. */
+:root {
+	--ground: #ECECE4; --surface: #F8F8F3; --surface-2: #EFEFE8; --raised: #FFFFFF;
+	--ink: #1A1C19; --ink-2: #3B3F39; --ink-3: #5F635C; --ink-4: #73776F; --ink-5: #858A7F;
+	--green: #3E5F49; --green-hover: #34513E; --green-ink: #F8F8F3; --green-text: #3E5F49; --green-line: rgba(62,95,73,.38); --live: #6FA67F;
+	--mention-bg: #E6EDB4; --mention-ink: #2F3A14; --warn-ink: #8A5300;
+	--line: rgba(26,28,25,.12); --hair: rgba(26,28,25,.07);
+	--shadow: 0 24px 48px -32px rgba(40,46,36,.30), 0 6px 16px -10px rgba(40,46,36,.12);
+	--t-me-bg: #DDE6DC; --t-me: #3E5F49; --t-a-bg: #E8E2D6; --t-a: #6B5B43; --t-b-bg: #E2E0EA; --t-b: #56507A; --t-c-bg: #DBE5E7; --t-c: #3F6470;
+	--background: var(--surface); --foreground: var(--ink); --card: var(--surface); --card-foreground: var(--ink); --popover: var(--surface); --popover-foreground: var(--ink);
+	--primary: var(--green); --primary-foreground: var(--green-ink); --secondary: var(--surface-2); --secondary-foreground: var(--ink);
+	--muted: var(--surface-2); --muted-foreground: var(--ink-3); --accent: var(--surface-2); --accent-foreground: var(--ink);
+	--border: var(--line); --input: var(--line); --ring: var(--green);
+	/* Geist where it is installed: the panel loads no fonts (its CSP allows none), and a host's own fonts win (applyContext). */
+	--font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	--font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+:root.dark {
+	--ground: #141613; --surface: #1C1F1B; --surface-2: #262A24; --raised: #22261F;
+	--ink: #E9EBE3; --ink-2: #CDD1C6; --ink-3: #A9AEA2; --ink-4: #929789; --ink-5: #7F8478;
+	--green: #557F62; --green-hover: #618D6E; --green-ink: #F3F5EE; --green-text: #9CC5A7; --green-line: rgba(156,197,167,.38); --live: #7DBA8E;
+	--mention-bg: #3B4519; --mention-ink: #E6EDB4; --warn-ink: #F0B35A;
+	--line: rgba(233,235,227,.14); --hair: rgba(233,235,227,.08);
+	--shadow: 0 24px 48px -32px rgba(0,0,0,.6), 0 6px 16px -10px rgba(0,0,0,.4);
+	--t-me-bg: #2C3B30; --t-me: #A9CDB2; --t-a-bg: #3A342A; --t-a: #D9C7A6; --t-b-bg: #34314A; --t-b: #C3BEE6; --t-c-bg: #2B3A3E; --t-c: #A9CCD5;
+}
 html, body { margin: 0; background: transparent; }
-body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: var(--color-foreground); }
+body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: var(--ink); -webkit-font-smoothing: antialiased; }
 #app { padding: 2px; }
-.card { width: 100%; }
-.card > header .head { display: flex; align-items: center; gap: 8px; }
-.card > header .head h2 { margin: 0; }
+.shell { box-sizing: border-box; width: 100%; display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 24px; background: var(--ground); color: var(--ink); }
+.top { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 2px 4px; }
+.brand { display: flex; align-items: center; gap: 8px; font-size: 19px; font-weight: 600; letter-spacing: -.04em; color: var(--ink); }
+.brand svg { flex: none; }
+.vr { flex: none; width: 1px; height: 22px; background: var(--line); }
+.top .acts { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.sub { margin: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; color: var(--ink-3); font-size: 13px; overflow-wrap: anywhere; }
+.sub .code { font-family: var(--font-mono); font-size: 14px; color: var(--ink); }
+/* narrow: brand and controls on one line, the room code under them */
+@media (max-width: 619px) { #sub { order: 3; flex-basis: 100%; } .top .vr { display: none; } }
+.mono { font-family: var(--font-mono); }
+.eyebrow { font: 500 11px/1.2 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-4); }
+.pill { display: inline-flex; align-items: center; gap: 6px; font: 500 10.5px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); padding: 6px 8px; border-radius: 8px; background: var(--hair); white-space: nowrap; }
+.pill .dot { color: var(--warn-ink); font-size: 9px; }
+.pill.on .dot { color: var(--live); }
 .grow { flex: 1; }
-.sub { overflow-wrap: anywhere; }
-.sub .btn { margin-left: 4px; vertical-align: baseline; }
-.stack { display: flex; flex-direction: column; gap: 12px; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
 .stack > :empty { display: none; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .field2 { display: flex; flex-direction: column; gap: 6px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.item { border: 1px solid var(--color-border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--color-muted); }
+.box { box-sizing: border-box; min-width: 0; background: var(--surface); border: 1px solid var(--hair); border-radius: 22px; box-shadow: var(--shadow); }
+.box-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 16px 10px; }
+.box-head.line { border-bottom: 1px solid var(--hair); padding-bottom: 12px; }
+.joinbox { padding: 16px; }
+.cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (min-width: 620px) { .cols { grid-template-columns: 240px minmax(0, 1fr); } }
+/* participants */
+.people { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 10px; }
+.person { display: flex; align-items: center; gap: 10px; padding: 7px 8px; min-width: 0; }
+.person .pname { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.person .hint { font-size: 12px; font-weight: 400; color: var(--green-text); }
+.person.open .pname { color: var(--ink-2); }
+.you { font: 500 9.5px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); padding: 4px 6px; border-radius: 6px; background: var(--hair); }
+.live { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 4px color-mix(in srgb, var(--live) 18%, transparent); }
+.tile { flex: none; display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 34px; height: 34px; border-radius: 11px; font-size: 16px; font-weight: 600; background: var(--tbg, var(--t-a-bg)); color: var(--tfg, var(--t-a)); }
+.tile::before { content: attr(data-l); } /* the letter is decoration: not in the row's text */
+.tile.seat { background: transparent; border: 1.5px dashed var(--line); color: var(--ink-4); font-weight: 400; }
+/* the conversation */
+.feed { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; max-height: 340px; min-height: 64px; overflow: auto; }
+@media (min-width: 620px) { .feed { max-height: 420px; } }
+.entry { display: flex; gap: 10px; align-items: flex-start; }
+.entry .tile { width: 30px; height: 30px; border-radius: 10px; font-size: 14px; }
+.entry .msg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 8px; font-size: 13px; }
+.meta .who { font-weight: 600; }
+.t { font-family: var(--font-mono); font-size: 11px; color: var(--ink-5); }
+.bubble { padding: 10px 12px; border-radius: 4px 16px 16px 16px; background: var(--surface-2); font-size: 14px; line-height: 1.55; }
+.mention { padding: 1px 5px; border-radius: 6px; background: var(--mention-bg); color: var(--mention-ink); font-weight: 500; }
+.event { display: flex; align-items: baseline; justify-content: center; flex-wrap: wrap; gap: 0 8px; font-size: 12.5px; color: var(--ink-3); text-align: center; }
+.event .ev-who { color: var(--ink); }
+.iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--ink-3); cursor: pointer; }
+.iconbtn:hover { background: var(--hair); color: var(--ink); }
+/* the gates: under the conversation, where a chat's message box would be */
+.gates { display: flex; flex-direction: column; gap: 10px; padding: 0 12px 12px; }
+.gates > :empty { display: none; }
+.item { border: 1px solid var(--hair); border-radius: 18px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--surface-2); }
+.item.ask { background: var(--raised); border: 1.5px solid var(--green-line); }
+.item .head { gap: 6px 8px; }
+.item .row .btn { padding-inline: 13px; }
+.tag { font: 500 10px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--green-text); padding: 4px 6px; border-radius: 6px; background: color-mix(in srgb, var(--green-text) 12%, transparent); }
+.none { margin: 0; padding: 11px 16px; border-radius: 18px; background: var(--surface-2); color: var(--ink-4); font-size: 13px; }
 .who { font-weight: 600; }
-.muted { color: var(--color-muted-foreground); font-size: 13px; }
-.warn { color: light-dark(#8a5300, #f0b35a); font-size: 13px; }
+.muted { color: var(--ink-3); font-size: 13px; }
+.warn { color: var(--warn-ink); font-size: 13px; }
 .err { color: var(--color-destructive); font-size: 13px; }
 .text { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; }
 .item .text { max-height: 260px; overflow: auto; }
-.wide { width: 100%; justify-content: space-between !important; }
 .linkish { padding: 0 !important; height: auto !important; }
-textarea.textarea { width: 100%; min-height: 110px; font-family: var(--font-mono); font-size: 12px; }
+.foot { margin: 0 4px; font: 400 11px/1 var(--font-mono); color: var(--ink-5); text-align: right; }
+/* controls */
+.btn { border-radius: 999px; font-weight: 500; box-shadow: none; }
+.btn:not([data-variant]), .btn[data-variant='primary'] { background: var(--green); color: var(--green-ink); box-shadow: 0 8px 18px -10px rgba(62,95,73,.7); }
+.btn:not([data-variant]):hover:not(:disabled), .btn[data-variant='primary']:hover:not(:disabled) { background: var(--green-hover); }
+.btn[data-variant='outline'] { background: var(--surface); border: 1px solid var(--line); color: var(--ink); }
+.btn[data-variant='outline']:hover:not(:disabled) { background: var(--surface); border-color: var(--green-line); }
+.btn[data-variant='ghost'] { background: transparent; color: var(--ink-3); }
+.btn[data-variant='ghost']:hover:not(:disabled) { background: var(--hair); color: var(--ink); }
+.btn[data-variant='link'] { color: var(--green-text); }
+.btn:focus-visible, .iconbtn:focus-visible, .input:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.input { border-radius: 14px; background: var(--surface-2); border-color: transparent; color: var(--ink); font-size: 14px; }
+.input::placeholder { color: var(--ink-5); }
+.label { color: var(--ink-2); }
+textarea.textarea { width: 100%; min-height: 110px; font-family: var(--font-mono); font-size: 12px; border-radius: 14px; background: var(--surface); }
 .hidden { display: none !important; }
 .busy button { pointer-events: none; opacity: .5; }
-.flash { outline: 2px solid var(--color-ring, #3b82f6); outline-offset: 2px; }
-.dialog > div { width: 640px; }
-.dialog .head .badge { flex-shrink: 1; min-width: 0; text-overflow: ellipsis; display: inline-block; }
-.dialog .head .btn { flex-shrink: 0; }
+.flash { outline: 2px solid var(--green); outline-offset: 2px; }
+/* the conversation, larger (fullscreen where the host allows it) */
+.dialog > div { width: 640px; background: var(--surface); color: var(--ink); border: 1px solid var(--hair); border-radius: 24px; box-shadow: var(--shadow); }
+.dialog::backdrop { background: color-mix(in srgb, var(--ground) 72%, transparent); }
+.dialog .head .pill { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
+.dialog .head .btn, .dialog .head .iconbtn { flex-shrink: 0; }
+.dialog h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.02em; }
+.dialog .code { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-3); margin: 4px 0 0; }
 .dialog section.log { overflow: auto; display: flex; flex-direction: column; gap: 14px; }
 .full .dialog > div { max-width: calc(100% - 2rem); width: 820px; max-height: calc(100% - 2rem); }
-.entry .meta { font-size: 13px; }
-.entry .meta .t { color: var(--color-muted-foreground); }
+/* the reply card */
+.reply-box { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.reply-box h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
+.reply-box .bubble { max-height: 420px; overflow: auto; }
 </style>`;
 
 // The bridge to the host (JSON-RPC over postMessage), the theme, and the size report: both views.
@@ -447,6 +542,7 @@ const BRIDGE = `
 `;
 
 const SVG_EXPAND = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path></svg>`;
+const LOGO = `<div class="brand"><svg width="30" height="24" viewBox="0 0 38 30" aria-hidden="true"><ellipse cx="23" cy="15" rx="10" ry="13" fill="#DCE57A"></ellipse><ellipse cx="13" cy="15" rx="10" ry="13" fill="none" stroke="currentColor" stroke-width="2"></ellipse><ellipse cx="23" cy="15" rx="10" ry="13" fill="none" stroke="currentColor" stroke-width="2"></ellipse></svg><span>duet</span></div>`;
 const SVG_X = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
 
 // The panel. Everything a peer controls is put on the page with textContent (never innerHTML), so
@@ -465,44 +561,55 @@ ${STYLE}
 </head>
 <body>
 <div id="app">
-<div class="card" id="card">
-	<header>
-		<div class="head"><h2>duet</h2><span id="pill" class="badge hidden" data-variant="secondary"></span><span class="grow"></span><button id="check" class="btn hidden" data-variant="outline" data-size="sm" type="button">Check</button><button id="leave" class="btn hidden" data-variant="ghost" data-size="sm" type="button">Leave</button></div>
+<div class="shell" id="card">
+	<header class="top">
+		${LOGO}<span class="vr" aria-hidden="true"></span>
 		<p class="sub" id="sub">Code stays in the panel</p>
+		<div class="acts"><span id="pill" class="pill hidden"></span><button id="check" class="btn hidden" data-variant="outline" data-size="sm" type="button">Check</button><button id="leave" class="btn hidden" data-variant="ghost" data-size="sm" type="button">Leave</button></div>
 	</header>
-	<section class="stack">
-		<div id="error" class="err hidden" role="alert"></div>
-		<!-- not a <form>: hosts sandbox the panel without allow-forms, and a blocked submit never fires -->
-		<div id="join" class="stack hidden">
-			<div class="grid2">
-				<div class="field2"><label class="label" for="room">Room code</label><input class="input" id="room" name="room" autocomplete="off" maxlength="64" spellcheck="false" autocapitalize="off" placeholder="amber-otter-4821-x7q2"></div>
-				<div class="field2"><label class="label" for="name">Your name</label><input class="input" id="name" name="name" autocomplete="off" maxlength="40" spellcheck="false" autocapitalize="off" placeholder="your name"></div>
-			</div>
-			<div class="row"><button class="btn" type="button" id="join-btn">Join</button><button class="btn" data-variant="outline" type="button" id="new-room">New room</button></div>
+	<div id="error" class="err hidden" role="alert"></div>
+	<!-- not a <form>: hosts sandbox the panel without allow-forms, and a blocked submit never fires -->
+	<div id="join" class="box joinbox stack hidden">
+		<span class="eyebrow">Join a room</span>
+		<div class="grid2">
+			<div class="field2"><label class="label" for="room">Room code</label><input class="input" id="room" name="room" autocomplete="off" maxlength="64" spellcheck="false" autocapitalize="off" placeholder="amber-otter-4821-x7q2"></div>
+			<div class="field2"><label class="label" for="name">Your name</label><input class="input" id="name" name="name" autocomplete="off" maxlength="40" spellcheck="false" autocapitalize="off" placeholder="your name"></div>
 		</div>
-		<div id="inroom" class="stack hidden">
-			<div id="warnings"></div>
-			<div id="outgoing" class="stack"></div>
-			<div id="waiting" class="stack"></div>
-			<p id="none-waiting" class="muted" style="margin:0">Nothing waiting</p>
-			<div id="handed" class="item hidden">
-				<div id="handed-note" class="row"></div>
-				<div id="fallback" class="stack hidden">
-					<span class="muted">Paste into the chat · or Put back</span>
-					<textarea id="fallback-text" class="textarea" readonly></textarea>
-					<div class="row"><button class="btn" data-variant="outline" data-size="sm" type="button" id="copy-fallback">Copy</button><button class="btn" data-variant="outline" data-size="sm" type="button" id="put-back">Put back</button><button class="btn" data-variant="ghost" data-size="sm" type="button" id="close-fallback">Done</button></div>
+		<div class="row"><button class="btn" type="button" id="join-btn">Join</button><button class="btn" data-variant="outline" type="button" id="new-room">New room</button></div>
+	</div>
+	<div id="inroom" class="stack hidden">
+		<div id="warnings"></div>
+		<div class="cols">
+			<aside class="box" aria-labelledby="ppl">
+				<div class="box-head"><span id="ppl" class="eyebrow">Participants</span><span id="seats" class="mono t"></span></div>
+				<div id="people" class="people"></div>
+			</aside>
+			<section class="box" aria-labelledby="convo-label">
+				<div class="box-head line"><span id="convo-label" class="eyebrow">Conversation · 0</span><button class="iconbtn" type="button" id="convo-btn" aria-label="Open the conversation larger" title="Open larger">${SVG_EXPAND}</button></div>
+				<div id="feed" class="feed" aria-live="polite"></div>
+				<div class="gates">
+					<div id="outgoing" class="stack"></div>
+					<div id="waiting" class="stack"></div>
+					<p id="none-waiting" class="none">Nothing waiting</p>
+					<div id="handed" class="item hidden">
+						<div id="handed-note" class="row"></div>
+						<div id="fallback" class="stack hidden">
+							<span class="muted">Paste into the chat · or Put back</span>
+							<textarea id="fallback-text" class="textarea" readonly></textarea>
+							<div class="row"><button class="btn" data-variant="outline" data-size="sm" type="button" id="copy-fallback">Copy</button><button class="btn" data-variant="outline" data-size="sm" type="button" id="put-back">Put back</button><button class="btn" data-variant="ghost" data-size="sm" type="button" id="close-fallback">Done</button></div>
+						</div>
+					</div>
 				</div>
-			</div>
-			<button class="btn wide" data-variant="outline" type="button" id="convo-btn"><span id="convo-label">Conversation · 0</span>${SVG_EXPAND}</button>
+			</section>
 		</div>
-		<p class="muted" style="margin:0" id="foot">duet ${version}</p>
-	</section>
+	</div>
+	<p class="foot" id="foot">duet ${version}</p>
 </div>
 </div>
 <dialog class="dialog" id="convo" aria-labelledby="convo-title">
 	<div>
 		<header>
-			<div class="head" style="display:flex;align-items:center;gap:8px"><h2 id="convo-title">Conversation</h2><span id="convo-with" class="badge hidden" data-variant="secondary"></span><span class="grow"></span><button class="btn" data-variant="ghost" data-size="icon" type="button" aria-label="Close" id="convo-close">${SVG_X}</button></div>
+			<div class="head" style="display:flex;align-items:center;gap:8px"><h2 id="convo-title">Conversation</h2><span id="convo-with" class="pill hidden"></span><span class="grow"></span><button class="iconbtn" type="button" aria-label="Close" id="convo-close">${SVG_X}</button></div>
 			<p id="convo-sub" class="code"></p>
 		</header>
 		<section class="log" id="log"></section>
@@ -568,11 +675,41 @@ ${BRIDGE}
 	const opened = new Map(); // held reply id -> its whole text, once the user opened it (Show all)
 	const read = new Map(); // waiting request id -> its whole text, once the user opened it (Show all)
 
+	// ---------- who is who: "<Owner>'s <App>", from a member's name and the app it joined from ----------
+	const APPS = { "Claude Code": "Claude Code", Codex: "Codex", pi: "pi", "chat panel": "Chat" }; // the servers' labels
+	const owner = (n) => { const c = [...String(n || "")]; return c.length ? c[0].toUpperCase() + c.slice(1).join("") : ""; };
+	const shownAs = (n, via) => { const app = Object.hasOwn(APPS, String(via)) ? APPS[via] : ""; return app ? owner(n) + "'s " + app : owner(n); };
+	const TILES = ["a", "b", "c"];
+	const tileOf = (n, mine) => {
+		const t = el("span", "tile");
+		t.setAttribute("aria-hidden", "true");
+		t.dataset.l = [...owner(n)][0] || "?";
+		let k = 0;
+		for (const ch of String(n)) k = (k * 31 + ch.codePointAt(0)) % 997;
+		const p = mine ? "me" : TILES[k % TILES.length];
+		t.style.setProperty("--tbg", "var(--t-" + p + "-bg)");
+		t.style.setProperty("--tfg", "var(--t-" + p + ")");
+		return t;
+	};
+	// Each peer's app (the room's member list, else its join line) and whether its latest word was a leave.
+	function roster(s) {
+		const via = new Map((s.peers || []).map((p) => [p.name, p.via || ""]));
+		const word = new Map();
+		for (const h of s.history || []) {
+			if (h.mine) continue;
+			if (h.event === "joined" && h.via && !via.get(h.who)) via.set(h.who, h.via);
+			word.set(h.who, h.event === "left" ? "left" : "here");
+		}
+		return { via, gone: (n) => word.get(n) === "left" };
+	}
+	const nameOf = (s, r, n, mine) => (mine ? shownAs(s.name, "chat panel") : shownAs(n, r.via.get(n)));
+
 	function draw() {
 		const s = state || {};
 		const pill = $("pill");
 		pill.classList.toggle("hidden", !s.inRoom);
-		pill.textContent = s.connected ? "● connected" : "● " + (s.status || "offline");
+		pill.classList.toggle("on", !!s.connected);
+		pill.replaceChildren(el("span", "dot", "●"), " " + (s.connected ? "connected" : s.status || "offline"));
 		$("join").classList.toggle("hidden", !!s.inRoom);
 		$("inroom").classList.toggle("hidden", !s.inRoom);
 		$("leave").classList.toggle("hidden", !s.inRoom);
@@ -584,16 +721,40 @@ ${BRIDGE}
 			return report();
 		}
 		const code = myCode(s);
-		const here = (s.peers || []).filter((p) => p.here).map((p) => p.name + (p.via ? " (" + p.via + ")" : ""));
-		sub.replaceChildren(el("span", "code", code || "room " + s.room), el("span", "", " · " + s.name + (here.length ? " · with " + here.join(", ") : "")));
-		if (code) { const c = btn("Copy", "ghost", "sm"); c.classList.add("linkish"); c.id = "copy-code"; c.onclick = () => copy(code, c, "code copied"); sub.append(c); }
+		sub.replaceChildren(el("span", "code", code || "room " + s.room));
+		if (code) { const c = btn("Copy code", "outline", "sm"); c.id = "copy-code"; c.onclick = () => copy(code, c, "Copied"); sub.append(c); }
 		$("warnings").replaceChildren(...(s.warnings || []).map((t) => el("div", "warn", "⚠ " + t)));
+
+		// Participants: you, and each other member seen lately who didn't leave since. Two seats; more just show.
+		const r = roster(s);
+		const live = (s.peers || []).filter((p) => p.here && !r.gone(p.name));
+		const person = (n, mine) => {
+			const row = el("div", "person");
+			const label = el("span", "pname", nameOf(s, r, n, mine));
+			row.append(tileOf(mine ? s.name : n, mine), label);
+			if (mine) row.append(el("span", "you", "you"));
+			const dot = el("span", "live"); dot.setAttribute("aria-hidden", "true");
+			row.append(dot);
+			return row;
+		};
+		const rows = [person(s.name, true), ...live.map((p) => person(p.name, false))];
+		if (rows.length < 2) {
+			const open = el("div", "person open");
+			const t = el("span", "tile seat"); t.dataset.l = "+"; t.setAttribute("aria-hidden", "true");
+			const label = el("span", "pname", "Waiting for someone to join");
+			label.append(el("span", "hint", "Share the room code"));
+			open.append(t, label);
+			rows.push(open);
+		}
+		$("people").replaceChildren(...rows);
+		const n = 1 + live.length;
+		$("seats").textContent = n <= 2 ? n + " of 2" : n + " in the room";
 
 		// Gate 2, as a fallback for a card the chat didn't draw: replies waiting for Send.
 		// Send only ever sends what the card shows: a long reply's Send waits until all of it is open.
 		$("outgoing").replaceChildren(...(s.outgoing || []).map((o) => {
-			const c = el("div", "item");
-			const body = el("div", "text", o.full ? o.text : (opened.get(o.id) || o.text));
+			const c = el("div", "item ask");
+			const body = el("div", "text bubble", o.full ? o.text : (opened.get(o.id) || o.text));
 			c.append(el("div", "who", "Send to " + o.to + "?"), body);
 			const acts = el("div", "row");
 			const yes = btn("Send"), no = btn("Don't send", "outline");
@@ -621,10 +782,10 @@ ${BRIDGE}
 
 		// Gate 1: each request waiting, Process / Ignore / Process and send (the same order as the terminals).
 		$("waiting").replaceChildren(...(s.waiting || []).map((m) => {
-			const c = el("div", "item");
-			const head = el("div", "row");
-			head.append(el("span", "who", m.from), el("span", "muted", "· " + time(m.at)));
-			const body = el("div", "text", m.full ? m.text : (read.get(m.id) || m.text));
+			const c = el("div", "item ask");
+			const head = el("div", "row head");
+			head.append(el("span", "tag", "Request"), el("span", "who", nameOf(s, r, m.from, false)), el("span", "t", time(m.at)));
+			const body = el("div", "text bubble", m.full ? m.text : (read.get(m.id) || m.text));
 			c.append(head, body);
 			const take = btn("Process"), takeSend = btn("Process and send", "outline"), skip = btn("Ignore", "ghost");
 			if (!m.full && !read.has(m.id)) {
@@ -651,9 +812,10 @@ ${BRIDGE}
 		}));
 		$("none-waiting").classList.toggle("hidden", !!((s.waiting && s.waiting.length) || (s.outgoing && s.outgoing.length)));
 
-		// The conversation: one row; the modal draws it. Name · time · text, nothing else.
+		// The conversation, in the panel and in its larger view: messages (name · time · text) and joins and leaves.
 		const hist = s.history || [];
-		$("convo-label").textContent = "Conversation · " + hist.length;
+		$("convo-label").textContent = "Conversation · " + hist.filter((h) => !h.event).length;
+		drawFeed($("feed"));
 		drawLog();
 
 		// Tell the agent (in its context, not in the chat) that it is in a room and how to write to it.
@@ -663,19 +825,45 @@ ${BRIDGE}
 		}
 		report();
 	}
+	// One list of the conversation into box (the panel's, or the larger view's). A join shows when someone
+	// arrives (not again while they are here: clients answer each other's joins), a leave when they go.
+	function drawFeed(box) {
+		const s = state || {};
+		const r = roster(s);
+		const was = new Map();
+		const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30 || !box.childElementCount;
+		const items = [];
+		for (const h of s.history || []) {
+			if (h.event) {
+				const now = h.event === "left" ? "left" : "here";
+				const before = was.get(h.who);
+				was.set(h.who, now);
+				if (before === now) continue;
+				const line = el("div", "event");
+				const what = el("span", "");
+				what.append(el("span", "ev-who", shownAs(h.who, h.via || r.via.get(h.who))), " " + (h.event === "left" ? "left" : "joined"));
+				line.append(what, el("span", "t", time(h.at)));
+				items.push(line);
+				continue;
+			}
+			if (!h.mine) was.set(h.who, "here");
+			const e = el("article", "entry");
+			const msg = el("div", "msg");
+			const meta = el("div", "meta");
+			meta.append(el("span", "who", nameOf(s, r, h.who, h.mine)), el("span", "t", " " + time(h.at)));
+			const text = el("div", "text bubble");
+			if (h.to) text.append(el("span", "mention", "@" + h.to), " ");
+			text.append(h.text);
+			msg.append(meta, text);
+			e.append(tileOf(h.mine ? s.name : h.who, h.mine), msg);
+			items.push(e);
+		}
+		box.replaceChildren(...(items.length ? items : [el("p", "muted", "Nothing said yet")]));
+		if (atBottom) box.scrollTop = box.scrollHeight;
+	}
 	function drawLog() {
 		const s = state || {};
-		const log = $("log");
-		const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
-		const items = (s.history || []).map((h) => {
-			const e = el("div", "entry");
-			const meta = el("div", "meta");
-			meta.append(el("span", "who", h.mine ? "you" : h.who), el("span", "t", " " + time(h.at)));
-			e.append(meta, el("div", "text", h.text));
-			return e;
-		});
-		log.replaceChildren(...(items.length ? items : [el("p", "muted", "Nothing said yet")]));
-		if (atBottom) log.scrollTop = log.scrollHeight;
+		drawFeed($("log"));
 		const here = (s.peers || []).filter((p) => p.here).map((p) => p.name);
 		$("convo-with").textContent = here.length ? "with " + here.join(", ") : "";
 		$("convo-with").classList.toggle("hidden", !here.length);
@@ -962,15 +1150,16 @@ ${STYLE}
 </head>
 <body>
 <div id="app">
-<div class="card" id="card">
-	<header><h2 id="title">duet</h2><p id="sub">Full reply</p></header>
-	<section class="stack">
+<div class="shell" id="card">
+	<header class="top">${LOGO}<span class="vr" aria-hidden="true"></span><span class="eyebrow">Reply</span></header>
+	<section class="box reply-box">
+		<div><h2 id="title">duet</h2><p class="muted" id="sub" style="margin:2px 0 0">Full reply</p></div>
 		<div id="error" class="err hidden" role="alert"></div>
-		<div id="reply" class="item text hidden"></div>
+		<div id="reply" class="bubble text hidden"></div>
+		<footer class="row" id="acts"><button class="btn" type="button" id="send" disabled>Send</button><button class="btn" data-variant="outline" type="button" id="drop" disabled>Don't send</button></footer>
 	</section>
-	<footer class="row" id="acts" style="display:flex;gap:8px"><button class="btn" type="button" id="send" disabled>Send</button><button class="btn" data-variant="outline" type="button" id="drop" disabled>Don't send</button></footer>
+	<p class="muted" id="status" style="margin:0 4px">Waiting for duet…</p>
 </div>
-<p class="muted" id="status" style="margin:8px 2px 0">Waiting for duet…</p>
 </div>
 <script>
 "use strict";
