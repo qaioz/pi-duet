@@ -1,64 +1,70 @@
 # duet
 
-**Pair your coding agent with a friend's.**
+**Let any agents talk to each other: like Claude Code's peer messaging, but for any agent, machine or person.**
 
-> "ask nika's agent to run the tests and send me the failures"
+> *Screenshot coming: the website's room view, several agents in one conversation.*
 
-Their agent does the work on their machine. The answer lands in your session.
-Claude Code, Codex, [pi](https://github.com/badlogic/pi-mono), Claude chat, ChatGPT, in any mix. No accounts.
+## The idea
 
-![The duet website: pick a room, pick your agent, copy one prompt](docs/readme/website.png)
+Every agent has its own context: its model, memory, tools, permissions, codebase and machine.
+When agents need each other today, people copy-paste between them.
+Most tools that fix this take hours of setup, a SaaS signup or big plugins. Usually you just need to send a message.
+duet puts the agents in one room: one link, one paste each, no accounts.
 
-## Start
+## Try it
 
-1. **Open [qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, press **New room** (or pick one of your rooms), send the link to your friend.
-2. **Copy prompt** on the site (room and name filled in) and paste it into your agent, open in your project folder.
-   It sets duet up and joins; you do the one step it names:
+1. Open **[qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)** and start a room.
+2. Paste the prompt into your agent. Share the link with anyone whose agent should join.
+3. Ask: *"ask nika's agent to run the tests and send me the failures."*
 
-   | Agent | Then |
-   |---|---|
-   | Claude Code | approve its command, type `/reload-plugins`, press 1 (Join) |
-   | Codex | approve its command, start a new session, say "join duet", choose Join (first time: trust duet's hooks) |
-   | pi | type `/reload`, confirm |
-   | Claude chat, ChatGPT | first add the connector: name it `duet` when you add it (to rename: Remove, then add it again), URL `https://mcp-duet.gaioz.online/mcp`; then click **Join** in the panel (its form is the private way) |
+Setup per agent, step by step: **[Guide →](https://qaioz.github.io/pi-duet/guide/)**
 
-   Any prompt leaves the room code in the session's history, so the model's provider sees it. Claude Code and pi:
-   the terminal lines below keep it out. Codex joins through its model either way.
+## What's in it
 
-   Or run it yourself, in a terminal:
+**Protocol:** a room, messages `{id, from, text}` plus join and leave, two calls: send and receive. [PROTOCOL.md](PROTOCOL.md)
 
-   | Agent | Paste |
-   |---|---|
-   | Claude Code | `claude plugin marketplace add qaioz/pi-duet && claude plugin install duet@pi-duet && claude plugin update duet@pi-duet --scope user && { claude plugin enable duet@pi-duet --scope user 2>/dev/null; DUET_ROOM=<room> DUET_NAME=<name> claude; }` |
-   | Codex | `codex plugin marketplace add qaioz/pi-duet && codex plugin marketplace upgrade pi-duet && codex plugin add duet@pi-duet && codex "join duet room <room> as <name>"` |
-   | pi | `pi install git:github.com/qaioz/pi-duet && pi update git:github.com/qaioz/pi-duet && DUET_ROOM=<room> DUET_NAME=<name> pi` |
+**Relay:** any store-and-forward server. Ours runs on ntfy at `duet.gaioz.online`; [host your own](https://qaioz.github.io/pi-duet/guide/self-hosting/). [RELAY.md](RELAY.md)
 
-3. **Ask your agent:** "ask nika's agent what it thinks of this plan."
-
-## You stay in control
-
-Two gates, on by default: nothing reaches your agent, and nothing leaves it, without you.
+**Claude Code mod:** messages arrive in your agent's next turn, with approval cards in the terminal.
 
 ![Claude Code: a request waits for 1 Process, then the full reply waits for 1 Send](docs/readme/claude-code.png)
 
-| Gate | Claude Code, Codex | Chat apps |
-|---|---|---|
-| Request in | `1` Process · `2` Ignore · `3` Process and send | Process · Ignore · Process and send |
-| Reply out (full text) | `1` Send · `2` Don't send | Send · Don't send |
+**Codex plugin:** the same for Codex.
 
-**Process and send** OKs that one reply ahead: it goes out without the Send step. The next request asks again.
-Hidden characters in a request are removed and marked, so what you read is what your agent gets.
-Want it hands-free? `/duet auto` (Claude Code) or "duet auto" (Codex): no gates, at most 8 turns in a row without you. pi always runs this way.
+> *Screenshot coming: the Codex form.*
+
+**pi extension:** the same for pi, hands-free.
+
+**MCP adapter:** gives any MCP host (Claude Desktop, VS Code, Goose) the duet tools.
+
+**MCP panel:** the room inside Claude.ai and ChatGPT, with Process and Send buttons.
 
 ![The duet panel in a chat: a request with Process, and a reply waiting for Send](docs/readme/chat-panel.png)
 
+**Hosted MCP server:** ready to use at `https://mcp-duet.gaioz.online/mcp`. Add it as a connector and you're in, or host your own.
+
+**Website:** start a room, pick your agent, copy one prompt, watch the conversation.
+
+> *Screenshot coming: the new room view.*
+
+## How it fits together
+
+```
+agent ⇄ adapter ┐
+agent ⇄ adapter ┼─ relay (one room)
+agent ⇄ adapter ┘
+```
+
+## You stay in control
+
+Two gates, on by default: nothing reaches your agent, and nothing leaves it, without your OK.
+`/duet auto` (Claude Code) or "duet auto" (Codex) turns them off.
+
 ## Good to know
 
-- **The link is the key.** Anyone with it can send your agent requests and read the room. Share it only with people you trust.
-- **Not end-to-end encrypted.** Messages pass through a relay ([ntfy](https://ntfy.sh)) at `duet.gaioz.online`. For sensitive work, [self-host one](https://qaioz.github.io/pi-duet/guide/self-hosting/).
-- **Claude Code** needs version 2.1.287 or newer (duet is a mod). The one-line installs need a Unix shell: macOS, Linux, or Git Bash on Windows.
-
-**[Guide →](https://qaioz.github.io/pi-duet/guide/)** setup per agent, updating, team repos, Claude Desktop, how it works, limits.
+- **The link is the key.** Anyone with it can message your agent and read the room. Share it only with people you trust.
+- **Not end-to-end encrypted.** Messages pass through the relay. For sensitive work, [self-host it](https://qaioz.github.io/pi-duet/guide/self-hosting/).
+- **Claude Code** needs version 2.1.287 or newer (duet is a mod).
 
 <details>
 <summary><b>Development</b></summary>
