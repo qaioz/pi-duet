@@ -641,25 +641,31 @@ exit 0
 	const guideHref = await page.$eval('header a[href="guide/"]', (a) => a.href).catch(() => "");
 	check("no horizontal scroll at 390 px; light only, also when the system is dark; Geist loads; Docs links to the guide", !sizes.some((x) => x.startsWith("FAIL")) && guideHref.endsWith("/pi-duet/guide/"), `${sizes.join("; ")}; guide link ${guideHref}`);
 
-	// The guide (docs/guide/, built from docs-site/): every page is there and fits a phone.
-	const GUIDE = ["", "ask-and-auto/", "claude-code/", "codex/", "pi/", "chat/", "how-it-works/", "self-hosting/", "limits/"];
+	// The docs: one page (docs/guide/) in the website's own style; the old guide paths forward to its sections.
+	// The overview sits beside it. Both fit a phone, use the site's fonts, and stay light.
+	const SECTIONS = ["ask-and-auto", "claude-code", "codex", "pi", "chat", "how-it-works", "self-hosting", "limits"];
 	const guideNotes = [];
-	const gctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
+	const gctx = await browser.newContext({ viewport: { width: 390, height: 800 }, colorScheme: "dark" });
 	const gp = await gctx.newPage();
-	for (const slug of GUIDE) {
-		const r = await gp.goto(new URL(`guide/${slug}`, site).href);
-		const m = await gp.evaluate(() => ({ h1: document.querySelector("h1")?.textContent ?? "", sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, fence: /fenc|guard/i.test(document.querySelector("main")?.textContent ?? "") }));
-		if (!r.ok() || !m.h1 || m.sw > m.cw || m.fence) guideNotes.push(`${slug || "/"}: ${r.status()} "${m.h1}" ${m.sw}/${m.cw}${m.fence ? " fencing wording" : ""}`);
+	for (const slug of ["", ...SECTIONS]) {
+		const r = await gp.goto(new URL(`guide/${slug ? slug + "/" : ""}`, site).href);
+		if (slug) await gp.waitForURL(new RegExp(`/guide/#${slug}$`), { timeout: 10_000 }).catch(() => {});
+		await gp.evaluate(() => document.fonts.ready);
+		const m = await gp.evaluate((s) => ({ url: location.pathname + location.hash, h1: document.querySelector("h1")?.textContent ?? "", section: !s || !!document.getElementById(s)?.querySelector("h2"), sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, fence: /fenc|guard/i.test(document.querySelector("main")?.textContent ?? ""), font: [...document.fonts].some((f) => f.family.includes("Geist Sans") && f.status === "loaded"), bg: getComputedStyle(document.body).backgroundColor }), slug);
+		if (!r.ok() || m.h1 !== "Docs" || !m.section || m.sw > m.cw || m.fence || !m.font || m.bg !== "rgb(236, 236, 228)") guideNotes.push(`${slug || "/"}: ${r.status()} at ${m.url} "${m.h1}" section ${m.section} ${m.sw}/${m.cw}${m.fence ? " fencing wording" : ""} font ${m.font} bg ${m.bg}`);
 	}
-	const claudePage = (await (await gp.goto(new URL("guide/claude-code/", site).href)).text());
+	const guidePage = await (await gp.goto(new URL("guide/", site).href)).text();
 	// The install line as a reader copies it: one code block equal to the brief's line, <room>/<name> left in.
 	const guideBlocks = await gp.$$eval("main pre code", (cs) => cs.map((c) => c.innerText.trim()));
 	const guideLine = guideBlocks.includes(BRIEF_LINE("<room>", "<name>"));
+	const ov = await gp.goto(new URL("overview/", site).href);
+	await gp.evaluate(() => document.fonts.ready);
+	const ovm = await gp.evaluate(() => ({ h1: document.querySelector("h1")?.textContent ?? "", sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, docs: !!document.querySelector('header a[href="../guide/"]'), bg: getComputedStyle(document.body).backgroundColor }));
 	await gctx.close();
 	check(
-		"guide: 9 pages, no horizontal scroll at 390 px, no fencing wording; Claude Code page has the brief's install line exactly",
-		guideNotes.length === 0 && guideLine && claudePage.includes("extraKnownMarketplaces"),
-		guideNotes.join("; ") || `${GUIDE.length} pages ok`,
+		"docs: one page in the site's style (Geist, light even when the system is dark), every old guide path forwards to its section, no horizontal scroll at 390 px, no fencing wording, the brief's Claude Code line exactly; the overview fits and links to the docs",
+		guideNotes.length === 0 && guideLine && guidePage.includes("extraKnownMarketplaces") && ov.ok() && /instantly/.test(ovm.h1) && ovm.sw <= ovm.cw && ovm.docs && ovm.bg === "rgb(236, 236, 228)",
+		guideNotes.join("; ") || `${SECTIONS.length} old paths forward; overview "${ovm.h1}" ${ovm.sw}/${ovm.cw}`,
 	);
 
 	// Nothing but the page itself and the relay is contacted; the room code never leaves the browser.
