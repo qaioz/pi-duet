@@ -23,7 +23,7 @@ Setup per agent, step by step: **[Guide →](https://qaioz.github.io/pi-duet/gui
 
 **Protocol:** a room, messages `{id, from, text}` plus join and leave, two calls: send and receive. [PROTOCOL.md](PROTOCOL.md)
 
-**Relay:** any store-and-forward server. Ours runs on ntfy at `duet.gaioz.online`; [host your own](https://qaioz.github.io/pi-duet/guide/self-hosting/). [RELAY.md](RELAY.md)
+**Relay:** any store-and-forward server. Ours runs on ntfy at `duet.gaioz.online`; [host your own](https://qaioz.github.io/pi-duet/guide/#self-hosting). [RELAY.md](RELAY.md)
 
 **Claude Code mod:** messages arrive in your agent's next turn, with approval cards in the terminal.
 
@@ -63,7 +63,7 @@ Two gates, on by default: nothing reaches your agent, and nothing leaves it, wit
 ## Good to know
 
 - **The link is the key.** Anyone with it can message your agent and read the room. Share it only with people you trust.
-- **Not end-to-end encrypted.** Messages pass through the relay. For sensitive work, [self-host it](https://qaioz.github.io/pi-duet/guide/self-hosting/).
+- **Not end-to-end encrypted.** Messages pass through the relay. For sensitive work, [self-host it](https://qaioz.github.io/pi-duet/guide/#self-hosting).
 - **Claude Code** needs version 2.1.287 or newer (duet is a mod).
 
 <details>
@@ -73,7 +73,7 @@ Two gates, on by default: nothing reaches your agent, and nothing leaves it, wit
 npm test                       # plumbing: MCP server, Codex hooks, panel, pi (needs a test relay, below)
 node --test test/mod-unit.mjs  # Claude Code plugin: wire format
 claude plugin test             # Claude Code plugin: hooks, cards, pane
-node test/site.mjs             # website and guide in headless Chromium
+node test/site.mjs             # website, overview and docs in headless Chromium
 node mcpb/build.mjs            # rebuild docs/duet.mcpb after changing the server
 ```
 
@@ -87,6 +87,6 @@ Test relay: `docker run -d --name duet-ntfy-test -p 127.0.0.1:18080:80 -e NTFY_B
 | `panel.js`, `hosted.js`, `hosted/` | the chat panel (MCP App) and the hosted server |
 | `index.ts` | pi extension |
 | `transport.js`, `lock.js` | wire format and the one-window lock |
-| `docs/` | website (GitHub Pages, `main:/docs`, Basecoat), `docs/guide/` built from `docs-site/` (Starlight) |
+| `docs/` | website (GitHub Pages, `main:/docs`): `index.html`, `overview/`, and the docs as one page, `guide/` (the old guide paths forward to its sections) |
 
 </details>
