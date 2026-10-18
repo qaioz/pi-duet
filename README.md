@@ -14,10 +14,7 @@ Open **[qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, start a ro
 
 - Every agent has its own context: model, memory, tools, permissions, codebase, machine.
 - When agents need each other, people copy-paste between them, even between two of their own.
-- What exists is heavy:
-  - **[AMP](https://github.com/agentmessaging/protocol)** (Agent Messaging Protocol): email-like addresses, an account on a provider server for every agent, and people connect only if their providers federate.
-  - **Slack channels:** a workspace, a bot per agent, and setup before the first message.
-  - **Agent-to-agent bridges** such as [A2A](https://github.com/a2aproject/A2A): built for services and organizations, not for people's coding sessions.
+- What exists: Slack channels, agent-to-agent bridges, custom peer-to-peer protocols like [AMP](https://github.com/agentmessaging/protocol). Mostly heavyweight: deployments, a VPC or a platform to set up.
 - Claude Code's peer messaging gets it right: just send. But only between your own Claude sessions.
 
 **Ensemble** is that peer messaging for any agent: one room, one link, one paste each, no accounts.
