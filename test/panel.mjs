@@ -741,7 +741,7 @@ addEventListener("message", async (ev) => {
 		const sizes = await page.evaluate(() => window.sizes);
 		check("browser: reports its size to the host; no page errors", sizes.length > 0 && sizes.at(-1).height > 100 && !Object.values(runs).some((r) => r.errors.length), `last size ${JSON.stringify(sizes.at(-1))}; errors: ${JSON.stringify(Object.values(runs).flatMap((r) => r.errors))}`);
 
-		// The conversation: one row, Conversation · N; a click opens the modal (in the panel here: no fullscreen).
+		// The conversation: in the panel, Conversation · N; the expand button opens it larger (in the panel here: no fullscreen).
 		const seat = m.content[0].text.match(/seat "([^"]+)"/)[1];
 		const cl = client(h.url);
 		const held = await cl.model("duet_send", { seat, text: "Cause: expires_at null on old rows.\nFix: backfill." });
@@ -785,8 +785,23 @@ addEventListener("message", async (ev) => {
 		const closed = !(await panel.locator("#convo[open]").count());
 		check(
 			"browser: Conversation · N opens a modal in the panel: name · time · text, the handed request included once; the panel's reply row works",
-			entries.length === 3 && entries[0].startsWith("nika") && entries[0].includes(evil) && entries[1].startsWith("you") && entries.some((e) => e.includes("Adding the backfill.")) && !entries.join().includes("Cause: expires_at") && closed && !modes.length && outTitle === "Send to everyone in the room?" && heldState.status === "dropped",
+			entries.length === 3 && entries[0].startsWith("Nika") && entries[0].includes(evil) && entries[1].startsWith("Gd380's Chat") && entries.some((e) => e.includes("Adding the backfill.")) && !entries.join().includes("Cause: expires_at") && closed && !modes.length && outTitle === "Send to everyone in the room?" && heldState.status === "dropped",
 			`${entries.length} entries: ${JSON.stringify(entries.map((e) => e.slice(0, 40)))}; display-mode requests: ${JSON.stringify(modes)}; closed: ${closed}; panel reply row: ${outTitle} → ${heldState.status}`,
+		);
+		// The room look: members as "<Owner>'s <App>" with the seat count, joins inline, a message sent to
+		// someone (to) starts with a highlighted @name.
+		const toNika = await cl.model("duet_send", { seat, text: "Mention check.", to: "nika" });
+		await cl.call("duet_reply", { id: toNika._meta["duet/hold"], action: "send" });
+		await panel.locator("#feed .entry .mention", { hasText: "@nika" }).waitFor({ timeout: 15_000 });
+		const mentionRow = await panel.locator("#feed .entry", { hasText: "Mention check." }).textContent();
+		const joins = await panel.locator("#feed .event").allTextContents();
+		const people = await panel.locator("#people").textContent();
+		const seats = await panel.locator("#seats").textContent();
+		check(
+			"browser: the room: members as <Owner>'s <App>, N in the room, joins inline, a reply to nika starts with @nika",
+			mentionRow.includes("@nika Mention check.") && mentionRow.startsWith("Gd380's Chat") && joins.some((j) => j.startsWith("Gl380's Chat joined")) &&
+				["Gd380's Chat", "Gl380's Chat", "Gd720's Chat", "Nika"].every((n) => people.includes(n)) && seats === "5 in the room",
+			`row: ${JSON.stringify(mentionRow.slice(0, 60))}; joins: ${JSON.stringify(joins.map((j) => j.slice(0, 30)))}; people: ${JSON.stringify(people)}; seats: ${seats}`,
 		);
 		// With a host that allows fullscreen, the modal asks for it, and goes back inline on close.
 		const wide = runs["light-720"];
@@ -968,11 +983,11 @@ addEventListener("message", async (ev) => {
 			await r.panel.locator("#join-btn").click();
 			await r.panel.locator("#pill", { hasText: "● connected" }).waitFor({ timeout: 15_000 }).catch(() => {});
 			const shownCode = await r.panel.locator("#sub .code").textContent().catch(() => "");
-			const sub = await r.panel.locator("#sub").textContent().catch(() => "");
+			const sub = await r.panel.locator("#people").textContent().catch(() => "");
 			ear.stop();
 			check(
 				"browser: duet_room with room and name fills the panel's form and joins nothing; the user's Join click joins",
-				filled[0] === askedRoom && filled[1] === "zura" && heardBefore === 0 && shownCode === askedRoom && sub.includes("zura") && !r.errors.length,
+				filled[0] === askedRoom && filled[1] === "zura" && heardBefore === 0 && shownCode === askedRoom && sub.includes("Zura's Chat") && !r.errors.length,
 				`form ${JSON.stringify(filled)}; heard in the room before the click: ${heardBefore}; shown after: ${JSON.stringify(sub)}; error: ${JSON.stringify(await r.panel.locator("#error").textContent())}; page errors: ${JSON.stringify(r.errors)}`,
 			);
 			// A second duet_room (e.g. a request from the other side asked the model for it) while in a room:
@@ -1594,14 +1609,14 @@ addEventListener("message", async (ev) => {
 			const c = client(h.url);
 			const n0 = await page.evaluate(() => window.calls.length);
 			await c.request("tools/call", { name: "duet_room_join", arguments: { token, room: `t-${randomUUID()}`, name: "lin2" } });
-			await panel.locator("#sub", { hasText: "lin2" }).waitFor({ timeout: 10_000 }).catch(() => {});
+			await panel.locator("#people", { hasText: "Lin2's Chat" }).waitFor({ timeout: 10_000 }).catch(() => {});
 			await sleep(6000);
 			const after = await page.evaluate((n) => window.calls.slice(n), n0);
 			const mode = await panel.locator("html").getAttribute("data-live");
-			const sub = await panel.locator("#sub").textContent();
+			const sub = await panel.locator("#people").textContent();
 			check(
 				"live browser: the seat moves to another room under the same token: the panel follows it on the stream, no polling",
-				sub.includes("lin2") && mode === "on" && after.filter((n) => n === "duet_room_state").length === 0,
+				sub.includes("Lin2's Chat") && mode === "on" && after.filter((n) => n === "duet_room_state").length === 0,
 				`sub ${JSON.stringify(sub)}; data-live ${mode}; calls after the move: ${JSON.stringify(after)}`,
 			);
 			await page.close();
