@@ -256,7 +256,9 @@ class Seat {
 	}
 	// A leave (a note on the wire): only a line in the panel's conversation; who's here is unchanged.
 	onLeave(env) {
-		if (isForMe(env, this.fromId, this.name)) this.remember({ who: env.from, text: "left", note: true, event: "left" });
+		if (!isForMe(env, this.fromId, this.name)) return;
+		const last = this.history.findLast((h) => h.who === env.from && !h.mine);
+		if (last?.event !== "left") this.remember({ who: env.from, text: "left", note: true, event: "left" }); // once, like mcp.js
 	}
 	revNow() {
 		const here = [...this.peers.values()].filter((at) => Date.now() - at < RECENT_MS).length;

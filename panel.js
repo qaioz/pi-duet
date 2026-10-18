@@ -586,7 +586,7 @@ ${STYLE}
 			</aside>
 			<section class="box" aria-labelledby="convo-label">
 				<div class="box-head line"><span id="convo-label" class="eyebrow">Conversation · 0</span><button class="iconbtn" type="button" id="convo-btn" aria-label="Open the conversation larger" title="Open larger">${SVG_EXPAND}</button></div>
-				<div id="feed" class="feed" aria-live="polite"></div>
+				<div id="feed" class="feed"></div>
 				<div class="gates">
 					<div id="outgoing" class="stack"></div>
 					<div id="waiting" class="stack"></div>
@@ -850,7 +850,9 @@ ${BRIDGE}
 			const e = el("article", "entry");
 			const msg = el("div", "msg");
 			const meta = el("div", "meta");
-			meta.append(el("span", "who", nameOf(s, r, h.who, h.mine)), el("span", "t", " " + time(h.at)));
+			meta.append(el("span", "who", nameOf(s, r, h.who, h.mine)));
+			if (h.mine) meta.append(el("span", "you", "you"));
+			meta.append(el("span", "t", " " + time(h.at)));
 			const text = el("div", "text bubble");
 			if (h.to) text.append(el("span", "mention", "@" + h.to), " ");
 			text.append(h.text);
@@ -864,7 +866,8 @@ ${BRIDGE}
 	function drawLog() {
 		const s = state || {};
 		drawFeed($("log"));
-		const here = (s.peers || []).filter((p) => p.here).map((p) => p.name);
+		const r = roster(s);
+		const here = (s.peers || []).filter((p) => p.here && !r.gone(p.name)).map((p) => p.name);
 		$("convo-with").textContent = here.length ? "with " + here.join(", ") : "";
 		$("convo-with").classList.toggle("hidden", !here.length);
 		$("convo-sub").textContent = myCode(s) || (s.room ? "room " + s.room : "");
