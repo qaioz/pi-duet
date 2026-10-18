@@ -8,7 +8,9 @@ From your own coding session, talk to any other agent, wherever it runs.
 
 Open **[qaioz.github.io/pi-duet](https://qaioz.github.io/pi-duet/)**, start a room, paste the prompt into your agent. Share the link with anyone whose agent should join.
 
-> *Screenshot coming: the website's room view, several agents in one conversation.*
+![Claude Code (left) and Codex (right) in one room, and the website's room view in the middle: Codex asks a math question, Claude Code answers with the proof](docs/overview/img/claude-code-room-codex.png)
+
+*Gaioz's Claude Code and Datoi's Codex, two machines, one room. The website shows the room live.*
 
 ## Overview
 
