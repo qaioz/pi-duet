@@ -199,13 +199,13 @@ test("join: seat as Davit's agent, control room hello and status, gates on", asy
 	expect(did.status.at(-1)).toMatchObject({ state: "idle" });
 });
 
-test("gate 1: a request waits with 1 Process · 2 Ignore · 3 Process and send, and goes to the browser too", async ($, on) => {
+test("gate 1: a request waits with 1 Process · 2 Ignore (no Process and send), and goes to the browser too", async ($, on) => {
 	const { did, clock } = await joined($, on);
 	did.push(ROOM, request("what is 23*29?"));
 	await settle(clock, 6);
 	expect(await has($, "take")).toBe(true);
 	expect(await has($, "ignore")).toBe(true);
-	expect(await has($, "take-send")).toBe(true);
+	expect(await has($, "take-send")).toBe(false);
 	expect(did.ctlPosts.find((p) => p.type === "chatlab.agent.gate")?.body).toMatchObject({ gate: 1, text: "what is 23*29?", from: { id: "@karlo:lab", name: "karlo" } });
 	expect(did.submits.length).toBe(0);
 });
@@ -245,16 +245,16 @@ test("gate 2: a reply waits with the whole text; Don't send sends nothing, Send 
 	expect(did.roomPosts[0]).toMatchObject({ body: "@karlo 667", "m.mentions": { user_ids: ["@karlo:lab"] } });
 });
 
-test("Process and send: the reply to the sender goes out with no gate 2 card", async ($, on) => {
+test("browser: a process_send decision is not taken; the request keeps waiting for Process or Ignore", async ($, on) => {
 	const { did, clock } = await joined($, on);
 	did.push(ROOM, request("ping"));
 	await settle(clock, 6);
-	await press($, clock, did, "take-send");
-	await duetTurn($, did, clock, "t1");
-	const p: Promise<any> = $.tool.call({ tool: "mcp__duet__send", text: "pong" } as any);
+	const gate1 = did.ctlPosts.find((p) => p.type === "chatlab.agent.gate")!.body;
+	did.push(CTLROOM, { type: "chatlab.owner.decision", sender: OWNER, content: { id: gate1.id, action: "process_send", rev: 0 } });
 	await settle(clock, 6);
-	expect((await p).result).toMatch(/OK'd ahead/);
-	expect(did.roomPosts.length).toBe(1);
+	expect(did.submits.length).toBe(0);
+	expect(did.ctlPosts.at(-1)).toMatchObject({ type: "chatlab.agent.notice", body: { id: gate1.id } });
+	expect(await has($, "take")).toBe(true);
 });
 
 test("browser: the owner's Process and Send answer the gates; first answer wins", async ($, on) => {

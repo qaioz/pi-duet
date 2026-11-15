@@ -7,10 +7,9 @@
 // Claude Code? <Owner> will answer this agent's gates from the browser" · 1 Join · 2 Ignore. Only the
 // press joins: whoever wrote the file, the person at this terminal decides.
 //
-// Two gates. Gate 1: someone else's request waits as a card (1 Process · 2 Ignore · 3 Process and
-// send). Gate 2: every reply Claude sends with the send tool waits as a card with the whole reply
-// (1 Send · 2 Don't send); the tool call holds until the press. "Process and send" OKs the first reply
-// of that turn to that sender ahead. Both gates also go to the owner's browser through a private
+// Two gates. Gate 1: someone else's request waits as a card (1 Process · 2 Ignore). Gate 2: every
+// reply Claude sends with the send tool waits as a card with the whole reply (1 Send · 2 Don't send);
+// the tool call holds until the press. Both gates also go to the owner's browser through a private
 // control room; the first answer wins. What the owner types to the agent there, or @-mentions it with
 // in the room, is the owner's own input: no gate 1. Anything in the control room from anyone else is
 // refused. While Claude works on a request it runs under the user's own permission mode: duet adds
@@ -29,7 +28,7 @@ import {
 type $ = EngineInterface; // the engine interface, as each hook hands it over
 
 const SEND_TOOL = "mcp__duet__send";
-const VERSION = "0.20.1";
+const VERSION = "0.20.2";
 const AMBER = "#e9b45a";
 const BLUE = "#8eb1ff";
 
@@ -56,9 +55,9 @@ let queue: Request[] = []; // gate 1: requests waiting for the user
 type Outgoing = { id: string; text: string; to: string; decision: string; by: string; editedText?: string };
 let outbox: Outgoing[] = []; // gate 2: replies waiting for the user
 // A request taken (a press), waiting for Claude to be idle; then submitted, waiting for its turn to start.
-let pendingPeer: { reqs: Request[]; preSend: boolean; roomKey: string } | null = null;
-let expected: { text: string; froms: string[]; reqs: Request[]; preSend: boolean; at: number }[] = [];
-let peerTurn: { turnId: string; froms: string[]; askers: string[]; answers: Request[]; preSend: string } | null = null;
+let pendingPeer: { reqs: Request[]; roomKey: string } | null = null;
+let expected: { text: string; froms: string[]; reqs: Request[]; at: number }[] = [];
+let peerTurn: { turnId: string; froms: string[]; askers: string[]; answers: Request[] } | null = null;
 let runningTurn = ""; // the main loop's turn in progress, "" while Claude is idle
 let userPromptSince = false; // the user typed a prompt since duet's last submission
 let choosing = false;
@@ -271,9 +270,9 @@ function onRoomEvent($: $, r: Room, ev: any) {
 
 // ---------- handing requests to Claude ----------
 
-async function startPeerTurn($: $, reqs: Request[], preSend: boolean) {
+async function startPeerTurn($: $, reqs: Request[]) {
 	if (!room) return;
-	pendingPeer = { reqs, preSend, roomKey: roomKeyOf(room) };
+	pendingPeer = { reqs, roomKey: roomKeyOf(room) };
 	redraw($);
 	await submitWhenIdle($);
 }
@@ -285,7 +284,7 @@ async function submitWhenIdle($: $) {
 	pendingPeer = null;
 	if (!room || roomKeyOf(room) !== p.roomKey) return redraw($); // the room was left meanwhile
 	const text = frameForClaude(p.reqs, cwd, SEND_TOOL, livePeers().map((x) => x.label).join(", "), room.name);
-	expected = [...expected, { text, froms: [...new Set(p.reqs.map((x) => x.from))], reqs: p.reqs, preSend: p.preSend, at: Date.now() }];
+	expected = [...expected, { text, froms: [...new Set(p.reqs.map((x) => x.from))], reqs: p.reqs, at: Date.now() }];
 	userPromptSince = false;
 	redraw($);
 	let result: any;
@@ -308,7 +307,7 @@ async function flowOwner($: $) {
 	if (!room || !ownerQueue.length || busyWithPeer() || choosing) return;
 	if (!(await sendToolReady($))) return;
 	if (!ownerQueue.length || busyWithPeer()) return;
-	await startPeerTurn($, ownerQueue.splice(0), false);
+	await startPeerTurn($, ownerQueue.splice(0));
 }
 
 // ---------- joining and leaving ----------
@@ -403,7 +402,7 @@ async function leave($: $) {
 // ---------- gate 1 ----------
 
 // A press acts on every waiting request (the terminal card), or on the ones the browser names.
-async function choose($: $, action: "take" | "take-send" | "ignore", ids: string[] | null, by: string) {
+async function choose($: $, action: "take" | "ignore", ids: string[] | null, by: string) {
 	if (choosing || !room) return;
 	const reqs = ids ? queue.filter((q) => ids.includes(q.id)) : [...queue];
 	if (!reqs.length) return;
@@ -423,7 +422,7 @@ async function choose($: $, action: "take" | "take-send" | "ignore", ids: string
 	}
 	queue = queue.filter((q) => !reqs.includes(q));
 	for (const q of reqs) ctlDone($, q.id, take ? "processed" : "ignored", by);
-	if (take) await startPeerTurn($, reqs, action === "take-send");
+	if (take) await startPeerTurn($, reqs);
 	else redraw($); // ignored: nothing goes to the other side
 }
 
@@ -535,49 +534,41 @@ async function sendTool($: $, e: any, signal?: AbortSignal): Promise<{ result: s
 	if (toId === undefined && ownTurn && peerTurn!.askers.length === 1 && peers.get(peerTurn!.askers[0]!)?.left === false) toId = peerTurn!.askers[0];
 	const sendTo = toId ? labelOf(toId) : undefined;
 	if (byteLength(JSON.stringify(replyContent(text, "@x:x", sendTo, "$x"))) > MAX_EVENT_BYTES) return { result: "Not sent: too long for one Matrix message (about 60 KB) · send the key part, or split it" };
-	// "Process and send": the first send of that turn that reaches exactly its sender skips gate 2.
-	// Used up before any await, so two sends in parallel can't both use it.
-	const preSent = ownTurn && !!peerTurn!.preSend && toId === peerTurn!.preSend;
-	if (preSent) peerTurn!.preSend = "";
-	let out = text;
-	let gate2: Outgoing | null = null;
-	if (!preSent) {
-		const item: Outgoing = { id: randomId(), text, to: sendTo ?? (peerList() || "the room"), decision: "", by: "" };
-		outbox = [...outbox, item];
-		ctlSend($, CTL.gate, { id: item.id, gate: 2, draft: text, to: { id: toId ?? "", name: item.to }, ts: Date.now() });
-		$.ui.toast(`duet: reply to ${oneLine(item.to)} waiting`);
+	// Gate 2: every reply waits for Send / Don't send, in the terminal or the owner's browser.
+	const item: Outgoing = { id: randomId(), text, to: sendTo ?? (peerList() || "the room"), decision: "", by: "" };
+	outbox = [...outbox, item];
+	ctlSend($, CTL.gate, { id: item.id, gate: 2, draft: text, to: { id: toId ?? "", name: item.to }, ts: Date.now() });
+	$.ui.toast(`duet: reply to ${oneLine(item.to)} waiting`);
+	redraw($);
+	let decision: string;
+	try {
+		decision = await waitForPress($, item, signal);
+	} finally {
+		outbox = outbox.filter((x) => x !== item);
 		redraw($);
-		let decision: string;
-		try {
-			decision = await waitForPress($, item, signal);
-		} finally {
-			outbox = outbox.filter((x) => x !== item);
-			redraw($);
-		}
-		if (decision !== "send") {
-			ctlDone($, item.id, decision === "drop" ? "cancelled" : "dropped", item.by || "terminal");
-			if (decision === "drop") return { result: "Not sent: your user said no · don't resend" };
-			if (decision === "reloaded") return { result: "Not sent: duet restarted · send it again" };
-			return { result: "Not sent" };
-		}
-		if (room !== r) return { result: "Not sent: left the room" };
-		if (item.editedText !== undefined) out = item.editedText;
-		gate2 = item;
 	}
+	if (decision !== "send") {
+		ctlDone($, item.id, decision === "drop" ? "cancelled" : "dropped", item.by || "terminal");
+		if (decision === "drop") return { result: "Not sent: your user said no · don't resend" };
+		if (decision === "reloaded") return { result: "Not sent: duet restarted · send it again" };
+		return { result: "Not sent" };
+	}
+	if (room !== r) return { result: "Not sent: left the room" };
+	const out = item.editedText ?? text;
 	try {
 		const asked = ownTurn ? peerTurn!.answers.filter((m) => !toId || m.fromId === toId).at(-1) : undefined;
 		const content = replyContent(out, toId, toId ? cleanName(nameOf(toId)) : undefined, asked?.id);
 		const res = await mx($, r.server, "PUT", `/_matrix/client/v3/rooms/${enc(r.roomId)}/send/m.room.message/${randomId()}`, { token: r.token, body: content });
 		sent.set(res.event_id, firstLine(out));
 		if (sent.size > 200) sent.delete(sent.keys().next().value!);
-		if (gate2) ctlDone($, gate2.id, gate2.editedText !== undefined ? "edited" : "sent", gate2.by || "terminal");
+		ctlDone($, item.id, item.editedText !== undefined ? "edited" : "sent", item.by || "terminal");
 	} catch (err: any) {
-		if (gate2) ctlDone($, gate2.id, "failed", gate2.by || "terminal");
+		ctlDone($, item.id, "failed", item.by || "terminal");
 		return { result: "Not sent: " + sanitize(String(err?.message ?? err), 200) };
 	}
 	const where = sendTo ?? (peerList() || "the room");
-	if (gate2?.editedText !== undefined) return { result: `Sent to ${where} · your user edited it before sending; what went out: ${out}` };
-	return { result: `Sent to ${where}${preSent ? " (OK'd ahead)" : ""}${text.endsWith(HIDDEN_MARK) ? " · hidden characters removed" : ""}` };
+	if (item.editedText !== undefined) return { result: `Sent to ${where} · your user edited it before sending; what went out: ${out}` };
+	return { result: `Sent to ${where}${text.endsWith(HIDDEN_MARK) ? " · hidden characters removed" : ""}` };
 }
 
 // ---------- owner control (peer-agents/owner-control/PROTOCOL.md) ----------
@@ -651,7 +642,7 @@ function onControlEvent($: $, r: Room, ev: any) {
 		return;
 	}
 	if (queue.some((q) => q.id === id)) {
-		const map: Record<string, "take" | "take-send" | "ignore"> = { process: "take", process_send: "take-send", ignore: "ignore" };
+		const map: Record<string, "take" | "ignore"> = { process: "take", ignore: "ignore" };
 		const act = map[action];
 		if (!act) return void ctlSend($, CTL.notice, { id, text: `can't ${sanitize(action, 20)} a request waiting at gate 1` });
 		void choose($, act, [id], "browser")
@@ -769,8 +760,6 @@ function drawCard($: $, e: any): any {
 	const keys = buttons([
 		Button({ key: "take", label: "Process", hotkey: "1", plain: true, onPress: () => void choose($, "take", null, "terminal").catch(() => {}) }),
 		Button({ key: "ignore", label: "Ignore", hotkey: "2", plain: true, onPress: () => void choose($, "ignore", null, "terminal").catch(() => {}) }),
-		// 3, not 2: a habit press of 2 (Ignore here, Don't send on the reply card) must never skip gate 2.
-		Button({ key: "take-send", label: "Process and send", hotkey: "3", plain: true, onPress: () => void choose($, "take-send", null, "terminal").catch(() => {}) }),
 	]);
 	const rows = queue.reduce((n, q) => n + rowsFor(q.text, columns) + 1, 0);
 	return frame(AMBER, fits(rows) ? [head, ...body, keys] : [head, keys, ...body]);
@@ -835,13 +824,12 @@ export const register: Register = (on) => {
 			expected = expected.filter((x) => Date.now() - x.at < 30 * 60_000);
 			let i = expected.findIndex((x) => text.includes(x.text));
 			// duet's frame is pending and the user typed nothing since: its text may have been changed on the way.
-			const exact = i >= 0;
 			if (i < 0 && expected.length && !userPromptSince && !ownerTurns.some((t) => !t.turnId)) i = 0;
 			if (i >= 0) {
 				const x = expected[i]!;
 				expected = expected.filter((_, j) => j !== i);
 				const askers = [...new Set(x.reqs.map((q) => q.fromId))];
-				peerTurn = { turnId: e.turnId, froms: x.froms, askers, answers: x.reqs, preSend: exact && x.preSend && askers.length === 1 ? askers[0]! : "" };
+				peerTurn = { turnId: e.turnId, froms: x.froms, askers, answers: x.reqs };
 			}
 		}
 		redraw($);
