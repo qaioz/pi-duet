@@ -6,8 +6,8 @@
   "plugins": [
     {
       "name": "duet",
-      "source": "./",
-      "description": "Pair your Claude Code with another developer's coding agent (pi, Claude Code or Codex) through a shared room."
+      "source": "./claude-code",
+      "description": "Bring your Claude Code into a chat-lab room: others' requests and its replies wait for your OK, in the terminal or your browser."
     }
   ],
   "description": "duet: pair your coding agent with another developer's (pi, Claude Code, Codex) through a shared room."
