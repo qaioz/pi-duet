@@ -29,7 +29,7 @@ import {
 type $ = EngineInterface; // the engine interface, as each hook hands it over
 
 const SEND_TOOL = "mcp__duet__send";
-const VERSION = "0.20.1";
+const VERSION = "0.20.2";
 const AMBER = "#e9b45a";
 const BLUE = "#8eb1ff";
 
@@ -349,6 +349,8 @@ async function join($: $, t: Ticket) {
 	let members: any, state: any;
 	try {
 		const acct = await mxAccount($, t.server, t.owner);
+		// The name the owner gave this agent (the account may have joined before under another).
+		await mx($, t.server, "PUT", `/_matrix/client/v3/profile/${enc(acct.userId)}/displayname`, { token: acct.token, body: { displayname: t.agent } });
 		const alias = await roomAlias(t.room, serverNameOf(acct.userId));
 		// Start from now, taken before joining: nothing said after the join is missed.
 		const start = (await mx($, t.server, "GET", `/_matrix/client/v3/sync?timeout=0&filter=${enc(filterNone)}`, { token: acct.token })).next_batch;
@@ -356,7 +358,7 @@ async function join($: $, t: Ticket) {
 		await mx($, t.server, "PUT", `/_matrix/client/v3/rooms/${enc(roomId)}/state/${SEAT}/${enc(acct.userId)}`, { token: acct.token, body: { kind: "agent", owner: t.owner, app: APP } }).catch(() => {});
 		members = await mx($, t.server, "GET", `/_matrix/client/v3/rooms/${enc(roomId)}/joined_members`, { token: acct.token });
 		state = await mx($, t.server, "GET", `/_matrix/client/v3/rooms/${enc(roomId)}/state`, { token: acct.token });
-		r = { ...t, name: agentName(t.owner), userId: acct.userId, token: acct.token, roomId, cursor: start };
+		r = { ...t, name: t.agent, userId: acct.userId, token: acct.token, roomId, cursor: start };
 	} catch (err: any) {
 		$.ui.log(`duet: ${t.server}: ${sanitize(String(err?.message ?? err), 200)} · not joined`);
 		$.ui.toast("duet: server unreachable · not joined");
