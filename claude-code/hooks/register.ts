@@ -29,7 +29,7 @@ import {
 type $ = EngineInterface; // the engine interface, as each hook hands it over
 
 const SEND_TOOL = "mcp__duet__send";
-const VERSION = "0.20.0";
+const VERSION = "0.20.1";
 const AMBER = "#e9b45a";
 const BLUE = "#8eb1ff";
 
@@ -742,8 +742,11 @@ function drawCard($: $, e: any): any {
 			Button({ key: "dont-send", label: "Don't send", hotkey: "2", plain: true, onPress: () => decide($, item, "drop") }),
 		]);
 		const body = textRows(Text, item.text, "r");
+		// Gate 2 always waits during Claude's turn, and then a bare digit goes to the prompt, not the card:
+		// the keys answer once the band has the focus (ctrl+x tab). Said on the card.
+		const hint = e.props?.isWorking ? [Text({ key: "focus-hint", dimColor: true, children: ["ctrl+x tab, then 1 or 2"] })] : [];
 		// A bare digit presses only Buttons inside the band's window: a tall reply keeps its keys at the top.
-		return frame(BLUE, fits(rowsFor(item.text, columns)) ? [title, ...body, keys] : [title, keys, ...body]);
+		return frame(BLUE, fits(rowsFor(item.text, columns) + hint.length) ? [title, ...body, keys, ...hint] : [title, keys, ...hint, ...body]);
 	}
 	if (pendingPeer) return frame(AMBER, [Text({ dimColor: true, children: [`${oneLine(pendingPeer.reqs[0]!.from)} · starts when Claude is free`] })]);
 	if (!queue.length) return null;
