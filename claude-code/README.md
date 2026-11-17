@@ -18,7 +18,7 @@ first if no card shows.
 
 ## In the room
 
-- Gate 1: someone else's request waits as a card: 1 Process · 2 Ignore · 3 Process and send.
+- Gate 1: someone else's request waits as a card: 1 Process · 2 Ignore.
 - Gate 2: every reply Claude sends waits as a card with the whole text: 1 Send · 2 Don't send.
 - Both gates also show in your browser; the first answer wins. What you type to the agent there goes
   straight to Claude, and its answer comes back only to you.

@@ -32,7 +32,7 @@ function world(on: any) {
 	const did = {
 		files: new Map<string, string>([[`${HOME}/.duet/join.json`, joinFile()]]),
 		logs: [] as string[], toasts: [] as string[], submits: [] as { text: string; asUser?: boolean }[],
-		roomPosts: [] as any[], ctlPosts: [] as { type: string; body: any }[], status: [] as any[], seat: null as any, left: false,
+		roomPosts: [] as any[], ctlPosts: [] as { type: string; body: any }[], status: [] as any[], seat: null as any, left: false, displayName: "" as string,
 		sleepers: [] as (() => void)[], gates: [] as (() => void)[],
 		push: (_room: string, _ev: any) => {},
 	};
@@ -90,7 +90,7 @@ function world(on: any) {
 		const path = decodeURIComponent(u.pathname);
 		const body = e.init?.body ? JSON.parse(e.init.body) : undefined;
 		if (path.endsWith("/register")) return body?.auth ? reply(200, { user_id: ME, access_token: "tok" }) : reply(401, { session: "s1" });
-		if (path.includes("/profile/")) return reply(200, {});
+		if (path.includes("/profile/")) return (did.displayName = body?.displayname), reply(200, {});
 		if (path.includes("/join/#ctl-")) return reply(200, { room_id: CTLROOM });
 		if (path.includes("/join/#chatlab-")) return reply(200, { room_id: ROOM });
 		if (path.includes("/state/chatlab.member/")) return (did.seat = body), reply(200, {});
@@ -199,13 +199,13 @@ test("join: seat as Davit's agent, control room hello and status, gates on", asy
 	expect(did.status.at(-1)).toMatchObject({ state: "idle" });
 });
 
-test("gate 1: a request waits with 1 Process · 2 Ignore · 3 Process and send, and goes to the browser too", async ($, on) => {
+test("gate 1: a request waits with 1 Process · 2 Ignore (no Process and send), and goes to the browser too", async ($, on) => {
 	const { did, clock } = await joined($, on);
 	did.push(ROOM, request("what is 23*29?"));
 	await settle(clock, 6);
 	expect(await has($, "take")).toBe(true);
 	expect(await has($, "ignore")).toBe(true);
-	expect(await has($, "take-send")).toBe(true);
+	expect(await has($, "take-send")).toBe(false);
 	expect(did.ctlPosts.find((p) => p.type === "chatlab.agent.gate")?.body).toMatchObject({ gate: 1, text: "what is 23*29?", from: { id: "@karlo:lab", name: "karlo" } });
 	expect(did.submits.length).toBe(0);
 });
@@ -245,16 +245,16 @@ test("gate 2: a reply waits with the whole text; Don't send sends nothing, Send 
 	expect(did.roomPosts[0]).toMatchObject({ body: "@karlo 667", "m.mentions": { user_ids: ["@karlo:lab"] } });
 });
 
-test("Process and send: the reply to the sender goes out with no gate 2 card", async ($, on) => {
+test("browser: a process_send decision is not taken; the request keeps waiting for Process or Ignore", async ($, on) => {
 	const { did, clock } = await joined($, on);
 	did.push(ROOM, request("ping"));
 	await settle(clock, 6);
-	await press($, clock, did, "take-send");
-	await duetTurn($, did, clock, "t1");
-	const p: Promise<any> = $.tool.call({ tool: "mcp__duet__send", text: "pong" } as any);
+	const gate1 = did.ctlPosts.find((p) => p.type === "chatlab.agent.gate")!.body;
+	did.push(CTLROOM, { type: "chatlab.owner.decision", sender: OWNER, content: { id: gate1.id, action: "process_send", rev: 0 } });
 	await settle(clock, 6);
-	expect((await p).result).toMatch(/OK'd ahead/);
-	expect(did.roomPosts.length).toBe(1);
+	expect(did.submits.length).toBe(0);
+	expect(did.ctlPosts.at(-1)).toMatchObject({ type: "chatlab.agent.notice", body: { id: gate1.id } });
+	expect(await has($, "take")).toBe(true);
 });
 
 test("browser: the owner's Process and Send answer the gates; first answer wins", async ($, on) => {
@@ -335,4 +335,28 @@ test("the send tool refuses outside a room", async ($, on) => {
 	await $.session.start(start());
 	await settle(clock, 2);
 	expect(((await $.tool.call({ tool: "mcp__duet__send", text: "hi" } as any)) as any).result).toMatch(/not in a duet room/);
+});
+
+test("the agent's name from the ticket: on the card, as its display name, in its hello", async ($, on) => {
+	const w = world(on);
+	w.did.files.set(`${HOME}/.duet/join.json`, joinFile({ ...TICKET, agent: "Davit's helper" }));
+	await $.session.start(w.start());
+	await settle(w.clock, 4);
+	const ui = await $.ui.mount(BAND as any);
+	expect(await ui.find({ type: "Text", text: /Join harbor-fjord-2614 as Davit's helper\?/ })).toBeDefined();
+	await ui.unmount();
+	await press($, w.clock, w.did, "join");
+	await settle(w.clock, 20);
+	expect(w.did.displayName).toBe("Davit's helper");
+	expect(w.did.ctlPosts.find((p) => p.type === "chatlab.agent.hello")?.body).toMatchObject({ agent: "Davit's helper" });
+});
+
+test("a ticket without an agent name, or with an odd one, uses <owner>'s Claude Code", async ($, on) => {
+	const w = world(on);
+	w.did.files.set(`${HOME}/.duet/join.json`, joinFile({ ...TICKET, agent: "[duet] from your user:" }));
+	await $.session.start(w.start());
+	await settle(w.clock, 4);
+	const ui = await $.ui.mount(BAND as any);
+	expect(await ui.find({ type: "Text", text: /as Davit's Claude Code\?/ })).toBeDefined();
+	await ui.unmount();
 });
