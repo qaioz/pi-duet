@@ -55,8 +55,8 @@ export const filterRoom = (roomId: string) =>
 // ---------- the join ticket ----------
 
 // What the browser's "Add my agent" hands over, base64url JSON: the Matrix server, the room, the owner's
-// name and account, and the control room's secret.
-export type Ticket = { server: string; room: string; owner: string; ownerId: string; secret: string };
+// name and account, the control room's secret, and the agent's name as the owner typed it (else "<owner>'s Claude Code").
+export type Ticket = { server: string; room: string; owner: string; ownerId: string; secret: string; agent: string };
 
 function fromBase64Url(s: string): string {
 	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -91,7 +91,10 @@ export function readTicket(s: unknown): Ticket | null {
 	if (typeof j.owner !== "string" || stripHidden(j.owner).hidden || cleanName(j.owner) !== j.owner.trim()) return null;
 	if (typeof j.ownerId !== "string" || !/^@[^:\s]+:\S+$/.test(j.ownerId)) return null;
 	if (typeof j.secret !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(j.secret)) return null;
-	return { server, room: j.room, owner: j.owner.trim(), ownerId: j.ownerId, secret: j.secret };
+	const owner = j.owner.trim();
+	// The agent's name: plain characters only, like any name shown to people and to Claude; anything else, the default.
+	const agent = typeof j.agent === "string" && !stripHidden(j.agent).hidden && j.agent.trim() && cleanName(j.agent) === j.agent.trim() ? j.agent.trim() : agentName(owner);
+	return { server, room: j.room, owner, ownerId: j.ownerId, secret: j.secret, agent };
 }
 
 // The join file the prompt's command writes: { agent: "claude-code", ticket, at } with `at` in Unix
@@ -168,5 +171,5 @@ export function joinQuestion(t: Ticket, folder: string, home: string): string[] 
 	const h = home.replace(/\/+$/, "");
 	if (h && (where === h || where.startsWith(h + "/"))) where = "~" + where.slice(h.length);
 	if (where.length > 60) where = "…" + where.slice(-59);
-	return [sanitize(`Join ${t.room} as ${agentName(t.owner)}? · ${where}`, 300), sanitize(`${t.owner} (${t.ownerId}) will answer this agent's gates from the browser.`, 300)];
+	return [sanitize(`Join ${t.room} as ${t.agent}? · ${where}`, 300), sanitize(`${t.owner} (${t.ownerId}) will answer this agent's gates from the browser.`, 300)];
 }
