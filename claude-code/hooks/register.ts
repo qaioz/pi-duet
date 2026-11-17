@@ -28,7 +28,7 @@ import {
 type $ = EngineInterface; // the engine interface, as each hook hands it over
 
 const SEND_TOOL = "mcp__duet__send";
-const VERSION = "0.20.2";
+const VERSION = "0.20.3";
 const AMBER = "#e9b45a";
 const BLUE = "#8eb1ff";
 

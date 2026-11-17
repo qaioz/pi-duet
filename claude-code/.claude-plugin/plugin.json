@@ -1,6 +1,6 @@
 {
   "name": "duet",
-  "version": "0.20.2",
+  "version": "0.20.3",
   "description": "Bring your Claude Code into a chat-lab room: others' requests and its replies wait for your OK, in the terminal or your browser.",
   "author": { "name": "qaioz" },
   "homepage": "https://github.com/qaioz/pi-duet",
