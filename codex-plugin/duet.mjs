@@ -25,7 +25,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 const APP = "Codex";
 const DUET_DIR = process.env.DUET_HOME || join(homedir(), ".duet");
 const CODEX = process.env.DUET_CODEX || "codex";
@@ -423,12 +423,13 @@ async function onHook(a) {
 			turns.set(turn, { kind: "owner", re: ownerInputs[o].re });
 			ownerInputs.splice(o, 1);
 		}
+		// "join duet" is for duet only: answered here, the prompt never reaches the model (no turn runs).
+		if (saysJoinDuet(prompt)) return hookOut(event, { block: (joinOffer ? await askJoin(prompt) : "") || (room ? `duet: already in ${room.room}` : "duet: no join waiting · copy the command from chat-lab again") });
 		runningTurn = turn;
 		void ctlStatus();
 		if (joinOffer) {
 			const line = await askJoin(prompt);
-			if (saysJoinDuet(prompt)) return hookOut(event, { block: line || "duet" });
-			return hookOut(event, { system: line });
+			return line ? hookOut(event, { system: line }) : "";
 		}
 		return "";
 	}
@@ -445,7 +446,8 @@ async function onHook(a) {
 		}
 		void ctlStatus();
 		setImmediate(pushWaiting);
-		return joinOffer ? hookOut("Stop", { system: await askJoin() }) : "";
+		const line = joinOffer ? await askJoin() : "";
+		return line ? hookOut("Stop", { system: line }) : "";
 	}
 	return "";
 }
@@ -459,21 +461,26 @@ async function askJoin(prompt) {
 		joinOffer = null;
 		return join_(o);
 	}
-	if (asking) return "";
-	asking = ask(`duet · Join ${o.room} as ${o.agent}? · ${folder || "this folder"}\n${o.owner} (${o.ownerId}) will answer this agent's gates from the browser.`, ["Join", "Ignore"]);
-	const r = await asking;
-	asking = null;
-	if (joinOffer !== o) return "";
-	if (r.answer === "Ignore") {
-		joinOffer = null;
-		return "duet: join ignored";
+	if (asking || o.told) return ""; // said once per join offer
+	if (!formsOff) {
+		asking = ask(`duet · Join ${o.room} as ${o.agent}? · ${folder || "this folder"}\n${o.owner} (${o.ownerId}) will answer this agent's gates from the browser.`, ["Join", "Ignore"]);
+		const r = await asking;
+		asking = null;
+		if (joinOffer !== o) return "";
+		if (r.answer === "Ignore") {
+			joinOffer = null;
+			return "duet: join ignored";
+		}
+		if (r.answer === "Join") {
+			joinOffer = null;
+			return join_(o);
+		}
+		if (r.why === "decline" || r.why === "unsupported") formsOff = true; // Full Access: Codex declines every form
 	}
-	if (r.answer === "Join") {
-		joinOffer = null;
-		return join_(o);
-	}
-	return `duet: join ${o.room} as ${o.agent}? Forms are off here (Full Access?) · type "join duet" to join`;
+	o.told = true;
+	return `duet: join ${o.room} as ${o.agent}? Type "join duet" to join (${o.owner} answers its gates in the browser)`;
 }
+let formsOff = false;
 
 // ---------- joining and leaving ----------
 
@@ -713,7 +720,7 @@ async function controlStart(r, gen) {
 			for (const ev of s.rooms?.join?.[ctl.roomId]?.timeline?.events ?? []) onControlEvent(r, ev);
 			ctl.since = s.next_batch;
 			backoff = 1000;
-			if (Date.now() - ctlStatusAt > 30_000) await ctlStatus(null, true); // heartbeat: the browser marks silence as stale
+			if (Date.now() - ctlStatusAt > 15_000) await ctlStatus(null, true); // heartbeat: the browser marks a minute of silence as stale
 		} catch {
 			await new Promise((res) => setTimeout(res, backoff));
 			backoff = Math.min(backoff * 2, 30_000);

@@ -1,6 +1,6 @@
 {
   "name": "duet",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Bring your Codex into a chat-lab room: others' requests and its replies wait for your OK, in the terminal or your browser.",
   "keywords": ["pairing", "collaboration", "agents", "chat-lab"],
   "mcpServers": "./codex-mcp.json",
