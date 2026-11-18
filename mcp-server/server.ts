@@ -323,7 +323,7 @@ async function roomState(L: Live) {
 		return { ...look(q.fromId), msgId: q.id, text: sanitize(q.text, 4000), ts: q.ts, mine: q.fromId === a.userId, ...(to ? { to } : {}) };
 	}).filter(Boolean);
 	const requests = L.inbox.filter((m: any) => !m.private && m.toId === a.userId && !L.handled.has(m.id)).slice(-10)
-		.map((m) => ({ ...look(m.fromId), id: m.id, text: sanitize(m.text, 4000), ts: m.ts }));
+		.map((m) => ({ ...look(m.fromId), reqId: m.id, text: sanitize(m.text, 4000), ts: m.ts }));
 	return { room: a.room, agent: a.name, owner: a.owner, groups, lines, requests };
 }
 
@@ -530,6 +530,12 @@ createServer(async (req, res) => {
 			return json(res, 201, { url: `${PUBLIC_URL}/mcp/a/${secret}`, name: agent.name, userId: agent.userId });
 		}
 		if (/^\/mcp\/a\/[A-Za-z0-9_-]{20,}$/.test(path)) {
+			// Browser-based hosts call us straight from the page; the secret in the URL is the key, not the origin.
+			res.setHeader("Access-Control-Allow-Origin", "*");
+			res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+			res.setHeader("Access-Control-Allow-Headers", "content-type, accept, authorization, mcp-protocol-version, mcp-session-id, mcp-method, mcp-name, last-event-id");
+			res.setHeader("Access-Control-Expose-Headers", "mcp-session-id, mcp-protocol-version");
+			if (req.method === "OPTIONS") return res.writeHead(204).end();
 			if (!bySecret(path.split("/")[3])) return json(res, 404, { error: "not found" });
 			return void mcpNode(req, res);
 		}

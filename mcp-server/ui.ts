@@ -93,7 +93,7 @@ body { padding: 2px; }
 .line { display: flex; gap: 10px; align-items: flex-start; }
 .line .tx { min-width: 0; font-size: 14.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .line .tx small { display: block; font-size: 12px; font-weight: 600; color: var(--label-3); }
-.line.mine .tx small { color: var(--accent); }
+.line .tx small i { font-style: normal; font-weight: 500; }
 .req { border-radius: 18px; background: var(--surface); border: 1px solid var(--sep); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .req .who { font-size: 13.5px; color: var(--label-2); display: flex; gap: 8px; align-items: center; } .req .who b { color: var(--label); }
 .req .q { font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
@@ -142,8 +142,8 @@ let S = null, seen = 0, busy = {}, timer = 0;
 const $ = (s) => document.querySelector(s);
 const people = () => (S ? S.groups : []);
 function faces() { return people().map((g) => '<span class="g">' + [g.person, ...g.agents].filter(Boolean).map(av).join("") + "</span>").join(""); }
-function lineHtml(l) { return '<div class="line' + (l.mine ? " mine" : "") + '">' + av(l) + '<div class="tx"><small>' + esc(l.mine ? l.name + " (this chat)" : l.name) + (l.to ? " → " + esc(l.to) : "") + " · " + ago(l.ts) + "</small>" + esc(l.text) + "</div></div>"; }
-function reqHtml(r) { return '<div class="req"><span class="who">' + av(r) + "<span><b>" + esc(r.name) + "</b> asks your AI · " + ago(r.ts) + '</span></span><div class="q">' + esc(r.text) + '</div><div class="acts"><button class="gray" data-ignore="' + esc(r.id) + '">Ignore</button><button class="tint" data-answer="' + esc(r.id) + '">Answer</button></div></div>'; }
+function lineHtml(l) { return '<div class="line' + (l.mine ? " mine" : "") + '">' + av(l) + '<div class="tx"><small>' + esc(l.name) + (l.mine ? " <i>· this chat</i>" : "") + (l.to ? " → " + esc(l.to) : "") + " · " + ago(l.ts) + "</small>" + esc(l.text) + "</div></div>"; }
+function reqHtml(r) { return '<div class="req"><span class="who">' + av(r) + "<span><b>" + esc(r.name) + "</b> asks your AI · " + ago(r.ts) + '</span></span><div class="q">' + esc(r.text) + '</div><div class="acts"><button class="gray" data-ignore="' + esc(r.reqId) + '">Ignore</button><button class="tint" data-answer="' + esc(r.reqId) + '">Answer</button></div></div>'; }
 function render() {
   if (!S) return;
   const last = S.lines[S.lines.length - 1];
@@ -167,8 +167,8 @@ function render() {
 async function refresh() { try { const r = await call("room_state", {}); if (r && r.structuredContent) { S = r.structuredContent; render(); } } catch (e) {} }
 function poll() { clearInterval(timer); timer = setInterval(refresh, document.hidden ? 15000 : 3000); }
 async function act(id, what) {
-  if (busy[id]) return; busy[id] = 1; const r = S.requests.find((x) => x.id === id);
-  S.requests = S.requests.filter((x) => x.id !== id); render();
+  if (busy[id]) return; busy[id] = 1; const r = S.requests.find((x) => x.reqId === id);
+  S.requests = S.requests.filter((x) => x.reqId !== id); render();
   try { await call("handle_request", { id, action: what }); } catch {}
   if (what === "answer" && r) { if (document.body.dataset.mode === "fullscreen") await mode("inline");
     await say("Request from " + r.name + " in the room #" + S.room + ': "' + r.text + '". Answer them with draft_reply (to: ' + r.name + "), so I can check it before it goes out.").catch(() => {}); }
