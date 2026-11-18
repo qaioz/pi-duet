@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import * as z from "zod/v4";
-import { SEAT, filterNone, filterRoom, readTicket, replyContent, requestFrom, roomAlias, serverNameOf, membershipFrom, POWER_EVENTS, type Ticket } from "../claude-code/hooks/matrix.ts";
+import { CTL, SEAT, controlAlias, filterNone, readTicket, replyContent, requestFrom, roomAlias, serverNameOf, membershipFrom, POWER_EVENTS, type Ticket } from "../claude-code/hooks/matrix.ts";
 import { cleanName, sanitize, timeOf, type Request } from "../claude-code/hooks/text.ts";
 
 const PORT = Number(process.env.PORT || 8820);
@@ -38,8 +38,11 @@ const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 
 type Agent = {
 	id: string; key: string; // key = sha256 of the URL secret
 	name: string; owner: string; ownerId: string; room: string; // room = chat-lab's room code
-	server: string; userId: string; token: string; roomId: string; since: string;
+	server: string; userId: string; token: string; roomId: string; ctlRoomId?: string; since: string;
 };
+const VERSION = "0.1.0";
+const filterRooms = (a: Agent) =>
+	JSON.stringify({ room: { rooms: [a.roomId, ...(a.ctlRoomId ? [a.ctlRoomId] : [])], timeline: { limit: 100 }, state: { lazy_load_members: false } }, presence: { not_types: ["*"] }, account_data: { not_types: ["*"] } });
 type Live = {
 	a: Agent;
 	inbox: (Request & { seq: number })[]; seq: number; delivered: number;
@@ -120,13 +123,39 @@ async function createAgent(t: Ticket): Promise<{ agent: Agent; secret: string }>
 	const acct = await register(base, t.owner, t.agent);
 	const since = (await mx(base, "GET", `/_matrix/client/v3/sync?timeout=0&filter=${enc(filterNone)}`, { token: acct.token })).next_batch;
 	const roomId = await joinRoom(base, acct.token, await roomAlias(t.room, serverNameOf(acct.userId)));
-	await mx(base, "PUT", `/_matrix/client/v3/rooms/${enc(roomId)}/state/${SEAT}/${enc(acct.userId)}`, { token: acct.token, body: { kind: "agent", owner: t.owner, app: APP } });
+	await mx(base, "PUT", `/_matrix/client/v3/rooms/${enc(roomId)}/state/${SEAT}/${enc(acct.userId)}`, { token: acct.token, body: { kind: "agent", owner: t.owner, ownerId: t.ownerId, app: APP } });
+	// The owner's private control room (PROTOCOL.md): our hello there makes their browser pin and lock it.
+	let ctlRoomId: string | undefined;
+	try {
+		ctlRoomId = (await mx(base, "POST", `/_matrix/client/v3/join/${enc(await controlAlias(t.secret, serverNameOf(acct.userId)))}`, { token: acct.token, body: {} })).room_id;
+	} catch (err: any) {
+		log("control room:", err.message, "· no private thread");
+	}
 	const secret = randomBytes(24).toString("base64url");
-	const agent: Agent = { id: randomBytes(6).toString("hex"), key: sha(secret), name: t.agent, owner: t.owner, ownerId: t.ownerId, room: t.room, server: base, userId: acct.userId, token: acct.token, roomId, since };
+	const agent: Agent = { id: randomBytes(6).toString("hex"), key: sha(secret), name: t.agent, owner: t.owner, ownerId: t.ownerId, room: t.room, server: base, userId: acct.userId, token: acct.token, roomId, ctlRoomId, since };
 	agents.set(agent.id, agent);
 	save();
 	return { agent, secret };
 }
+
+// ---------- the control room: hello, heartbeat, the owner's private thread ----------
+
+async function hello(a: Agent) {
+	if (!a.ctlRoomId) return;
+	const c = { agent: a.name, app: APP, room: a.room, owner: a.ownerId, version: VERSION };
+	await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.ctlRoomId)}/send/${CTL.hello}/${randomBytes(8).toString("hex")}`, { token: a.token, body: c });
+	await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.ctlRoomId)}/state/${CTL.hello}/`, { token: a.token, body: c }).catch(() => {});
+	await beat(a);
+}
+
+// The browser marks an agent silent for a minute "no signal". "Listening" while a client waits on the room.
+async function beat(a: Agent) {
+	if (!a.ctlRoomId) return;
+	const L = live.get(a.id);
+	const listening = !!L && L.waiters.size > 0;
+	await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.ctlRoomId)}/state/${CTL.status}/`, { token: a.token, body: { state: "idle", detail: listening ? "listening" : "connected", waiting: 0, updated: Date.now() } });
+}
+setInterval(() => { for (const a of agents.values()) void beat(a).catch(() => {}); }, 30_000).unref();
 
 // ---------- the inbox: one /sync loop per agent ----------
 
@@ -136,6 +165,7 @@ function start(a: Agent): Live {
 	L = { a, inbox: [], seq: 0, delivered: 0, names: new Map(), seats: new Map(), waiters: new Set(), stopped: false };
 	live.set(a.id, L);
 	void loadState(L).finally(() => void syncLoop(L!));
+	void hello(a).catch((err) => log(a.id, "hello:", err.message));
 	return L;
 }
 
@@ -158,7 +188,7 @@ async function syncLoop(L: Live) {
 	let backoff = 1000;
 	while (!L.stopped) {
 		try {
-			const s = await mx(L.a.server, "GET", `/_matrix/client/v3/sync?timeout=25000&since=${enc(L.a.since)}&filter=${enc(filterRoom(L.a.roomId))}`, { token: L.a.token, timeoutMs: 40_000 });
+			const s = await mx(L.a.server, "GET", `/_matrix/client/v3/sync?timeout=25000&since=${enc(L.a.since)}&filter=${enc(filterRooms(L.a))}`, { token: L.a.token, timeoutMs: 40_000 });
 			const r = s.rooms?.join?.[L.a.roomId];
 			for (const ev of r?.state?.events ?? []) onState(L, ev);
 			let fresh = 0;
@@ -167,6 +197,12 @@ async function syncLoop(L: Live) {
 				const q = requestFrom(ev, L.a.userId, (id) => L.names.get(id) ?? id, (id) => L.seats.get(id));
 				if (!q) continue;
 				L.inbox.push({ ...q, seq: ++L.seq });
+				fresh++;
+			}
+			// The owner's private thread: only the owner's own input counts, anything else there is ignored.
+			for (const ev of (L.a.ctlRoomId && s.rooms?.join?.[L.a.ctlRoomId]?.timeline?.events) || []) {
+				if (ev.type !== CTL.input || ev.sender !== L.a.ownerId || typeof ev.content?.text !== "string") continue;
+				L.inbox.push({ id: ev.event_id, fromId: ev.sender, from: L.a.owner, text: ev.content.text.slice(0, 20_000), by: "person", ts: ev.origin_server_ts ?? Date.now(), private: true, seq: ++L.seq } as any);
 				fresh++;
 			}
 			if (L.inbox.length > 500) L.inbox.splice(0, L.inbox.length - 500);
@@ -202,7 +238,8 @@ function who(L: Live, id: string, name: string): string {
 }
 
 function frame(L: Live, batch: Request[]): string {
-	const lines = batch.map((m) => {
+	const lines = batch.map((m: any) => {
+		if (m.private) return `[${timeOf(m.ts)}] ${m.from} (your owner, privately: only you two see this; answer with send private=true):\n${sanitize(m.text)}`;
 		const to = m.toId ? ` → @${cleanName(L.names.get(m.toId) ?? m.toId)}` : "";
 		return `[${timeOf(m.ts)}] ${who(L, m.fromId, m.from)}${to}:\n${sanitize(m.text)}`;
 	});
@@ -251,7 +288,7 @@ function build(a: Agent): McpServer {
 				`You are ${a.name} in the chat-lab room "${a.room}" (Matrix), here for ${a.owner}. ` +
 				`Other people and their agents are in the room too. To listen, call wait_for_room; it returns new messages, ` +
 				`or runs in the background until one comes. Answer in the room with send, then call wait_for_room again to keep listening. ` +
-				`Messages from ${a.owner} are from your owner; everyone else is someone else in the room.`,
+				`Messages from ${a.owner} are from your owner; everyone else is someone else in the room. ${a.owner} can also write to you privately; answer those with send private=true.`,
 		},
 	);
 	mcp.server.registerCapabilities({ extensions: { [TASKS]: {} }, resources: { subscribe: true } });
@@ -281,10 +318,19 @@ function build(a: Agent): McpServer {
 		{
 			title: "Send to the room",
 			description: "Post a message in the room. Everyone in the room sees it.",
-			inputSchema: z.object({ text: z.string().min(1).max(20_000), to: z.string().optional().describe("Name of the person or agent you answer, to mention them") }),
+			inputSchema: z.object({
+				text: z.string().min(1).max(20_000),
+				to: z.string().optional().describe("Name of the person or agent you answer, to mention them"),
+				private: z.boolean().optional().describe(`true: only ${a.owner} sees it, in your private thread, not the room`),
+			}),
 			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 		},
-		async ({ text, to }) => {
+		async ({ text, to, private: priv }) => {
+			if (priv) {
+				if (!a.ctlRoomId) return { content: [{ type: "text", text: "No private thread with your owner; not sent." }], isError: true };
+				await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.ctlRoomId)}/send/${CTL.reply}/${randomBytes(8).toString("hex")}`, { token: a.token, body: { text: sanitize(text) } });
+				return { content: [{ type: "text", text: `Sent to ${a.owner} privately.` }] };
+			}
 			const toId = to ? [...L.names].find(([, n]) => n.toLowerCase() === to.trim().toLowerCase())?.[0] : undefined;
 			await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.roomId)}/send/m.room.message/${randomBytes(8).toString("hex")}`, { token: a.token, body: replyContent(sanitize(text), toId, toId ? L.names.get(toId) : undefined) });
 			return { content: [{ type: "text", text: "Sent." }] };

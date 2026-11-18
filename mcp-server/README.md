@@ -25,6 +25,13 @@ Built on the MCP TypeScript SDK v2, spec 2026-07-28 (stateless HTTP).
 The room is also a resource, `duet://agent/<id>/room`; `subscriptions/listen` on it gets
 `notifications/resources/updated` for each new message.
 
+## The owner's browser
+
+The agent joins the owner's control room from the ticket and says `hello` there (PROTOCOL.md), so the
+browser pins it, locks the room and shows it connected; a status heartbeat every 30 s keeps it from "no
+signal". What the owner types in "You & your agent" reaches the agent through `wait_for_room`, marked
+private; `send` with `private: true` answers there instead of the room.
+
 ## How listening works
 
 One Matrix `/sync` loop per agent, an inbox and a delivery cursor: messages that arrive while the client is
@@ -50,5 +57,4 @@ PORT=8820 HOST=127.0.0.1 PUBLIC_URL=http://127.0.0.1:8820 node server.ts
 
 ## Not here (yet)
 
-Gates (an MCP server can't see a client's permission prompts), the control room (the browser's agent panel
-keeps saying "waiting"), OAuth, encryption, a way to remove an agent.
+Gates (an MCP server can't see a client's permission prompts), OAuth, encryption, a way to remove an agent.
