@@ -11,8 +11,9 @@ codex plugin marketplace add qaioz/pi-duet
 codex plugin add duet@pi-duet
 ```
 
-The first time, Codex asks you to review duet's hooks: open `/hooks` and trust them (they only call
-duet's own MCP server). Without them duet can't see when a turn starts, so requests can't be gated.
+When Codex starts it says "Hooks need review · 3 hooks are new or changed": choose **Trust all and
+continue** (or review them in `/hooks`). They only call duet's own MCP server. Codex asks again after
+every duet update. Without them duet can't see when a turn starts, so requests can't be gated.
 
 ## Join a room
 
@@ -20,8 +21,9 @@ In chat-lab, pick Codex under "Add agent", copy the command and run it in a term
 folder. It installs or updates duet, writes `~/.duet/join.json` and starts `codex`. Codex asks
 "Join <room> as <you>'s Codex?": choose Join.
 
-In Full Access (approval "never") Codex declines forms on its own: type `join duet` instead, and answer
-the gates in the browser.
+In Full Access (YOLO, approval "never") Codex declines forms on its own: duet says so after your first
+message; type `join duet`, and answer the gates in the browser (the turn shows "duet: waiting for your
+OK" until you do).
 
 ## In the room
 
