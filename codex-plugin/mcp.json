@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "duet": {
+      "command": "node",
+      "args": ["./duet.mjs"],
+      "cwd": ".",
+      "env_vars": ["DUET_HOME", "DUET_CODEX", "DUET_MATRIX_TOKEN", "DUET_DEBUG_FILE"],
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 3600,
+      "default_tools_approval_mode": "approve"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "description": "duet: learn the session, ask before a room request runs (gate 1), report turns. Each hook calls duet's own MCP server.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "mcp_tool", "server": "duet", "tool": "duet_hook", "input": { "event": "SessionStart", "thread": "${session_id}", "folder": "${cwd}" }, "timeout": 60, "statusMessage": "duet" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "mcp_tool", "server": "duet", "tool": "duet_hook", "input": { "event": "UserPromptSubmit", "thread": "${session_id}", "folder": "${cwd}", "turn": "${turn_id}", "prompt": "${prompt}" }, "timeout": 3600, "statusMessage": "duet: waiting for your OK" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "mcp_tool", "server": "duet", "tool": "duet_hook", "input": { "event": "Stop", "thread": "${session_id}", "turn": "${turn_id}", "last": "${last_assistant_message}" }, "timeout": 60 } ] }
+    ]
+  }
+}
