@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "duet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bring your Codex into a chat-lab room: others' requests and its replies wait for your OK, in the terminal or your browser.",
   "author": { "name": "qaioz" },
   "repository": "https://github.com/qaioz/pi-duet",

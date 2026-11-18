@@ -25,7 +25,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 const APP = "Codex";
 const DUET_DIR = process.env.DUET_HOME || join(homedir(), ".duet");
 const CODEX = process.env.DUET_CODEX || "codex";
