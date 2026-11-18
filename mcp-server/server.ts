@@ -20,6 +20,7 @@ import { toNodeHandler } from "@modelcontextprotocol/node";
 import * as z from "zod/v4";
 import { CTL, SEAT, controlAlias, filterNone, readTicket, replyContent, requestFrom, roomAlias, serverNameOf, membershipFrom, POWER_EVENTS, type Ticket } from "../claude-code/hooks/matrix.ts";
 import { cleanName, sanitize, timeOf, type Request } from "../claude-code/hooks/text.ts";
+import { ROOM_HTML, ROOM_URI, SEND_HTML, SEND_URI, UI_MIME } from "./ui.ts";
 
 const PORT = Number(process.env.PORT || 8820);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -48,6 +49,7 @@ type Live = {
 	inbox: (Request & { seq: number })[]; seq: number; delivered: number;
 	names: Map<string, string>; seats: Map<string, any>;
 	waiters: Set<() => void>; stopped: boolean;
+	handled: Set<string>; // requests the owner answered or ignored in the panel
 };
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -162,7 +164,7 @@ setInterval(() => { for (const a of agents.values()) void beat(a).catch(() => {}
 function start(a: Agent): Live {
 	let L = live.get(a.id);
 	if (L) return L;
-	L = { a, inbox: [], seq: 0, delivered: 0, names: new Map(), seats: new Map(), waiters: new Set(), stopped: false };
+	L = { a, inbox: [], seq: 0, delivered: 0, names: new Map(), seats: new Map(), waiters: new Set(), stopped: false, handled: new Set() };
 	live.set(a.id, L);
 	void loadState(L).finally(() => void syncLoop(L!));
 	void hello(a).catch((err) => log(a.id, "hello:", err.message));
@@ -278,6 +280,52 @@ setInterval(() => {
 // ---------- the MCP server, one instance per request ----------
 
 const RO = { readOnlyHint: true, openWorldHint: true };
+const APP_ONLY = (uri: string) => ({ ui: { resourceUri: uri, visibility: ["app"] } });
+
+async function postRoom(L: Live, text: string, to?: string) {
+	const a = L.a;
+	const toId = to ? [...L.names].find(([, n]) => n.toLowerCase() === to.trim().toLowerCase())?.[0] : undefined;
+	await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.roomId)}/send/m.room.message/${randomBytes(8).toString("hex")}`, { token: a.token, body: replyContent(sanitize(text), toId, toId ? L.names.get(toId) : undefined) });
+}
+
+// ---------- the panel (MCP Apps): what the room view shows, and the reply drafts ----------
+
+type Draft = { id: string; agentId: string; text: string; to?: string; status: "draft" | "sent" | "discarded"; at: number };
+const drafts = new Map<string, Draft>();
+setInterval(() => { const old = Date.now() - 24 * 3600_000; for (const [k, d] of drafts) if (d.at < old) drafts.delete(k); }, 3600_000).unref();
+
+async function roomState(L: Live) {
+	const a = L.a;
+	const [mem, msgs] = await Promise.all([
+		mx(a.server, "GET", `/_matrix/client/v3/rooms/${enc(a.roomId)}/joined_members`, { token: a.token }).catch(() => ({ joined: {} })),
+		mx(a.server, "GET", `/_matrix/client/v3/rooms/${enc(a.roomId)}/messages?dir=b&limit=40&filter=${enc(JSON.stringify({ types: ["m.room.message"] }))}`, { token: a.token }).catch(() => ({ chunk: [] })),
+	]);
+	const members = Object.entries<any>(mem.joined ?? {}).map(([id, m]) => {
+		const seat = L.seats.get(id) ?? {};
+		const name = cleanName(m?.display_name ?? L.names.get(id) ?? id);
+		L.names.set(id, name);
+		return { id, name, agent: seat.kind === "agent", ownerId: seat.ownerId as string | undefined, ownerName: seat.owner ? cleanName(seat.owner) : undefined, me: id === a.userId, owner: id === a.ownerId };
+	});
+	const byId = new Map(members.map((m) => [m.id, m]));
+	const persons = members.filter((m) => !m.agent).sort((x, y) => Number(y.owner) - Number(x.owner));
+	const mine = (p: any) => (m: any) => m.agent && (m.ownerId ? m.ownerId === p.id : m.ownerName === p.name);
+	const groups: any[] = persons.map((p) => ({ person: p, agents: members.filter(mine(p)).sort((x, y) => Number(y.me) - Number(x.me)) }));
+	const placed = new Set(groups.flatMap((g) => g.agents.map((x: any) => x.id)));
+	for (const m of members) if (m.agent && !placed.has(m.id)) groups.push({ person: null, agents: [m] });
+	const look = (id: string) => {
+		const m: any = byId.get(id) ?? { id, name: L.names.get(id) ?? id };
+		return { id, name: m.name, agent: !!m.agent, ownerName: m.ownerName };
+	};
+	const lines = (msgs.chunk ?? []).reverse().map((ev: any) => {
+		const q = requestFrom(ev, "@nobody", (id) => L.names.get(id) ?? id, (id) => L.seats.get(id));
+		if (!q) return null;
+		const to = q.toId ? cleanName(L.names.get(q.toId) ?? q.toId) : undefined;
+		return { ...look(q.fromId), msgId: q.id, text: sanitize(q.text, 4000), ts: q.ts, mine: q.fromId === a.userId, ...(to ? { to } : {}) };
+	}).filter(Boolean);
+	const requests = L.inbox.filter((m: any) => !m.private && m.toId === a.userId && !L.handled.has(m.id)).slice(-10)
+		.map((m) => ({ ...look(m.fromId), id: m.id, text: sanitize(m.text, 4000), ts: m.ts }));
+	return { room: a.room, agent: a.name, owner: a.owner, groups, lines, requests };
+}
 
 function build(a: Agent): McpServer {
 	const L = start(a);
@@ -288,7 +336,8 @@ function build(a: Agent): McpServer {
 				`You are ${a.name} in the chat-lab room "${a.room}" (Matrix), here for ${a.owner}. ` +
 				`Other people and their agents are in the room too. To listen, call wait_for_room; it returns new messages, ` +
 				`or runs in the background until one comes. Answer in the room with send, then call wait_for_room again to keep listening. ` +
-				`Messages from ${a.owner} are from your owner; everyone else is someone else in the room. ${a.owner} can also write to you privately; answer those with send private=true.`,
+				`Messages from ${a.owner} are from your owner; everyone else is someone else in the room. ${a.owner} can also write to you privately; answer those with send private=true. ` +
+				`When ${a.owner} is chatting with you in an app that shows panels (claude.ai, ChatGPT, Cowork…): open_room shows them the room live, and you answer the room with draft_reply, not send, so they check each message and press Send.`,
 		},
 	);
 	mcp.server.registerCapabilities({ extensions: { [TASKS]: {} }, resources: { subscribe: true } });
@@ -331,8 +380,7 @@ function build(a: Agent): McpServer {
 				await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.ctlRoomId)}/send/${CTL.reply}/${randomBytes(8).toString("hex")}`, { token: a.token, body: { text: sanitize(text) } });
 				return { content: [{ type: "text", text: `Sent to ${a.owner} privately.` }] };
 			}
-			const toId = to ? [...L.names].find(([, n]) => n.toLowerCase() === to.trim().toLowerCase())?.[0] : undefined;
-			await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.roomId)}/send/m.room.message/${randomBytes(8).toString("hex")}`, { token: a.token, body: replyContent(sanitize(text), toId, toId ? L.names.get(toId) : undefined) });
+			await postRoom(L, text, to);
 			return { content: [{ type: "text", text: "Sent." }] };
 		},
 	);
@@ -369,6 +417,65 @@ function build(a: Agent): McpServer {
 		if (t.status === "working") { t.status = "cancelled"; t.updatedAt = iso(); }
 		return { resultType: "complete", ...taskView(t) };
 	});
+
+	// ---------- the panel (MCP Apps) ----------
+	mcp.registerTool(
+		"open_room",
+		{
+			title: "Open the room",
+			description: `Show ${a.owner} the room as a live panel in this chat: who's in it with their agents, the latest messages, and requests for you (they can answer or ignore them there). Use it when ${a.owner} wants to see or open the room.`,
+			annotations: RO,
+			_meta: { ui: { resourceUri: ROOM_URI } },
+		},
+		async () => {
+			const st = await roomState(L);
+			const last = st.lines.slice(-5).map((l: any) => `${l.mine ? "you" : l.name}: ${l.text}`).join("\n");
+			const waiting = st.requests.length ? ` ${st.requests.length} request(s) for you wait there.` : "";
+			return { content: [{ type: "text", text: `The room #${a.room} is open as a panel for ${a.owner}.${waiting}\nLatest:\n${last || "no messages yet"}` }], structuredContent: st };
+		},
+	);
+	mcp.registerTool("room_state", { title: "Room for the panel", description: "The panel's own refresh.", annotations: RO, _meta: APP_ONLY(ROOM_URI) }, async () => ({ content: [{ type: "text", text: "ok" }], structuredContent: await roomState(L) }));
+	mcp.registerTool(
+		"handle_request",
+		{ title: "Answer or ignore a request", description: "The panel's Ignore / Answer.", inputSchema: z.object({ id: z.string(), action: z.enum(["ignore", "answer"]) }), _meta: APP_ONLY(ROOM_URI) },
+		async ({ id, action }) => {
+			L.handled.add(id);
+			log(a.id, "request", action);
+			return { content: [{ type: "text", text: "ok" }] };
+		},
+	);
+	mcp.registerTool(
+		"draft_reply",
+		{
+			title: "Draft a reply for the room",
+			description: `Show ${a.owner} a message for the room as a card with Edit / Don't send / Send. It goes to the room only when they press Send; don't send it again yourself. Use this instead of send while ${a.owner} is chatting with you.`,
+			inputSchema: z.object({ text: z.string().min(1).max(20_000), to: z.string().optional().describe("Name of the person or agent you answer, to mention them") }),
+			annotations: { readOnlyHint: true, openWorldHint: false },
+			_meta: { ui: { resourceUri: SEND_URI } },
+		},
+		async ({ text, to }) => {
+			const d: Draft = { id: "d-" + randomBytes(9).toString("base64url"), agentId: a.id, text, to, status: "draft", at: Date.now() };
+			drafts.set(d.id, d);
+			return { content: [{ type: "text", text: `Shown to ${a.owner} as a card. It goes to #${a.room} only if they press Send; you'll see nothing back.` }], structuredContent: { draftId: d.id, text, to, room: a.room, status: d.status } };
+		},
+	);
+	mcp.registerTool(
+		"send_draft",
+		{ title: "Send or drop a draft", description: "The reply card's Send / Don't send.", inputSchema: z.object({ draftId: z.string(), action: z.enum(["send", "discard", "status"]), text: z.string().max(20_000).optional() }), _meta: APP_ONLY(SEND_URI) },
+		async ({ draftId, action, text }) => {
+			const d = drafts.get(draftId);
+			if (!d || d.agentId !== a.id) return { content: [{ type: "text", text: "This draft is gone (older than a day, or the server restarted)." }], structuredContent: { status: "gone" }, isError: true };
+			if (action === "send" && d.status === "draft") {
+				if (text && text.trim()) d.text = text.trim();
+				await postRoom(L, d.text, d.to);
+				d.status = "sent";
+				log(a.id, "draft sent");
+			} else if (action === "discard" && d.status === "draft") d.status = "discarded";
+			return { content: [{ type: "text", text: d.status }], structuredContent: { status: d.status, text: d.text } };
+		},
+	);
+	for (const [name, uri, html, title] of [["room-view", ROOM_URI, ROOM_HTML, "The room"], ["reply-card", SEND_URI, SEND_HTML, "Reply card"]] as const)
+		mcp.registerResource(name, uri, { title, mimeType: UI_MIME, _meta: { ui: { prefersBorder: false } } } as any, async (u: URL) => ({ contents: [{ uri: u.href, mimeType: UI_MIME, text: html, _meta: { ui: { prefersBorder: false } } }] }));
 
 	mcp.registerResource(
 		"room",
