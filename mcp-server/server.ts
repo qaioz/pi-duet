@@ -154,8 +154,8 @@ function appNameOf(ci: { name?: string; title?: string }): string {
 	if (/cursor/.test(s)) return "Cursor";
 	if (/vs ?code|visual studio code|copilot/.test(s)) return "VS Code";
 	if (/claude|anthropic/.test(s)) return "Claude";
-	const raw = cleanName(String(ci.title || ci.name || "")).slice(0, 30).trim();
-	return raw || "AI app";
+	const given = String(ci.title || ci.name || "").trim();
+	return given ? cleanName(given).slice(0, 30).trim() || "AI app" : "AI app"; // cleanName("") is "someone"
 }
 
 // The first request from an app: now the agent becomes real, named after that app.
@@ -182,6 +182,8 @@ function activate(a: Agent, ci: { name?: string; title?: string; version?: strin
 		}
 		Object.assign(a, { state: "active", app, name, userId: acct.userId, token: acct.token, roomId, ctlRoomId, since });
 		delete a.pending;
+		// Removed while we were making it: take it straight back out.
+		if (!agents.has(a.id)) { await removeAgent(a); throw new Error("removed"); }
 		save();
 	})().finally(() => activating.delete(a.id));
 	activating.set(a.id, p);
