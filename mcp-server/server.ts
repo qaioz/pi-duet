@@ -36,11 +36,18 @@ const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 
 
 // ---------- agents (kept on disk) ----------
 
+// An agent starts "pending": only a link, nothing in Matrix. The first MCP request from an app makes it
+// (account, room, seat, control room) and names it after that app; until then nobody sees it.
 type Agent = {
 	id: string; key: string; // key = sha256 of the URL secret
+	ownerKey?: string; // sha256 of the ticket's control secret: the owner's browser proves it with the ticket
+	state?: "pending" | "active"; created?: number; pending?: Ticket; app?: string;
 	name: string; owner: string; ownerId: string; room: string; // room = chat-lab's room code
 	server: string; userId: string; token: string; roomId: string; ctlRoomId?: string; since: string;
 };
+const LINK_TTL_MS = 30 * 60_000;
+const isPending = (a: Agent) => a.state === "pending";
+const expired = (a: Agent) => isPending(a) && Date.now() - (a.created ?? 0) > LINK_TTL_MS;
 const VERSION = "0.1.0";
 const filterRooms = (a: Agent) =>
 	JSON.stringify({ room: { rooms: [a.roomId, ...(a.ctlRoomId ? [a.ctlRoomId] : [])], timeline: { limit: 100 }, state: { lazy_load_members: false } }, presence: { not_types: ["*"] }, account_data: { not_types: ["*"] } });
@@ -120,31 +127,92 @@ async function joinRoom(base: string, token: string, alias: string): Promise<str
 	return room_id;
 }
 
-async function createAgent(t: Ticket): Promise<{ agent: Agent; secret: string }> {
-	const base = MATRIX_URL || t.server;
-	const acct = await register(base, t.owner, t.agent);
-	const since = (await mx(base, "GET", `/_matrix/client/v3/sync?timeout=0&filter=${enc(filterNone)}`, { token: acct.token })).next_batch;
-	const roomId = await joinRoom(base, acct.token, await roomAlias(t.room, serverNameOf(acct.userId)));
-	await mx(base, "PUT", `/_matrix/client/v3/rooms/${enc(roomId)}/state/${SEAT}/${enc(acct.userId)}`, { token: acct.token, body: { kind: "agent", owner: t.owner, ownerId: t.ownerId, app: APP } });
-	// The owner's private control room (PROTOCOL.md): our hello there makes their browser pin and lock it.
-	let ctlRoomId: string | undefined;
-	try {
-		ctlRoomId = (await mx(base, "POST", `/_matrix/client/v3/join/${enc(await controlAlias(t.secret, serverNameOf(acct.userId)))}`, { token: acct.token, body: {} })).room_id;
-	} catch (err: any) {
-		log("control room:", err.message, "· no private thread");
-	}
+// The link only. One per ticket: a second request for the same ticket replaces a link no app used yet.
+function createLink(t: Ticket): { agent: Agent; secret: string } {
+	const ownerKey = sha(t.secret);
+	for (const [id, x] of agents) if (x.ownerKey === ownerKey && isPending(x)) agents.delete(id);
 	const secret = randomBytes(24).toString("base64url");
-	const agent: Agent = { id: randomBytes(6).toString("hex"), key: sha(secret), name: t.agent, owner: t.owner, ownerId: t.ownerId, room: t.room, server: base, userId: acct.userId, token: acct.token, roomId, ctlRoomId, since };
+	const agent: Agent = {
+		id: randomBytes(6).toString("hex"), key: sha(secret), ownerKey, state: "pending", created: Date.now(), pending: t,
+		name: t.agent, owner: t.owner, ownerId: t.ownerId, room: t.room, server: MATRIX_URL || t.server, userId: "", token: "", roomId: "", since: "",
+	};
 	agents.set(agent.id, agent);
 	save();
 	return { agent, secret };
 }
 
+// Which app is calling, from the request's clientInfo (2026-07-28: in _meta; earlier: initialize's params).
+function clientInfoOf(msg: any): { name?: string; title?: string; version?: string } {
+	const m = Array.isArray(msg) ? msg[0] : msg;
+	return m?.params?._meta?.["io.modelcontextprotocol/clientInfo"] ?? m?.params?.clientInfo ?? {};
+}
+function appNameOf(ci: { name?: string; title?: string }): string {
+	const s = `${ci.name ?? ""} ${ci.title ?? ""}`.toLowerCase();
+	if (/claude[-_ ]?code/.test(s)) return "Claude Code";
+	if (/chatgpt|openai/.test(s)) return "ChatGPT";
+	if (/codex/.test(s)) return "Codex";
+	if (/cursor/.test(s)) return "Cursor";
+	if (/vs ?code|visual studio code|copilot/.test(s)) return "VS Code";
+	if (/claude|anthropic/.test(s)) return "Claude";
+	const raw = cleanName(String(ci.title || ci.name || "")).slice(0, 30).trim();
+	return raw || "AI app";
+}
+
+// The first request from an app: now the agent becomes real, named after that app.
+const activating = new Map<string, Promise<void>>();
+function activate(a: Agent, ci: { name?: string; title?: string; version?: string }): Promise<void> {
+	let p = activating.get(a.id);
+	if (p) return p;
+	p = (async () => {
+		const t = a.pending!;
+		const app = appNameOf(ci);
+		const name = `${t.owner}'s ${app}`;
+		log("agent", a.id, "connected from", JSON.stringify(ci), "→", name);
+		const base = a.server;
+		const acct = await register(base, t.owner, name);
+		const since = (await mx(base, "GET", `/_matrix/client/v3/sync?timeout=0&filter=${enc(filterNone)}`, { token: acct.token })).next_batch;
+		const roomId = await joinRoom(base, acct.token, await roomAlias(t.room, serverNameOf(acct.userId)));
+		await mx(base, "PUT", `/_matrix/client/v3/rooms/${enc(roomId)}/state/${SEAT}/${enc(acct.userId)}`, { token: acct.token, body: { kind: "agent", owner: t.owner, ownerId: t.ownerId, app } });
+		// The owner's private control room (PROTOCOL.md): our hello there makes their browser pin and lock it.
+		let ctlRoomId: string | undefined;
+		try {
+			ctlRoomId = (await mx(base, "POST", `/_matrix/client/v3/join/${enc(await controlAlias(t.secret, serverNameOf(acct.userId)))}`, { token: acct.token, body: {} })).room_id;
+		} catch (err: any) {
+			log("control room:", err.message, "· no private thread");
+		}
+		Object.assign(a, { state: "active", app, name, userId: acct.userId, token: acct.token, roomId, ctlRoomId, since });
+		delete a.pending;
+		save();
+	})().finally(() => activating.delete(a.id));
+	activating.set(a.id, p);
+	return p;
+}
+
+// The owner takes it back: a waiting link is dropped; an agent in the room says it's leaving, leaves and is gone.
+async function removeAgent(a: Agent) {
+	agents.delete(a.id);
+	save();
+	const L = live.get(a.id);
+	if (L) {
+		L.stopped = true;
+		for (const t of tasks.values()) if (t.agentId === a.id && t.status === "working") { t.status = "cancelled"; t.updatedAt = iso(); }
+		L.waiters.clear();
+		live.delete(a.id);
+	}
+	if (isPending(a) || !a.token) return;
+	if (a.ctlRoomId) await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.ctlRoomId)}/state/${CTL.status}/`, { token: a.token, body: { state: "offline", detail: "left", waiting: 0, updated: Date.now() } }).catch(() => {});
+	for (const r of [a.roomId, a.ctlRoomId]) if (r) await mx(a.server, "POST", `/_matrix/client/v3/rooms/${enc(r)}/leave`, { token: a.token, body: {} }).catch(() => {});
+	await mx(a.server, "POST", "/_matrix/client/v3/logout", { token: a.token, body: {} }).catch(() => {});
+}
+setInterval(() => {
+	for (const a of [...agents.values()]) if (expired(a)) { log("link", a.id, "expired"); void removeAgent(a); }
+}, 60_000).unref();
+
 // ---------- the control room: hello, heartbeat, the owner's private thread ----------
 
 async function hello(a: Agent) {
 	if (!a.ctlRoomId) return;
-	const c = { agent: a.name, app: APP, room: a.room, owner: a.ownerId, version: VERSION };
+	const c = { agent: a.name, app: a.app ?? APP, room: a.room, owner: a.ownerId, version: VERSION };
 	await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.ctlRoomId)}/send/${CTL.hello}/${randomBytes(8).toString("hex")}`, { token: a.token, body: c });
 	await mx(a.server, "PUT", `/_matrix/client/v3/rooms/${enc(a.ctlRoomId)}/state/${CTL.hello}/`, { token: a.token, body: c }).catch(() => {});
 	await beat(a);
@@ -490,7 +558,7 @@ function build(a: Agent): McpServer {
 const handler = createMcpHandler(({ requestInfo }: any) => {
 	const secret = new URL(requestInfo.url).pathname.split("/")[3] ?? "";
 	const a = bySecret(secret);
-	if (!a) throw new Error("unknown agent");
+	if (!a || isPending(a)) throw new Error("unknown agent");
 	return build(a);
 });
 const mcpNode = toNodeHandler(handler);
@@ -518,16 +586,22 @@ async function body(req: IncomingMessage, max = 10_000): Promise<string> {
 createServer(async (req, res) => {
 	const path = (req.url ?? "/").split("?")[0];
 	try {
-		if (path === "/agents") {
+		if (path === "/agents" || path === "/agents/remove") {
 			cors(res);
 			if (req.method === "OPTIONS") return res.writeHead(204).end();
 			if (req.method !== "POST") return json(res, 405, { error: "POST a ticket" });
 			const t = readTicket(JSON.parse(await body(req)).ticket);
 			if (!t) return json(res, 400, { error: "bad ticket" });
-			const { agent, secret } = await createAgent(t);
-			start(agent);
-			log("agent", agent.id, agent.name, "→", agent.room);
-			return json(res, 201, { url: `${PUBLIC_URL}/mcp/a/${secret}`, name: agent.name, userId: agent.userId });
+			if (path === "/agents/remove") {
+				const mine = [...agents.values()].filter((a) => a.ownerKey === sha(t.secret));
+				if (!mine.length) return json(res, 404, { error: "no such agent" });
+				for (const a of mine) await removeAgent(a);
+				log("removed", mine.map((a) => a.id).join(" "));
+				return json(res, 200, { removed: mine.length });
+			}
+			const { agent, secret } = createLink(t);
+			log("link", agent.id, "for", agent.owner, "→", agent.room);
+			return json(res, 201, { url: `${PUBLIC_URL}/mcp/a/${secret}`, id: agent.id });
 		}
 		if (/^\/mcp\/a\/[A-Za-z0-9_-]{20,}$/.test(path)) {
 			// Browser-based hosts call us straight from the page; the secret in the URL is the key, not the origin.
@@ -536,7 +610,16 @@ createServer(async (req, res) => {
 			res.setHeader("Access-Control-Allow-Headers", "content-type, accept, authorization, mcp-protocol-version, mcp-session-id, mcp-method, mcp-name, last-event-id");
 			res.setHeader("Access-Control-Expose-Headers", "mcp-session-id, mcp-protocol-version");
 			if (req.method === "OPTIONS") return res.writeHead(204).end();
-			if (!bySecret(path.split("/")[3])) return json(res, 404, { error: "not found" });
+			const a = bySecret(path.split("/")[3]);
+			if (!a || expired(a)) return json(res, 404, { error: "not found" });
+			if (isPending(a)) {
+				// The first call from an app: read which app it is, make the agent, then answer the call.
+				if (req.method !== "POST") return json(res, 405, { error: "POST first" });
+				const parsed = JSON.parse((await body(req, 4_000_000)) || "null");
+				await activate(a, clientInfoOf(parsed));
+				start(a);
+				return void mcpNode(req, res, parsed);
+			}
 			return void mcpNode(req, res);
 		}
 		if (path === "/healthz") return json(res, 200, { ok: true, agents: agents.size });
@@ -547,5 +630,5 @@ createServer(async (req, res) => {
 	}
 }).listen(PORT, HOST, () => {
 	log(`duet MCP server on http://${HOST}:${PORT} · ${agents.size} agent(s)`);
-	for (const a of agents.values()) start(a);
+	for (const a of agents.values()) if (!isPending(a)) start(a);
 });
